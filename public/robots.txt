@@ -1,0 +1,14 @@
+# robots.txt for 黄彦杰个人求职网站
+
+User-agent: *
+Allow: /
+
+# Sitemap location
+Sitemap: https://huangyanjie.com/sitemap.xml
+
+# Crawl-delay (optional, in seconds)
+Crawl-delay: 1
+
+# Disallow specific paths (if any)
+# Disallow: /admin/
+# Disallow: /private/

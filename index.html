@@ -1,0 +1,64 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <!-- Favicon 和 PWA 图标 -->
+    <link rel="icon" href="/favicon.ico" sizes="32x32" />
+    <link rel="icon" type="image/svg+xml" href="/pwa-icon.svg" />
+    <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
+    
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+    
+    <!-- PWA 相关 Meta 标签 -->
+    <!-- 验证: 需求 3.5 - 支持添加到主屏幕功能 -->
+    <!-- 验证: 需求 3.7 - 定义应用元数据 -->
+    <meta name="mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+    <meta name="apple-mobile-web-app-title" content="黄彦杰" />
+    <meta name="application-name" content="黄彦杰" />
+    <meta name="msapplication-TileColor" content="#0A0E27" />
+    <meta name="msapplication-config" content="none" />
+    
+    <!-- Primary Meta Tags -->
+    <title>黄彦杰 - 前端开发工程师 / 软件需求分析师</title>
+    <meta name="title" content="黄彦杰 - 前端开发工程师 / 软件需求分析师" />
+    <meta name="description" content="黄彦杰的个人求职网站，展示前端开发、软件需求分析专业技能、项目经验和教育背景。精通 Vue.js、React、TypeScript 等现代前端技术栈。" />
+    <meta name="keywords" content="黄彦杰,前端开发工程师,软件需求分析师,Vue.js,React,TypeScript,Web开发,求职简历" />
+    <meta name="author" content="黄彦杰" />
+    <meta name="robots" content="index, follow" />
+    
+    <!-- Open Graph / Facebook -->
+    <meta property="og:type" content="website" />
+    <meta property="og:url" content="https://huangyanjie.com/" />
+    <meta property="og:title" content="黄彦杰 - 前端开发工程师 / 软件需求分析师" />
+    <meta property="og:description" content="黄彦杰的个人求职网站，展示前端开发、软件需求分析专业技能、项目经验和教育背景。" />
+    <meta property="og:image" content="/og-image.jpg" />
+    <meta property="og:locale" content="zh_CN" />
+    
+    <!-- Twitter -->
+    <meta name="twitter:card" content="summary_large_image" />
+    <meta name="twitter:url" content="https://huangyanjie.com/" />
+    <meta name="twitter:title" content="黄彦杰 - 前端开发工程师 / 软件需求分析师" />
+    <meta name="twitter:description" content="黄彦杰的个人求职网站，展示前端开发、软件需求分析专业技能、项目经验和教育背景。" />
+    <meta name="twitter:image" content="/og-image.jpg" />
+    
+    <!-- Canonical URL -->
+    <link rel="canonical" href="https://huangyanjie.com/" />
+    
+    <!-- Theme Color -->
+    <meta name="theme-color" content="#0A0E27" />
+    
+    <!-- Preconnect for performance -->
+    <!-- 验证: 需求 4.6 - 预加载关键资源 -->
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    
+    <!-- Pixel Font for Game -->
+    <link href="https://fonts.googleapis.com/css2?family=Press+Start+2P&display=swap" rel="stylesheet" />
+  </head>
+  <body>
+    <div id="app"></div>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>

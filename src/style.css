@@ -1,0 +1,887 @@
+/* Tailwind CSS v4 */
+@import 'tailwindcss';
+
+/* Import custom styles */
+@import './styles/variables.css';
+@import './styles/themes/index.css';
+@import './styles/animations.css';
+
+/* ========== Base styles ========== */
+
+* {
+  box-sizing: border-box;
+}
+
+html {
+  scroll-behavior: smooth;
+}
+
+body {
+  margin: 0;
+  padding: 0;
+  background-color: var(--bg-primary);
+  color: var(--text-primary);
+  font-family: var(--font-sans);
+  font-size: var(--text-base);
+  line-height: var(--leading-normal);
+  min-height: 100vh;
+  overflow-x: hidden;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  /* 安全区域适配：为 body 添加安全区域内边距 */
+  padding-left: var(--safe-area-inset-left);
+  padding-right: var(--safe-area-inset-right);
+}
+
+#app {
+  min-height: 100vh;
+}
+
+/* ========== Typography ========== */
+
+h1,
+h2,
+h3,
+h4,
+h5,
+h6 {
+  font-family: var(--font-heading);
+  font-weight: var(--font-bold);
+  line-height: var(--leading-tight);
+  margin: 0;
+}
+
+h1 {
+  font-size: var(--text-5xl);
+}
+
+h2 {
+  font-size: var(--text-4xl);
+}
+
+h3 {
+  font-size: var(--text-3xl);
+}
+
+h4 {
+  font-size: var(--text-2xl);
+}
+
+h5 {
+  font-size: var(--text-xl);
+}
+
+h6 {
+  font-size: var(--text-lg);
+}
+
+p {
+  margin: 0;
+}
+
+a {
+  color: var(--primary);
+  text-decoration: none;
+  transition: color var(--transition-base);
+}
+
+a:hover {
+  color: var(--secondary);
+}
+
+button {
+  cursor: pointer;
+  transition: all var(--transition-base);
+  font-family: inherit;
+}
+
+input,
+textarea,
+select {
+  outline: none;
+  font-family: inherit;
+}
+
+code,
+pre {
+  font-family: var(--font-mono);
+}
+
+/* ========== 渐变效果 ========== */
+
+.text-gradient {
+  background: linear-gradient(to right, var(--primary), var(--secondary), var(--accent));
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+}
+
+.text-gradient-primary {
+  background: linear-gradient(135deg, var(--primary), var(--primary-light));
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+}
+
+.text-gradient-secondary {
+  background: linear-gradient(135deg, var(--secondary), var(--secondary-light));
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+}
+
+.bg-gradient-primary {
+  background: linear-gradient(135deg, var(--primary), var(--secondary));
+}
+
+.bg-gradient-secondary {
+  background: linear-gradient(135deg, var(--secondary), var(--accent));
+}
+
+.bg-gradient-radial {
+  background: radial-gradient(circle at center, var(--primary), transparent);
+}
+
+.bg-gradient-flow {
+  background: linear-gradient(
+    -45deg,
+    var(--primary),
+    var(--secondary),
+    var(--accent),
+    var(--primary)
+  );
+  background-size: 400% 400%;
+}
+
+/* ========== 毛玻璃效果 ========== */
+
+.glass-effect {
+  backdrop-filter: blur(var(--blur-md));
+  -webkit-backdrop-filter: blur(var(--blur-md));
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+}
+
+.glass-effect-light {
+  backdrop-filter: blur(var(--blur-sm));
+  -webkit-backdrop-filter: blur(var(--blur-sm));
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid var(--border-light);
+}
+
+.glass-effect-strong {
+  backdrop-filter: blur(var(--blur-lg));
+  -webkit-backdrop-filter: blur(var(--blur-lg));
+  background: var(--bg-card-hover);
+  border: 1px solid var(--border-strong);
+}
+
+.glass-effect-frosted {
+  backdrop-filter: blur(var(--blur-xl)) saturate(180%);
+  -webkit-backdrop-filter: blur(var(--blur-xl)) saturate(180%);
+  background: rgba(21, 25, 50, 0.6);
+  border: 1px solid var(--border);
+}
+
+/* ========== 阴影效果 ========== */
+
+.shadow-sm {
+  box-shadow: var(--shadow-sm);
+}
+
+.shadow-md {
+  box-shadow: var(--shadow-md);
+}
+
+.shadow-lg {
+  box-shadow: var(--shadow-lg);
+}
+
+.shadow-xl {
+  box-shadow: var(--shadow-xl);
+}
+
+.shadow-inner {
+  box-shadow: inset 0 2px 4px rgba(0, 0, 0, 0.2);
+}
+
+.shadow-none {
+  box-shadow: none;
+}
+
+/* ========== 发光效果 ========== */
+
+.glow {
+  box-shadow: var(--shadow-glow-primary);
+}
+
+.glow-primary {
+  box-shadow: var(--shadow-glow-primary);
+}
+
+.glow-secondary {
+  box-shadow: var(--shadow-glow-secondary);
+}
+
+.glow-accent {
+  box-shadow: var(--shadow-glow-accent);
+}
+
+.glow-strong {
+  box-shadow: var(--shadow-glow-strong);
+}
+
+.glow-text {
+  text-shadow: 0 0 10px rgba(0, 217, 255, 0.5);
+}
+
+.glow-border {
+  border: 1px solid var(--primary);
+  box-shadow: 0 0 10px rgba(0, 217, 255, 0.3), inset 0 0 10px rgba(0, 217, 255, 0.1);
+}
+
+/* ========== 边框效果 ========== */
+
+.border-gradient {
+  border: 2px solid transparent;
+  background-image: linear-gradient(var(--bg-primary), var(--bg-primary)),
+    linear-gradient(135deg, var(--primary), var(--secondary), var(--accent));
+  background-origin: border-box;
+  background-clip: padding-box, border-box;
+}
+
+.border-glow {
+  border: 1px solid var(--primary);
+  box-shadow: 0 0 10px rgba(0, 217, 255, 0.3);
+}
+
+/* ========== 卡片效果 ========== */
+
+.card {
+  background: var(--bg-card);
+  border-radius: var(--radius-lg);
+  padding: var(--spacing-lg);
+  box-shadow: var(--shadow-md);
+  transition: all var(--transition-base);
+}
+
+.card-glass {
+  backdrop-filter: blur(var(--blur-md));
+  -webkit-backdrop-filter: blur(var(--blur-md));
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  padding: var(--spacing-lg);
+  box-shadow: var(--shadow-md);
+  transition: all var(--transition-base);
+}
+
+.card-hover:hover {
+  transform: translateY(-4px);
+  box-shadow: var(--shadow-lg);
+  background: var(--bg-card-hover);
+}
+
+.card-glow:hover {
+  box-shadow: var(--shadow-glow-primary);
+}
+
+/* ========== 按钮效果 ========== */
+
+.btn-glow {
+  box-shadow: 0 0 15px rgba(0, 217, 255, 0.4);
+  transition: all var(--transition-base);
+}
+
+.btn-glow:hover {
+  box-shadow: 0 0 25px rgba(0, 217, 255, 0.6);
+  transform: translateY(-2px);
+}
+
+.btn-gradient {
+  background: linear-gradient(135deg, var(--primary), var(--secondary));
+  transition: all var(--transition-base);
+}
+
+.btn-gradient:hover {
+  background: linear-gradient(135deg, var(--primary-light), var(--secondary-light));
+  box-shadow: var(--shadow-glow-primary);
+}
+
+/* ========== 覆盖层效果 ========== */
+
+.overlay {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: var(--bg-overlay);
+  backdrop-filter: blur(var(--blur-md));
+  -webkit-backdrop-filter: blur(var(--blur-md));
+  z-index: var(--z-modal-backdrop);
+}
+
+/* ========== 滚动条样式 ========== */
+
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+::-webkit-scrollbar-track {
+  background: var(--bg-secondary);
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--primary);
+  border-radius: var(--radius-full);
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: var(--primary-light);
+}
+
+/* Firefox */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--primary) var(--bg-secondary);
+}
+
+/* ========== 选择文本样式 ========== */
+
+::selection {
+  background: var(--primary);
+  color: var(--bg-primary);
+}
+
+::-moz-selection {
+  background: var(--primary);
+  color: var(--bg-primary);
+}
+
+/* ========== 焦点样式 ========== */
+
+:focus-visible {
+  outline: 2px solid var(--primary);
+  outline-offset: 2px;
+}
+
+/* ========== 禁用状态 ========== */
+
+.disabled,
+:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+  pointer-events: none;
+}
+
+/* ========== 响应式工具类 ========== */
+
+.container {
+  width: 100%;
+  max-width: 1280px;
+  margin: 0 auto;
+  padding: 0 var(--spacing-lg);
+}
+
+.container-fluid {
+  width: 100%;
+  padding: 0 var(--spacing-lg);
+}
+
+/* ========== 间距工具类 ========== */
+
+.spacing-xs {
+  gap: var(--spacing-xs);
+}
+
+.spacing-sm {
+  gap: var(--spacing-sm);
+}
+
+.spacing-md {
+  gap: var(--spacing-md);
+}
+
+.spacing-lg {
+  gap: var(--spacing-lg);
+}
+
+.spacing-xl {
+  gap: var(--spacing-xl);
+}
+
+/* ========== 圆角工具类 ========== */
+
+.rounded-sm {
+  border-radius: var(--radius-sm);
+}
+
+.rounded-md {
+  border-radius: var(--radius-md);
+}
+
+.rounded-lg {
+  border-radius: var(--radius-lg);
+}
+
+.rounded-xl {
+  border-radius: var(--radius-xl);
+}
+
+.rounded-full {
+  border-radius: var(--radius-full);
+}
+
+/* ========== 文本工具类 ========== */
+
+.text-center {
+  text-align: center;
+}
+
+.text-left {
+  text-align: left;
+}
+
+.text-right {
+  text-align: right;
+}
+
+.truncate {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.line-clamp-2 {
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+.line-clamp-3 {
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+/* ========== 显示工具类 ========== */
+
+.hidden {
+  display: none;
+}
+
+.block {
+  display: block;
+}
+
+.inline-block {
+  display: inline-block;
+}
+
+.flex {
+  display: flex;
+}
+
+.inline-flex {
+  display: inline-flex;
+}
+
+.grid {
+  display: grid;
+}
+
+/* ========== Flexbox 工具类 ========== */
+
+.flex-row {
+  flex-direction: row;
+}
+
+.flex-col {
+  flex-direction: column;
+}
+
+.items-center {
+  align-items: center;
+}
+
+.items-start {
+  align-items: flex-start;
+}
+
+.items-end {
+  align-items: flex-end;
+}
+
+.justify-center {
+  justify-content: center;
+}
+
+.justify-between {
+  justify-content: space-between;
+}
+
+.justify-around {
+  justify-content: space-around;
+}
+
+.justify-start {
+  justify-content: flex-start;
+}
+
+.justify-end {
+  justify-content: flex-end;
+}
+
+.flex-wrap {
+  flex-wrap: wrap;
+}
+
+.flex-1 {
+  flex: 1;
+}
+
+/* ========== 位置工具类 ========== */
+
+.relative {
+  position: relative;
+}
+
+.absolute {
+  position: absolute;
+}
+
+.fixed {
+  position: fixed;
+}
+
+.sticky {
+  position: sticky;
+}
+
+/* ========== 溢出工具类 ========== */
+
+.overflow-hidden {
+  overflow: hidden;
+}
+
+.overflow-auto {
+  overflow: auto;
+}
+
+.overflow-scroll {
+  overflow: scroll;
+}
+
+/* ========== 指针事件 ========== */
+
+.pointer-events-none {
+  pointer-events: none;
+}
+
+.pointer-events-auto {
+  pointer-events: auto;
+}
+
+/* ========== 用户选择 ========== */
+
+.select-none {
+  user-select: none;
+}
+
+.select-text {
+  user-select: text;
+}
+
+.select-all {
+  user-select: all;
+}
+
+/* ========== Accessibility Enhancements ========== */
+
+/* Enhanced focus visible styles for keyboard navigation */
+*:focus-visible {
+  outline: 2px solid var(--primary);
+  outline-offset: 2px;
+  border-radius: 2px;
+}
+
+/* Remove focus outline for mouse users */
+*:focus:not(:focus-visible) {
+  outline: none;
+}
+
+/* Ensure interactive elements have visible focus */
+a:focus-visible,
+button:focus-visible,
+input:focus-visible,
+textarea:focus-visible,
+select:focus-visible,
+[role="button"]:focus-visible,
+[role="link"]:focus-visible,
+[tabindex]:focus-visible {
+  outline: 2px solid var(--primary);
+  outline-offset: 2px;
+}
+
+/* Screen reader only content */
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border-width: 0;
+}
+
+/* Skip to main content link */
+.skip-link {
+  position: absolute;
+  top: -40px;
+  left: 0;
+  background: var(--primary);
+  color: var(--bg-primary);
+  padding: 8px 16px;
+  text-decoration: none;
+  border-radius: 0 0 4px 0;
+  z-index: 10000;
+  font-weight: 600;
+  transition: top 0.2s ease;
+}
+
+.skip-link:focus {
+  top: 0;
+}
+
+/* Ensure images have alt text for accessibility (development warning) */
+img:not([alt]) {
+  outline: 3px dashed red;
+}
+
+/* High contrast mode support */
+@media (prefers-contrast: high) {
+  :root {
+    --primary: #00FFFF;
+    --secondary: #9D7FFF;
+    --text-primary: #FFFFFF;
+    --text-secondary: #E0E0E0;
+    --border: rgba(255, 255, 255, 0.3);
+  }
+  
+  .glass-effect,
+  .glass-effect-light,
+  .glass-effect-strong,
+  .glass-effect-frosted {
+    background: var(--bg-secondary);
+    border: 2px solid var(--border);
+  }
+}
+
+/* Reduced motion for accessibility */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+  
+  html {
+    scroll-behavior: auto;
+  }
+  
+  .animate-fadeIn,
+  .animate-fadeInUp,
+  .animate-fadeInDown,
+  .animate-fadeInLeft,
+  .animate-fadeInRight,
+  .animate-fadeInScale,
+  .animate-slideInUp,
+  .animate-slideInDown,
+  .animate-slideInLeft,
+  .animate-slideInRight,
+  .animate-zoomIn,
+  .animate-zoomOut {
+    animation: none !important;
+    opacity: 1 !important;
+    transform: none !important;
+  }
+}
+
+/* Dark mode support (already dark, but for completeness) */
+@media (prefers-color-scheme: light) {
+  /* If user prefers light mode, we could provide an alternative */
+  /* For now, keeping dark theme as primary design */
+}
+
+/* Print styles for accessibility */
+@media print {
+  body {
+    background: white;
+    color: black;
+  }
+  
+  .navigation,
+  .skip-link,
+  .background-effects,
+  [aria-hidden="true"] {
+    display: none !important;
+  }
+  
+  a {
+    text-decoration: underline;
+  }
+  
+  a[href]::after {
+    content: " (" attr(href) ")";
+  }
+}
+
+/* Ensure sufficient color contrast */
+.text-muted {
+  color: var(--text-muted);
+  /* Ensure minimum 4.5:1 contrast ratio */
+}
+
+/* Keyboard navigation indicators */
+[tabindex="0"]:focus-visible,
+[tabindex="-1"]:focus-visible {
+  outline: 2px solid var(--primary);
+  outline-offset: 2px;
+}
+
+/* ARIA live regions */
+[aria-live="polite"],
+[aria-live="assertive"] {
+  position: relative;
+}
+
+/* Disabled state with clear visual indication */
+[aria-disabled="true"],
+[disabled] {
+  opacity: 0.6;
+  cursor: not-allowed;
+  filter: grayscale(50%);
+}
+
+/* Loading state indication */
+[aria-busy="true"] {
+  cursor: wait;
+  opacity: 0.8;
+}
+
+/* ========== 安全区域适配 (Safe Area) ========== */
+/* 用于适配 iPhone 刘海屏、底部指示条等设备特性 */
+
+/* 安全区域内边距工具类 */
+.safe-area-top {
+  padding-top: var(--safe-area-inset-top);
+}
+
+.safe-area-bottom {
+  padding-bottom: var(--safe-area-inset-bottom);
+}
+
+.safe-area-left {
+  padding-left: var(--safe-area-inset-left);
+}
+
+.safe-area-right {
+  padding-right: var(--safe-area-inset-right);
+}
+
+.safe-area-x {
+  padding-left: var(--safe-area-inset-left);
+  padding-right: var(--safe-area-inset-right);
+}
+
+.safe-area-y {
+  padding-top: var(--safe-area-inset-top);
+  padding-bottom: var(--safe-area-inset-bottom);
+}
+
+.safe-area-all {
+  padding-top: var(--safe-area-inset-top);
+  padding-right: var(--safe-area-inset-right);
+  padding-bottom: var(--safe-area-inset-bottom);
+  padding-left: var(--safe-area-inset-left);
+}
+
+/* 固定定位元素的安全区域适配 */
+.fixed-top-safe {
+  top: var(--safe-area-inset-top);
+}
+
+.fixed-bottom-safe {
+  bottom: var(--safe-area-inset-bottom);
+}
+
+.fixed-left-safe {
+  left: var(--safe-area-inset-left);
+}
+
+.fixed-right-safe {
+  right: var(--safe-area-inset-right);
+}
+
+/* 导航栏安全区域适配 */
+.nav-safe-area {
+  padding-top: max(1rem, var(--safe-area-inset-top));
+  padding-left: max(2rem, calc(var(--safe-area-inset-left) + 1rem));
+  padding-right: max(2rem, calc(var(--safe-area-inset-right) + 1rem));
+}
+
+/* 底部固定元素安全区域适配 */
+.bottom-bar-safe {
+  padding-bottom: max(1rem, var(--safe-area-inset-bottom));
+}
+
+/* 全屏模态框安全区域适配 */
+.modal-safe-area {
+  padding-top: var(--safe-area-inset-top);
+  padding-right: var(--safe-area-inset-right);
+  padding-bottom: var(--safe-area-inset-bottom);
+  padding-left: var(--safe-area-inset-left);
+}
+
+/* 内容区域安全区域适配 - 确保内容不被刘海屏遮挡 */
+.content-safe-area {
+  padding-left: max(var(--spacing-lg), var(--safe-area-inset-left));
+  padding-right: max(var(--spacing-lg), var(--safe-area-inset-right));
+}
+
+/* 移动端横屏模式下的安全区域适配 */
+@media screen and (orientation: landscape) {
+  .landscape-safe-area {
+    padding-left: max(var(--spacing-lg), var(--safe-area-inset-left));
+    padding-right: max(var(--spacing-lg), var(--safe-area-inset-right));
+  }
+}
+
+/* iOS 设备特定的安全区域适配 */
+@supports (padding: max(0px)) {
+  /* 使用 max() 函数确保在支持的浏览器上有更好的适配 */
+  .ios-safe-top {
+    padding-top: max(0px, env(safe-area-inset-top));
+  }
+  
+  .ios-safe-bottom {
+    padding-bottom: max(0px, env(safe-area-inset-bottom));
+  }
+  
+  .ios-safe-left {
+    padding-left: max(0px, env(safe-area-inset-left));
+  }
+  
+  .ios-safe-right {
+    padding-right: max(0px, env(safe-area-inset-right));
+  }
+}
