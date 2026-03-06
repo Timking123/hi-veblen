@@ -1,0 +1,36 @@
+# 依赖
+node_modules/
+
+# 构建输出
+dist/
+
+# 测试覆盖率
+coverage/
+
+# 环境变量
+.env
+.env.local
+.env.*.local
+
+# 日志
+logs/
+*.log
+npm-debug.log*
+
+# 数据库文件（保留 .gitkeep）
+data/*.db
+data/*.db-journal
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# 系统文件
+.DS_Store
+Thumbs.db
+
+# 临时文件
+tmp/
+temp/

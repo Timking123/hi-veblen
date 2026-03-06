@@ -1,0 +1,14 @@
+{
+  "watch": ["src"],
+  "ext": "ts,json",
+  "ignore": [
+    "src/**/*.test.ts",
+    "src/**/*.property.test.ts",
+    "node_modules"
+  ],
+  "exec": "ts-node --transpile-only src/app.ts",
+  "env": {
+    "NODE_ENV": "development"
+  },
+  "delay": 1000
+}

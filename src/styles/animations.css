@@ -1,0 +1,420 @@
+/* ========== 基础动画 ========== */
+
+/* 淡入动画 */
+@keyframes fadeIn {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+/* 淡出动画 */
+@keyframes fadeOut {
+  from {
+    opacity: 1;
+  }
+  to {
+    opacity: 0;
+  }
+}
+
+/* 淡入上移动画 */
+@keyframes fadeInUp {
+  from {
+    opacity: 0;
+    transform: translateY(20px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+/* 淡入下移动画 */
+@keyframes fadeInDown {
+  from {
+    opacity: 0;
+    transform: translateY(-20px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+/* 淡入缩放动画 */
+@keyframes fadeInScale {
+  from {
+    opacity: 0;
+    transform: scale(0.95);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+/* 从左滑入 */
+@keyframes slideInLeft {
+  from {
+    opacity: 0;
+    transform: translateX(-30px);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(0);
+  }
+}
+
+/* 从右滑入 */
+@keyframes slideInRight {
+  from {
+    opacity: 0;
+    transform: translateX(30px);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(0);
+  }
+}
+
+/* 脉冲动画 */
+@keyframes pulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.5;
+  }
+}
+
+/* 旋转动画 */
+@keyframes spin {
+  from {
+    transform: rotate(0deg);
+  }
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+/* 弹跳动画 */
+@keyframes bounce {
+  0%,
+  100% {
+    transform: translateY(0);
+  }
+  50% {
+    transform: translateY(-10px);
+  }
+}
+
+/* 摇晃动画 */
+@keyframes shake {
+  0%,
+  100% {
+    transform: translateX(0);
+  }
+  25% {
+    transform: translateX(-5px);
+  }
+  75% {
+    transform: translateX(5px);
+  }
+}
+
+/* 发光脉冲 */
+@keyframes glowPulse {
+  0%,
+  100% {
+    box-shadow: 0 0 20px rgba(0, 217, 255, 0.3);
+  }
+  50% {
+    box-shadow: 0 0 30px rgba(0, 217, 255, 0.6);
+  }
+}
+
+/* 渐变流动 */
+@keyframes gradientFlow {
+  0% {
+    background-position: 0% 50%;
+  }
+  50% {
+    background-position: 100% 50%;
+  }
+  100% {
+    background-position: 0% 50%;
+  }
+}
+
+/* 波纹扩散 */
+@keyframes ripple {
+  0% {
+    transform: scale(0);
+    opacity: 1;
+  }
+  100% {
+    transform: scale(4);
+    opacity: 0;
+  }
+}
+
+/* 缩放进入 */
+@keyframes zoomIn {
+  from {
+    opacity: 0;
+    transform: scale(0.8);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+/* 缩放退出 */
+@keyframes zoomOut {
+  from {
+    opacity: 1;
+    transform: scale(1);
+  }
+  to {
+    opacity: 0;
+    transform: scale(0.8);
+  }
+}
+
+/* 翻转进入 */
+@keyframes flipIn {
+  from {
+    opacity: 0;
+    transform: perspective(400px) rotateX(-90deg);
+  }
+  to {
+    opacity: 1;
+    transform: perspective(400px) rotateX(0deg);
+  }
+}
+
+/* ========== 动画工具类 ========== */
+
+.animate-fadeIn {
+  animation: fadeIn var(--transition-base) forwards;
+}
+
+.animate-fadeOut {
+  animation: fadeOut var(--transition-base) forwards;
+}
+
+.animate-fadeInUp {
+  animation: fadeInUp var(--transition-base) forwards;
+}
+
+.animate-fadeInDown {
+  animation: fadeInDown var(--transition-base) forwards;
+}
+
+.animate-fadeInScale {
+  animation: fadeInScale var(--transition-base) forwards;
+}
+
+.animate-slideInLeft {
+  animation: slideInLeft var(--transition-base) forwards;
+}
+
+.animate-slideInRight {
+  animation: slideInRight var(--transition-base) forwards;
+}
+
+.animate-pulse {
+  animation: pulse 2s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+}
+
+.animate-spin {
+  animation: spin 1s linear infinite;
+}
+
+.animate-bounce {
+  animation: bounce 1s ease-in-out infinite;
+}
+
+.animate-shake {
+  animation: shake 0.5s ease-in-out;
+}
+
+.animate-glowPulse {
+  animation: glowPulse 2s ease-in-out infinite;
+}
+
+.animate-gradientFlow {
+  background-size: 200% 200%;
+  animation: gradientFlow 3s ease infinite;
+}
+
+.animate-zoomIn {
+  animation: zoomIn var(--transition-base) forwards;
+}
+
+.animate-zoomOut {
+  animation: zoomOut var(--transition-base) forwards;
+}
+
+.animate-flipIn {
+  animation: flipIn var(--transition-slow) forwards;
+}
+
+/* ========== 动画延迟类 ========== */
+
+.animate-delay-100 {
+  animation-delay: 100ms;
+}
+
+.animate-delay-200 {
+  animation-delay: 200ms;
+}
+
+.animate-delay-300 {
+  animation-delay: 300ms;
+}
+
+.animate-delay-500 {
+  animation-delay: 500ms;
+}
+
+.animate-delay-700 {
+  animation-delay: 700ms;
+}
+
+.animate-delay-1000 {
+  animation-delay: 1000ms;
+}
+
+/* ========== 过渡效果类 ========== */
+
+.transition-all {
+  transition: all var(--transition-base);
+}
+
+.transition-colors {
+  transition: color var(--transition-base), background-color var(--transition-base),
+    border-color var(--transition-base);
+}
+
+.transition-transform {
+  transition: transform var(--transition-base);
+}
+
+.transition-opacity {
+  transition: opacity var(--transition-base);
+}
+
+.transition-shadow {
+  transition: box-shadow var(--transition-base);
+}
+
+/* ========== 悬停效果 ========== */
+
+.hover-lift {
+  transition: transform var(--transition-base), box-shadow var(--transition-base);
+}
+
+.hover-lift:hover {
+  transform: translateY(-4px);
+  box-shadow: var(--shadow-lg);
+}
+
+.hover-scale {
+  transition: transform var(--transition-base);
+}
+
+.hover-scale:hover {
+  transform: scale(1.05);
+}
+
+.hover-glow {
+  transition: box-shadow var(--transition-base);
+}
+
+.hover-glow:hover {
+  box-shadow: var(--shadow-glow-primary);
+}
+
+.hover-brightness {
+  transition: filter var(--transition-base);
+}
+
+.hover-brightness:hover {
+  filter: brightness(1.2);
+}
+
+/* ========== 性能优化 ========== */
+
+.will-change-transform {
+  will-change: transform;
+}
+
+.will-change-opacity {
+  will-change: opacity;
+}
+
+.gpu-accelerated {
+  transform: translateZ(0);
+  backface-visibility: hidden;
+  perspective: 1000px;
+}
+
+
+/* ========== 滚动动画样式 ========== */
+/* 用于 useScrollAnimation Composable */
+/* 验证: 需求 2.7, 2.8, 2.9 */
+
+/* 滚动动画基础样式 */
+.scroll-animate {
+  opacity: 0;
+  transition: opacity 0.6s ease, transform 0.6s ease;
+}
+
+/* 淡入动画类型 */
+.scroll-animate--fade-in {
+  /* 仅使用透明度变化 */
+}
+
+/* 从下方滑入动画类型 */
+.scroll-animate--slide-up {
+  transform: translateY(30px);
+}
+
+/* 从右方滑入动画类型 */
+.scroll-animate--slide-left {
+  transform: translateX(30px);
+}
+
+/* 缩放进入动画类型 */
+.scroll-animate--scale-in {
+  transform: scale(0.9);
+}
+
+/* 可见状态 - 重置所有变换 */
+.scroll-animate--visible {
+  opacity: 1;
+  transform: translateY(0) translateX(0) scale(1);
+}
+
+/* 减少动画偏好支持 */
+/* 验证: 需求 2.9 - 当用户启用"减少动画"系统设置时所有动画被禁用或简化 */
+@media (prefers-reduced-motion: reduce) {
+  .scroll-animate {
+    opacity: 1;
+    transform: none;
+    transition: none;
+  }
+  
+  .scroll-animate--fade-in,
+  .scroll-animate--slide-up,
+  .scroll-animate--slide-left,
+  .scroll-animate--scale-in {
+    transform: none;
+  }
+}

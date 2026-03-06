@@ -1,0 +1,234 @@
+/**
+ * 主题系统入口文件
+ * 
+ * 该文件导入所有主题 CSS 文件，并定义主题切换相关的通用样式。
+ * 
+ * 使用方法：
+ * 1. 在主样式文件中导入此文件
+ * 2. 在 HTML 根元素上设置 data-theme 属性（"dark" 或 "light"）
+ * 3. 切换主题时添加 .theme-transition 类以启用过渡动画
+ * 
+ * 示例：
+ * <html data-theme="dark" class="theme-transition">
+ * 
+ * CSS 选择器优先级说明：
+ * - :root 定义默认变量（深色主题），特异性为 (0,1,0)
+ * - :root[data-theme="light"] 和 :root[data-theme="dark"] 使用组合选择器，特异性为 (0,2,0)
+ * - 由于 :root[data-theme] 的特异性更高，它们能正确覆盖 :root 中的默认值
+ */
+
+/* 导入深色主题 */
+@import './dark.css';
+
+/* 导入浅色主题 */
+@import './light.css';
+
+/* ========== 默认主题（深色） ========== */
+/* 当没有设置 data-theme 属性时，使用深色主题作为默认值 */
+/* 特异性: (0,1,0) - 会被 :root[data-theme] (0,2,0) 覆盖 */
+:root {
+  /* 主色调 */
+  --primary: #00d9ff;
+  --primary-dark: #00b8d9;
+  --primary-light: #33e0ff;
+  --secondary: #7b61ff;
+  --secondary-dark: #6247ea;
+  --secondary-light: #9580ff;
+  --accent: #ff6b9d;
+  --accent-dark: #ff4d85;
+  --accent-light: #ff88b0;
+
+  /* 背景色 */
+  --bg-primary: #0a0e27;
+  --bg-secondary: #151932;
+  --bg-tertiary: #1a1f3a;
+  --bg-card: rgba(21, 25, 50, 0.8);
+  --bg-card-hover: rgba(21, 25, 50, 0.95);
+  --bg-overlay: rgba(10, 14, 39, 0.9);
+  --bg-input: rgba(21, 25, 50, 0.6);
+  --bg-button: rgba(0, 217, 255, 0.1);
+  --bg-button-hover: rgba(0, 217, 255, 0.2);
+
+  /* 文字色 */
+  --text-primary: #ffffff;
+  --text-secondary: #a0aec0;
+  --text-muted: #718096;
+  --text-disabled: #4a5568;
+  --text-inverse: #0a0e27;
+  --text-link: #00d9ff;
+  --text-link-hover: #33e0ff;
+
+  /* 边框 */
+  --border: rgba(255, 255, 255, 0.1);
+  --border-light: rgba(255, 255, 255, 0.05);
+  --border-strong: rgba(255, 255, 255, 0.2);
+  --border-focus: rgba(0, 217, 255, 0.5);
+  --border-error: rgba(255, 107, 107, 0.5);
+  --border-success: rgba(72, 187, 120, 0.5);
+
+  /* 状态色 */
+  --success: #48bb78;
+  --success-bg: rgba(72, 187, 120, 0.1);
+  --warning: #ecc94b;
+  --warning-bg: rgba(236, 201, 75, 0.1);
+  --error: #ff6b6b;
+  --error-bg: rgba(255, 107, 107, 0.1);
+  --info: #4299e1;
+  --info-bg: rgba(66, 153, 225, 0.1);
+
+  /* 阴影 */
+  --shadow-sm: 0 2px 8px rgba(0, 0, 0, 0.3);
+  --shadow-md: 0 4px 16px rgba(0, 0, 0, 0.4);
+  --shadow-lg: 0 8px 32px rgba(0, 0, 0, 0.5);
+  --shadow-xl: 0 12px 48px rgba(0, 0, 0, 0.6);
+  --shadow-glow-primary: 0 0 20px rgba(0, 217, 255, 0.3);
+  --shadow-glow-secondary: 0 0 20px rgba(123, 97, 255, 0.3);
+  --shadow-glow-accent: 0 0 20px rgba(255, 107, 157, 0.3);
+  --shadow-glow-strong: 0 0 30px rgba(0, 217, 255, 0.5);
+
+  /* 毛玻璃效果 */
+  --glass-bg: rgba(21, 25, 50, 0.7);
+  --glass-border: rgba(255, 255, 255, 0.1);
+  --glass-shadow: 0 8px 32px rgba(0, 0, 0, 0.3);
+
+  /* 滚动条 */
+  --scrollbar-track: rgba(255, 255, 255, 0.05);
+  --scrollbar-thumb: rgba(255, 255, 255, 0.2);
+  --scrollbar-thumb-hover: rgba(255, 255, 255, 0.3);
+
+  /* 代码高亮 */
+  --code-bg: rgba(0, 0, 0, 0.3);
+  --code-text: #e2e8f0;
+  --code-keyword: #ff79c6;
+  --code-string: #f1fa8c;
+  --code-comment: #6272a4;
+  --code-function: #50fa7b;
+  --code-number: #bd93f9;
+
+  /* 图表色板 */
+  --chart-1: #00d9ff;
+  --chart-2: #7b61ff;
+  --chart-3: #ff6b9d;
+  --chart-4: #48bb78;
+  --chart-5: #ecc94b;
+  --chart-6: #4299e1;
+}
+
+/* ========== 系统主题偏好支持 ========== */
+/* 当用户选择"跟随系统"且系统为浅色主题时 */
+@media (prefers-color-scheme: light) {
+  :root:not([data-theme]) {
+    /* 主色调 */
+    --primary: #0099cc;
+    --primary-dark: #007aa3;
+    --primary-light: #00b8d9;
+    --secondary: #6247ea;
+    --secondary-dark: #4c35c9;
+    --secondary-light: #7b61ff;
+    --accent: #e5426a;
+    --accent-dark: #cc2952;
+    --accent-light: #ff6b9d;
+
+    /* 背景色 */
+    --bg-primary: #f8fafc;
+    --bg-secondary: #f1f5f9;
+    --bg-tertiary: #e2e8f0;
+    --bg-card: rgba(255, 255, 255, 0.9);
+    --bg-card-hover: rgba(255, 255, 255, 1);
+    --bg-overlay: rgba(248, 250, 252, 0.95);
+    --bg-input: rgba(255, 255, 255, 0.8);
+    --bg-button: rgba(0, 153, 204, 0.1);
+    --bg-button-hover: rgba(0, 153, 204, 0.15);
+
+    /* 文字色 */
+    --text-primary: #1a202c;
+    --text-secondary: #4a5568;
+    --text-muted: #718096;
+    --text-disabled: #a0aec0;
+    --text-inverse: #ffffff;
+    --text-link: #0077a3;
+    --text-link-hover: #005577;
+
+    /* 边框 */
+    --border: rgba(0, 0, 0, 0.1);
+    --border-light: rgba(0, 0, 0, 0.05);
+    --border-strong: rgba(0, 0, 0, 0.2);
+    --border-focus: rgba(0, 153, 204, 0.5);
+    --border-error: rgba(229, 66, 106, 0.5);
+    --border-success: rgba(56, 161, 105, 0.5);
+
+    /* 状态色 */
+    --success: #38a169;
+    --success-bg: rgba(56, 161, 105, 0.1);
+    --warning: #d69e2e;
+    --warning-bg: rgba(214, 158, 46, 0.1);
+    --error: #e53e3e;
+    --error-bg: rgba(229, 62, 62, 0.1);
+    --info: #3182ce;
+    --info-bg: rgba(49, 130, 206, 0.1);
+
+    /* 阴影 */
+    --shadow-sm: 0 2px 8px rgba(0, 0, 0, 0.08);
+    --shadow-md: 0 4px 16px rgba(0, 0, 0, 0.1);
+    --shadow-lg: 0 8px 32px rgba(0, 0, 0, 0.12);
+    --shadow-xl: 0 12px 48px rgba(0, 0, 0, 0.15);
+    --shadow-glow-primary: 0 0 20px rgba(0, 153, 204, 0.2);
+    --shadow-glow-secondary: 0 0 20px rgba(98, 71, 234, 0.2);
+    --shadow-glow-accent: 0 0 20px rgba(229, 66, 106, 0.2);
+    --shadow-glow-strong: 0 0 30px rgba(0, 153, 204, 0.3);
+
+    /* 毛玻璃效果 */
+    --glass-bg: rgba(255, 255, 255, 0.8);
+    --glass-border: rgba(0, 0, 0, 0.1);
+    --glass-shadow: 0 8px 32px rgba(0, 0, 0, 0.1);
+
+    /* 滚动条 */
+    --scrollbar-track: rgba(0, 0, 0, 0.05);
+    --scrollbar-thumb: rgba(0, 0, 0, 0.2);
+    --scrollbar-thumb-hover: rgba(0, 0, 0, 0.3);
+
+    /* 代码高亮 */
+    --code-bg: rgba(0, 0, 0, 0.05);
+    --code-text: #1a202c;
+    --code-keyword: #d63384;
+    --code-string: #0d6efd;
+    --code-comment: #6c757d;
+    --code-function: #198754;
+    --code-number: #6f42c1;
+
+    /* 图表色板 */
+    --chart-1: #0099cc;
+    --chart-2: #6247ea;
+    --chart-3: #e5426a;
+    --chart-4: #38a169;
+    --chart-5: #d69e2e;
+    --chart-6: #3182ce;
+  }
+}
+
+/* ========== 主题过渡动画 ========== */
+/* 添加 .theme-transition 类以启用平滑的主题切换动画 */
+.theme-transition,
+.theme-transition *,
+.theme-transition *::before,
+.theme-transition *::after {
+  transition: 
+    background-color 0.3s ease,
+    border-color 0.3s ease,
+    color 0.3s ease,
+    box-shadow 0.3s ease,
+    fill 0.3s ease,
+    stroke 0.3s ease !important;
+}
+
+/* ========== 减少动画偏好支持 ========== */
+/* 验证: 需求 2.9 - 当用户启用"减少动画"时禁用过渡 */
+@media (prefers-reduced-motion: reduce) {
+  .theme-transition,
+  .theme-transition *,
+  .theme-transition *::before,
+  .theme-transition *::after {
+    transition: none !important;
+    animation: none !important;
+  }
+}

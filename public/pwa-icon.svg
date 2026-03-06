@@ -1,0 +1,58 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  PWA 图标 - 黄彦杰个人网站
+  用于生成各种尺寸的 PWA 图标
+  主题色: #0A0E27 (深色背景)
+  主色调: #00d9ff (青色)
+-->
+<svg width="512" height="512" viewBox="0 0 512 512" xmlns="http://www.w3.org/2000/svg">
+  <!-- 背景 -->
+  <rect width="512" height="512" rx="64" fill="#0A0E27"/>
+  
+  <!-- 装饰性光晕效果 -->
+  <defs>
+    <radialGradient id="glow" cx="50%" cy="50%" r="50%">
+      <stop offset="0%" stop-color="#00d9ff" stop-opacity="0.3"/>
+      <stop offset="100%" stop-color="#00d9ff" stop-opacity="0"/>
+    </radialGradient>
+    <linearGradient id="textGradient" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#00d9ff"/>
+      <stop offset="50%" stop-color="#7b61ff"/>
+      <stop offset="100%" stop-color="#ff6b9d"/>
+    </linearGradient>
+  </defs>
+  
+  <!-- 背景光晕 -->
+  <circle cx="256" cy="256" r="200" fill="url(#glow)"/>
+  
+  <!-- 主要文字 "黄" -->
+  <text 
+    x="256" 
+    y="300" 
+    font-family="Arial, sans-serif" 
+    font-size="200" 
+    font-weight="bold" 
+    fill="url(#textGradient)" 
+    text-anchor="middle"
+    dominant-baseline="middle"
+  >黄</text>
+  
+  <!-- 装饰性边框 -->
+  <rect 
+    x="40" 
+    y="40" 
+    width="432" 
+    height="432" 
+    rx="48" 
+    fill="none" 
+    stroke="#00d9ff" 
+    stroke-width="4" 
+    stroke-opacity="0.5"
+  />
+  
+  <!-- 角落装饰 -->
+  <circle cx="80" cy="80" r="8" fill="#00d9ff" opacity="0.8"/>
+  <circle cx="432" cy="80" r="8" fill="#7b61ff" opacity="0.8"/>
+  <circle cx="80" cy="432" r="8" fill="#7b61ff" opacity="0.8"/>
+  <circle cx="432" cy="432" r="8" fill="#ff6b9d" opacity="0.8"/>
+</svg>

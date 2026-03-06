@@ -1,0 +1,206 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Theme Demo - 全局样式和主题测试</title>
+  <link rel="stylesheet" href="../style.css">
+  <style>
+    .demo-section {
+      margin: var(--spacing-2xl) 0;
+      padding: var(--spacing-xl);
+    }
+    
+    .demo-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+      gap: var(--spacing-lg);
+      margin-top: var(--spacing-lg);
+    }
+    
+    .demo-item {
+      padding: var(--spacing-lg);
+      border-radius: var(--radius-md);
+      text-align: center;
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <h1 class="text-gradient" style="margin: var(--spacing-3xl) 0 var(--spacing-xl);">
+      全局样式和主题演示
+    </h1>
+
+    <!-- 毛玻璃效果 -->
+    <section class="demo-section">
+      <h2>毛玻璃效果 (Glass Effects)</h2>
+      <div class="demo-grid">
+        <div class="demo-item glass-effect">
+          <p>glass-effect</p>
+          <p class="text-muted">标准毛玻璃</p>
+        </div>
+        <div class="demo-item glass-effect-light">
+          <p>glass-effect-light</p>
+          <p class="text-muted">轻量毛玻璃</p>
+        </div>
+        <div class="demo-item glass-effect-strong">
+          <p>glass-effect-strong</p>
+          <p class="text-muted">强化毛玻璃</p>
+        </div>
+        <div class="demo-item glass-effect-frosted">
+          <p>glass-effect-frosted</p>
+          <p class="text-muted">磨砂毛玻璃</p>
+        </div>
+      </div>
+    </section>
+
+    <!-- 发光效果 -->
+    <section class="demo-section">
+      <h2>发光效果 (Glow Effects)</h2>
+      <div class="demo-grid">
+        <div class="demo-item card glow-primary">
+          <p>glow-primary</p>
+          <p class="text-muted">主色发光</p>
+        </div>
+        <div class="demo-item card glow-secondary">
+          <p>glow-secondary</p>
+          <p class="text-muted">次色发光</p>
+        </div>
+        <div class="demo-item card glow-accent">
+          <p>glow-accent</p>
+          <p class="text-muted">强调色发光</p>
+        </div>
+        <div class="demo-item card glow-strong">
+          <p>glow-strong</p>
+          <p class="text-muted">强烈发光</p>
+        </div>
+      </div>
+    </section>
+
+    <!-- 阴影效果 -->
+    <section class="demo-section">
+      <h2>阴影效果 (Shadow Effects)</h2>
+      <div class="demo-grid">
+        <div class="demo-item card shadow-sm">
+          <p>shadow-sm</p>
+          <p class="text-muted">小阴影</p>
+        </div>
+        <div class="demo-item card shadow-md">
+          <p>shadow-md</p>
+          <p class="text-muted">中阴影</p>
+        </div>
+        <div class="demo-item card shadow-lg">
+          <p>shadow-lg</p>
+          <p class="text-muted">大阴影</p>
+        </div>
+        <div class="demo-item card shadow-xl">
+          <p>shadow-xl</p>
+          <p class="text-muted">超大阴影</p>
+        </div>
+      </div>
+    </section>
+
+    <!-- 渐变效果 -->
+    <section class="demo-section">
+      <h2>渐变效果 (Gradient Effects)</h2>
+      <div class="demo-grid">
+        <div class="demo-item card">
+          <h3 class="text-gradient">text-gradient</h3>
+          <p class="text-muted">多色渐变文字</p>
+        </div>
+        <div class="demo-item card">
+          <h3 class="text-gradient-primary">text-gradient-primary</h3>
+          <p class="text-muted">主色渐变文字</p>
+        </div>
+        <div class="demo-item bg-gradient-primary" style="padding: var(--spacing-lg); border-radius: var(--radius-md);">
+          <p>bg-gradient-primary</p>
+          <p class="text-muted">主色渐变背景</p>
+        </div>
+        <div class="demo-item bg-gradient-secondary" style="padding: var(--spacing-lg); border-radius: var(--radius-md);">
+          <p>bg-gradient-secondary</p>
+          <p class="text-muted">次色渐变背景</p>
+        </div>
+      </div>
+    </section>
+
+    <!-- 动画效果 -->
+    <section class="demo-section">
+      <h2>动画效果 (Animation Effects)</h2>
+      <div class="demo-grid">
+        <div class="demo-item card animate-fadeInUp">
+          <p>animate-fadeInUp</p>
+          <p class="text-muted">淡入上移</p>
+        </div>
+        <div class="demo-item card animate-fadeInScale animate-delay-200">
+          <p>animate-fadeInScale</p>
+          <p class="text-muted">淡入缩放</p>
+        </div>
+        <div class="demo-item card animate-glowPulse">
+          <p>animate-glowPulse</p>
+          <p class="text-muted">发光脉冲</p>
+        </div>
+        <div class="demo-item card hover-lift">
+          <p>hover-lift</p>
+          <p class="text-muted">悬停上浮</p>
+        </div>
+      </div>
+    </section>
+
+    <!-- 卡片效果 -->
+    <section class="demo-section">
+      <h2>卡片效果 (Card Effects)</h2>
+      <div class="demo-grid">
+        <div class="card">
+          <h4>标准卡片</h4>
+          <p class="text-secondary">基础卡片样式</p>
+        </div>
+        <div class="card-glass">
+          <h4>毛玻璃卡片</h4>
+          <p class="text-secondary">带毛玻璃效果</p>
+        </div>
+        <div class="card card-hover">
+          <h4>悬停卡片</h4>
+          <p class="text-secondary">悬停时上浮</p>
+        </div>
+        <div class="card card-glow">
+          <h4>发光卡片</h4>
+          <p class="text-secondary">悬停时发光</p>
+        </div>
+      </div>
+    </section>
+
+    <!-- 按钮效果 -->
+    <section class="demo-section">
+      <h2>按钮效果 (Button Effects)</h2>
+      <div class="demo-grid">
+        <button class="btn-gradient" style="padding: var(--spacing-md) var(--spacing-xl); border: none; border-radius: var(--radius-md); color: white; font-weight: 600;">
+          渐变按钮
+        </button>
+        <button class="btn-glow" style="padding: var(--spacing-md) var(--spacing-xl); border: 2px solid var(--primary); border-radius: var(--radius-md); background: transparent; color: var(--primary); font-weight: 600;">
+          发光按钮
+        </button>
+        <button class="hover-scale" style="padding: var(--spacing-md) var(--spacing-xl); border: none; border-radius: var(--radius-md); background: var(--secondary); color: white; font-weight: 600;">
+          缩放按钮
+        </button>
+      </div>
+    </section>
+
+    <!-- 边框效果 -->
+    <section class="demo-section">
+      <h2>边框效果 (Border Effects)</h2>
+      <div class="demo-grid">
+        <div class="demo-item border-gradient">
+          <p>border-gradient</p>
+          <p class="text-muted">渐变边框</p>
+        </div>
+        <div class="demo-item border-glow">
+          <p>border-glow</p>
+          <p class="text-muted">发光边框</p>
+        </div>
+      </div>
+    </section>
+
+    <div style="height: var(--spacing-4xl);"></div>
+  </div>
+</body>
+</html>
