@@ -35,8 +35,8 @@
 
 ```bash
 # 克隆项目
-git clone https://github.com/your-username/your-repo.git
-cd your-repo
+git clone https://github.com/Timking123/hi-veblen.git
+cd hi-veblen
 
 # 安装依赖
 npm install
