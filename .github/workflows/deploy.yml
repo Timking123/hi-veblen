@@ -1,0 +1,80 @@
+name: 部署到阿里云
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v3
+      
+      - name: 设置 Node.js
+        uses: actions/setup-node@v3
+        with:
+          node-version: '18'
+          cache: 'npm'
+      
+      - name: 安装依赖
+        run: npm ci
+      
+      - name: 代码检查
+        run: npm run lint || true
+      
+      - name: 构建主网站
+        run: npm run build
+        env:
+          VITE_SITE_URL: https://hi-veblen.com
+          VITE_API_BASE_URL: /api
+      
+      - name: 构建后端
+        run: |
+          cd src/admin/backend
+          npm ci
+          npm run build
+      
+      - name: 构建 Docker 镜像
+        run: |
+          docker build -t portfolio:${{ github.sha }} .
+          docker tag portfolio:${{ github.sha }} portfolio:latest
+      
+      - name: 保存 Docker 镜像
+        run: |
+          docker save portfolio:latest | gzip > portfolio-image.tar.gz
+      
+      - name: 部署到服务器
+        uses: appleboy/scp-action@master
+        with:
+          host: ${{ secrets.SERVER_HOST }}
+          username: ${{ secrets.SERVER_USER }}
+          key: ${{ secrets.SERVER_SSH_KEY }}
+          source: "portfolio-image.tar.gz,docker-compose.yml,scripts/deploy.sh"
+          target: "/var/www/portfolio"
+      
+      - name: 执行部署脚本
+        uses: appleboy/ssh-action@master
+        with:
+          host: ${{ secrets.SERVER_HOST }}
+          username: ${{ secrets.SERVER_USER }}
+          key: ${{ secrets.SERVER_SSH_KEY }}
+          script: |
+            cd /var/www/portfolio
+            docker load < portfolio-image.tar.gz
+            chmod +x scripts/deploy.sh
+            bash scripts/deploy.sh
+      
+      - name: 健康检查
+        uses: appleboy/ssh-action@master
+        with:
+          host: ${{ secrets.SERVER_HOST }}
+          username: ${{ secrets.SERVER_USER }}
+          key: ${{ secrets.SERVER_SSH_KEY }}
+          script: |
+            sleep 10
+            curl -f https://hi-veblen.com/ || exit 1
+            curl -f https://hi-veblen.com/api/health || exit 1
