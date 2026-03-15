@@ -9,6 +9,16 @@ echo "=========================================="
 echo "开始修复部署问题..."
 echo "=========================================="
 
+# 0. 加载 nvm 并切换到 Node.js 20
+echo ""
+echo "步骤 0: 配置 Node.js 环境..."
+export NVM_DIR="$HOME/.nvm"
+[ -s "$NVM_DIR/nvm.sh" ] && \. "$NVM_DIR/nvm.sh"
+nvm use 20
+echo "当前 Node.js 版本: $(node -v)"
+echo "当前 npm 版本: $(npm -v)"
+echo "✓ Node.js 环境已配置"
+
 # 1. 解决 Git 冲突
 echo ""
 echo "步骤 1: 解决 Git 冲突..."
