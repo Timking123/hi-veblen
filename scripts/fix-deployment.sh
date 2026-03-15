@@ -54,7 +54,18 @@ echo ""
 echo "步骤 3: 部署前端文件..."
 sudo rm -rf /usr/share/nginx/html/*
 sudo cp -r dist/* /usr/share/nginx/html/
-sudo chown -R nginx:nginx /usr/share/nginx/html
+
+# 检测 Nginx 用户（可能是 nginx 或 www-data）
+if id "nginx" &>/dev/null; then
+    NGINX_USER="nginx"
+elif id "www-data" &>/dev/null; then
+    NGINX_USER="www-data"
+else
+    NGINX_USER="root"
+fi
+
+echo "使用 Nginx 用户: $NGINX_USER"
+sudo chown -R $NGINX_USER:$NGINX_USER /usr/share/nginx/html
 sudo chmod -R 755 /usr/share/nginx/html
 echo "✓ 前端文件已部署"
 
