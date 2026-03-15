@@ -3,6 +3,7 @@
     /* 语言和环境 */
     "target": "ES2022",
     "lib": ["ES2022"],
+    "types": ["node", "jest"],
     
     /* 模块 */
     "module": "CommonJS",
@@ -62,8 +63,6 @@
   ],
   "exclude": [
     "node_modules",
-    "dist",
-    "**/*.test.ts",
-    "**/*.property.test.ts"
+    "dist"
   ]
 }
