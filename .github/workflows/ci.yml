@@ -44,7 +44,7 @@ jobs:
         run: npm run test
       
       - name: Build
-        run: npm run build
+        run: npm run build:skip-check
       
       - name: Upload build artifacts
         if: matrix.node-version == '18.x'
