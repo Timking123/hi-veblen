@@ -137,15 +137,12 @@ fi
 echo ""
 echo "步骤 6: 初始化数据库..."
 
-# 检查是否有编译后的文件
-if [ -f "dist/init-db.js" ]; then
-    node dist/init-db.js
-elif [ -f "dist/database/init.js" ]; then
-    node -e "require('./dist/database/init').initDatabase()"
-else
-    echo "使用 ts-node 初始化数据库..."
-    npx ts-node src/database/init.ts
-fi
+# 确保数据目录存在
+mkdir -p data
+
+# 使用 ts-node 直接运行初始化脚本
+echo "使用 ts-node 初始化数据库..."
+npx ts-node src/database/init.ts
 
 echo "✓ 数据库已初始化"
 
