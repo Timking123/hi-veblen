@@ -31,7 +31,20 @@ log_step() {
 check_requirements() {
     log_step "1/7 检查部署环境..."
     
-    local commands=("docker" "docker-compose" "node" "npm")
+    # 检查 Docker
+    if ! command -v docker &> /dev/null; then
+        log_error "缺少必需的命令: docker"
+        exit 1
+    fi
+    
+    # 检查 Docker Compose（支持空格版本）
+    if ! docker compose version &> /dev/null; then
+        log_error "Docker Compose 不可用"
+        exit 1
+    fi
+    
+    # 检查 Node.js 和 npm
+    local commands=("node" "npm")
     for cmd in "${commands[@]}"; do
         if ! command -v "$cmd" &> /dev/null; then
             log_error "缺少必需的命令: $cmd"
@@ -87,7 +100,7 @@ build_app() {
 build_docker() {
     log_step "4/7 构建 Docker 镜像..."
     
-    docker-compose build || {
+    docker compose build || {
         log_error "Docker 镜像构建失败"
         exit 1
     }
@@ -115,7 +128,7 @@ deploy_services() {
     
     # 启动 Nginx 容器
     log_info "启动 Nginx 容器..."
-    docker-compose up -d || {
+    docker compose up -d || {
         log_error "Nginx 容器启动失败"
         exit 1
     }
@@ -192,11 +205,11 @@ main() {
     echo "  - 后端 API: http://localhost:3001/api"
     echo ""
     echo "查看服务状态:"
-    echo "  - Docker: docker-compose ps"
+    echo "  - Docker: docker compose ps"
     echo "  - PM2: pm2 status"
     echo ""
     echo "查看日志:"
-    echo "  - Nginx: docker-compose logs nginx"
+    echo "  - Nginx: docker compose logs nginx"
     echo "  - 后端: pm2 logs admin-backend"
 }
 
