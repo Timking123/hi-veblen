@@ -1,7 +1,6 @@
 /**
  * Jest 配置文件
- * 后台管理系统后端 - 测试配置
- * 支持单元测试和属性测试（使用 fast-check）
+ * 用于后端单元测试和属性测试
  */
 module.exports = {
   // 使用 ts-jest 预设
@@ -15,8 +14,8 @@ module.exports = {
   
   // 测试文件匹配模式
   testMatch: [
-    '<rootDir>/src/**/*.test.ts',
-    '<rootDir>/src/**/*.property.test.ts'
+    '**/__tests__/**/*.test.ts',
+    '**/__tests__/**/*.property.test.ts'
   ],
   
   // 模块路径映射（与 tsconfig.json 保持一致）
@@ -32,20 +31,15 @@ module.exports = {
     '^@database/(.*)$': '<rootDir>/src/database/$1'
   },
   
-  // 覆盖率配置
+  // 覆盖率收集
   collectCoverageFrom: [
     'src/**/*.ts',
     '!src/**/*.test.ts',
     '!src/**/*.property.test.ts',
+    '!src/**/__tests__/**',
     '!src/app.ts',
-    '!src/database/init.ts'
+    '!src/server.ts'
   ],
-  
-  // 覆盖率报告目录
-  coverageDirectory: 'coverage',
-  
-  // 覆盖率报告格式
-  coverageReporters: ['text', 'lcov', 'html'],
   
   // 覆盖率阈值
   coverageThreshold: {
@@ -57,18 +51,18 @@ module.exports = {
     }
   },
   
-  // 测试超时时间（毫秒）
-  // 属性测试可能需要更长时间
+  // 设置超时时间（属性测试可能需要更长时间）
   testTimeout: 30000,
   
-  // 详细输出
-  verbose: true,
-  
-  // 清除模拟
-  clearMocks: true,
-  
-  // 在每个测试文件之前运行的设置文件
-  setupFilesAfterEnv: ['<rootDir>/src/__tests__/setup.ts'],
+  // 全局设置
+  globals: {
+    'ts-jest': {
+      tsconfig: {
+        esModuleInterop: true,
+        allowSyntheticDefaultImports: true
+      }
+    }
+  },
   
   // 忽略的路径
   testPathIgnorePatterns: [
@@ -78,15 +72,6 @@ module.exports = {
   
   // 转换配置
   transform: {
-    '^.+\\.ts$': ['ts-jest', {
-      tsconfig: 'tsconfig.json'
-    }]
-  },
-  
-  // 全局变量
-  globals: {
-    'ts-jest': {
-      isolatedModules: true
-    }
+    '^.+\\.ts$': 'ts-jest'
   }
 };
