@@ -30,7 +30,13 @@
   "exclude": [
     "node_modules",
     "dist",
-    "src/admin/backend/**/*"
+    "src/admin/backend/**/*",
+    "src/**/__tests__/**/*",
+    "src/**/*.test.ts",
+    "src/**/*.test.tsx",
+    "src/**/*.property.test.ts",
+    "src/**/*.integration.test.ts",
+    "src/**/*.ci.test.ts"
   ],
   "references": [{ "path": "./tsconfig.node.json" }]
 }
