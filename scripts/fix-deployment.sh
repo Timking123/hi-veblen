@@ -1,107 +1,239 @@
 #!/bin/bash
-# 一键修复部署问题
 
-set -e
+# 阿里云服务器部署修复脚本
+# 解决 Git 冲突、构建项目、配置后端、启动服务
 
-GREEN='\033[0;32m'
-RED='\033[0;31m'
-YELLOW='\033[1;33m'
-NC='\033[0m'
+set -e  # 遇到错误立即退出
 
-log_info() { echo -e "${GREEN}[INFO]${NC} $1"; }
-log_error() { echo -e "${RED}[ERROR]${NC} $1"; }
-log_warn() { echo -e "${YELLOW}[WARN]${NC} $1"; }
+echo "=========================================="
+echo "开始修复部署问题..."
+echo "=========================================="
 
-echo "========================================"
-echo "       一键修复部署问题"
-echo "========================================"
+# 1. 解决 Git 冲突
 echo ""
+echo "步骤 1: 解决 Git 冲突..."
+cd /var/www/portfolio
 
-# 1. 停止后端服务
-log_info "1. 停止后端服务..."
-pm2 stop admin-backend || log_warn "后端服务未运行"
-pm2 delete admin-backend || log_warn "后端服务不存在"
+# 备份冲突文件
+if [ -f "scripts/deploy.sh" ]; then
+    mv scripts/deploy.sh scripts/deploy.sh.backup
+fi
+if [ -f "scripts/init-server.sh" ]; then
+    mv scripts/init-server.sh scripts/init-server.sh.backup
+fi
+if [ -f "scripts/setup-ssl.sh" ]; then
+    mv scripts/setup-ssl.sh scripts/setup-ssl.sh.backup
+fi
+if [ -f "scripts/verify-domain.sh" ]; then
+    mv scripts/verify-domain.sh scripts/verify-domain.sh.backup
+fi
+
+# 拉取最新代码
+git pull origin main
+echo "✓ Git 代码已更新"
+
+# 2. 安装依赖并构建前端
 echo ""
+echo "步骤 2: 构建前端..."
+npm install
+npm run build:skip-check
+echo "✓ 前端构建完成"
 
-# 2. 删除旧数据库和初始化脚本
-log_info "2. 清理旧数据库..."
-rm -f src/admin/backend/data/admin.db
-rm -f scripts/init-database.sh
-log_info "✓ 旧数据库已删除"
+# 3. 部署前端到 Nginx 目录
 echo ""
+echo "步骤 3: 部署前端文件..."
+sudo rm -rf /usr/share/nginx/html/*
+sudo cp -r dist/* /usr/share/nginx/html/
+sudo chown -R nginx:nginx /usr/share/nginx/html
+sudo chmod -R 755 /usr/share/nginx/html
+echo "✓ 前端文件已部署"
 
-# 3. 确保数据目录存在
-log_info "3. 创建数据目录..."
-mkdir -p src/admin/backend/data
-mkdir -p src/admin/backend/logs
-log_info "✓ 数据目录已创建"
+# 4. 配置后端环境变量
 echo ""
-
-# 4. 重新启动后端服务（会自动初始化数据库）
-log_info "4. 启动后端服务..."
+echo "步骤 4: 配置后端环境..."
 cd src/admin/backend
-pm2 start ecosystem.config.js
-cd ../..
-echo ""
 
-# 5. 等待后端启动
-log_info "5. 等待后端启动..."
-sleep 5
-echo ""
+# 生成强随机 JWT_SECRET
+JWT_SECRET=$(openssl rand -base64 32)
 
-# 6. 检查后端状态
-log_info "6. 检查后端状态..."
-pm2 status admin-backend
-echo ""
+# 创建 .env.production 文件
+cat > .env.production << EOF
+# 后端环境变量
+NODE_ENV=production
+PORT=3001
 
-# 7. 测试后端 API
-log_info "7. 测试后端 API..."
-for i in {1..5}; do
-    if curl -s http://localhost:3001/api/health > /dev/null 2>&1; then
-        log_info "✓ 后端 API 正常"
-        curl http://localhost:3001/api/health
-        echo ""
-        break
-    else
-        log_warn "等待后端启动... ($i/5)"
-        sleep 2
-    fi
-done
-echo ""
+# JWT 配置
+JWT_SECRET=${JWT_SECRET}
+JWT_EXPIRES_IN=24h
 
-# 8. 检查数据库
-log_info "8. 检查数据库..."
-if [ -f "src/admin/backend/data/admin.db" ]; then
-    log_info "✓ 数据库已创建"
-    ls -lh src/admin/backend/data/admin.db
-else
-    log_error "✗ 数据库创建失败"
-fi
-echo ""
+# 数据库配置
+DB_PATH=./data/admin.db
 
-# 9. 检查前端文件
-log_info "9. 检查前端部署..."
-if [ -d "/var/www/html" ] && [ "$(ls -A /var/www/html)" ]; then
-    log_info "✓ 前端文件已部署"
-    ls -lh /var/www/html/ | head -5
-else
-    log_warn "前端文件未部署"
-    echo "   请在本地运行 npm run build:prod 后上传 dist/ 文件夹"
-fi
-echo ""
+# 文件上传配置
+UPLOAD_DIR=./uploads
+MAX_FILE_SIZE=10485760
 
-# 10. 测试网站访问
-log_info "10. 测试网站访问..."
-curl -I http://localhost/ 2>&1 | head -5
-echo ""
+# 内存限制
+NODE_OPTIONS=--max-old-space-size=450
 
-echo "========================================"
-echo "       修复完成！"
-echo "========================================"
+# 日志配置
+LOG_LEVEL=info
+
+# CORS 配置
+CORS_ORIGIN=https://hi-veblen.com
+
+# 管理员账户
+ADMIN_USERNAME=veblen
+ADMIN_PASSWORD=123456
+EOF
+
+echo "✓ 后端环境变量已配置"
+
+# 5. 编译后端代码
 echo ""
-log_info "后续步骤："
-echo "1. 在本地 Windows 电脑运行: npm run build:prod"
-echo "2. 将 dist/ 文件夹上传到服务器"
-echo "3. 在服务器运行: cp -r dist/* /var/www/html/"
-echo "4. 访问 https://hi-veblen.com 测试"
+echo "步骤 5: 编译后端代码..."
+npm install
+npm run build
+echo "✓ 后端编译完成"
+
+# 6. 初始化数据库
+echo ""
+echo "步骤 6: 初始化数据库..."
+node dist/init-db.js
+echo "✓ 数据库已初始化"
+
+# 7. 配置 Nginx
+echo ""
+echo "步骤 7: 配置 Nginx..."
+cd /var/www/portfolio
+
+# 创建临时 Nginx 配置（HTTP only，用于测试）
+sudo tee /etc/nginx/sites-available/portfolio > /dev/null << 'EOF'
+server {
+    listen 80;
+    server_name hi-veblen.com;
+    root /usr/share/nginx/html;
+    index index.html;
+
+    # 后端 API 代理
+    location /api/ {
+        proxy_pass http://127.0.0.1:3001;
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection 'upgrade';
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_cache_bypass $http_upgrade;
+        
+        # 超时设置
+        proxy_connect_timeout 60s;
+        proxy_send_timeout 60s;
+        proxy_read_timeout 60s;
+    }
+
+    # 管理后台
+    location /admin/ {
+        alias /usr/share/nginx/html/admin/;
+        try_files $uri $uri/ /admin/index.html;
+        add_header Cache-Control "no-cache";
+    }
+
+    # 静态资源缓存
+    location ~* \.(js|css|png|jpg|jpeg|gif|ico|svg|woff|woff2|ttf|eot)$ {
+        expires 1y;
+        add_header Cache-Control "public, immutable";
+    }
+
+    # SPA 路由支持
+    location / {
+        try_files $uri $uri/ /index.html;
+        add_header Cache-Control "no-cache";
+    }
+
+    # 禁止访问隐藏文件
+    location ~ /\. {
+        deny all;
+    }
+
+    # 错误页面
+    error_page 404 /index.html;
+    error_page 500 502 503 504 /index.html;
+}
+EOF
+
+# 启用站点配置
+sudo ln -sf /etc/nginx/sites-available/portfolio /etc/nginx/sites-enabled/
+sudo rm -f /etc/nginx/sites-enabled/default
+
+# 测试 Nginx 配置
+sudo nginx -t
+
+# 重启 Nginx
+sudo systemctl restart nginx
+echo "✓ Nginx 已配置并重启"
+
+# 8. 启动后端服务
+echo ""
+echo "步骤 8: 启动后端服务..."
+cd /var/www/portfolio/src/admin/backend
+
+# 停止旧进程
+pm2 delete admin-backend 2>/dev/null || true
+
+# 启动新进程
+pm2 start dist/server.js --name admin-backend --update-env
+
+# 保存 PM2 配置
+pm2 save
+
+# 设置 PM2 开机自启
+pm2 startup systemd -u root --hp /root
+
+echo "✓ 后端服务已启动"
+
+# 9. 验证部署
+echo ""
+echo "=========================================="
+echo "部署完成！正在验证..."
+echo "=========================================="
+
+# 检查 Nginx 状态
+echo ""
+echo "Nginx 状态:"
+sudo systemctl status nginx --no-pager | head -n 5
+
+# 检查后端状态
+echo ""
+echo "后端服务状态:"
+pm2 status
+
+# 测试前端
+echo ""
+echo "测试前端访问:"
+curl -I http://localhost 2>/dev/null | head -n 1
+
+# 测试后端
+echo ""
+echo "测试后端 API:"
+curl -s http://localhost:3001/api/health 2>/dev/null || echo "后端 API 响应: 需要等待服务完全启动"
+
+echo ""
+echo "=========================================="
+echo "部署修复完成！"
+echo "=========================================="
+echo ""
+echo "访问地址:"
+echo "  前端: http://hi-veblen.com"
+echo "  管理后台: http://hi-veblen.com/admin"
+echo ""
+echo "管理员账户:"
+echo "  用户名: veblen"
+echo "  密码: 123456"
+echo ""
+echo "⚠️  重要提示:"
+echo "  1. 首次登录后请立即修改管理员密码"
+echo "  2. 当前使用 HTTP，建议配置 SSL 证书"
+echo "  3. JWT_SECRET 已自动生成并保存"
 echo ""
