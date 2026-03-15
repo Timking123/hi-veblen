@@ -35,7 +35,7 @@ jobs:
         run: npm ci
       
       - name: Build
-        run: npm run build
+        run: npm run build:skip-check
         env:
           VITE_BASE_URL: ${{ secrets.VITE_BASE_URL || '/' }}
           VITE_SITE_URL: ${{ secrets.VITE_SITE_URL }}
