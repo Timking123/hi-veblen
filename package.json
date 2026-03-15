@@ -6,6 +6,7 @@
   "scripts": {
     "dev": "vite",
     "build": "vue-tsc && vite build",
+    "build:skip-check": "vite build",
     "build:dev": "vue-tsc && vite build --mode development",
     "build:prod": "vue-tsc && vite build --mode production",
     "build:analyze": "vue-tsc && vite build --mode production && vite-bundle-visualizer",

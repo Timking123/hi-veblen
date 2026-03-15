@@ -77,6 +77,10 @@ export default defineConfig(({ mode }) => {
         workbox: {
           // 预缓存的文件类型
           globPatterns: ['**/*.{js,css,html,ico,png,svg,woff,woff2}'],
+          // 排除大文件（如头像图片）
+          globIgnores: ['**/images/avatar.png'],
+          // 增加文件大小限制到 15MB
+          maximumFileSizeToCacheInBytes: 15 * 1024 * 1024,
           // 运行时缓存策略
           runtimeCaching: [
             {
