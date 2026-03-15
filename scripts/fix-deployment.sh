@@ -117,19 +117,36 @@ npm install
 
 # 使用 tsc 跳过类型检查直接编译
 echo "正在编译（跳过类型检查）..."
-npx tsc --noCheck || {
+npx tsc --skipLibCheck --noEmitOnError false || {
     echo "⚠️  编译遇到问题，尝试强制编译..."
-    npx tsc --skipLibCheck --noEmit false || {
-        echo "⚠️  TypeScript 编译失败，但不影响运行"
-        echo "✓ 跳过后端编译（使用现有代码）"
+    npx tsc --skipLibCheck || {
+        echo "⚠️  TypeScript 编译失败，尝试直接复制源文件..."
+        mkdir -p dist
+        cp -r src/* dist/ 2>/dev/null || true
     }
 }
-echo "✓ 后端编译完成"
+
+# 检查编译结果
+if [ -f "dist/init-db.js" ] || [ -f "dist/database/init.js" ]; then
+    echo "✓ 后端编译完成"
+else
+    echo "⚠️  编译产物不完整，使用 ts-node 运行"
+fi
 
 # 6. 初始化数据库
 echo ""
 echo "步骤 6: 初始化数据库..."
-node dist/init-db.js
+
+# 检查是否有编译后的文件
+if [ -f "dist/init-db.js" ]; then
+    node dist/init-db.js
+elif [ -f "dist/database/init.js" ]; then
+    node -e "require('./dist/database/init').initDatabase()"
+else
+    echo "使用 ts-node 初始化数据库..."
+    npx ts-node src/database/init.ts
+fi
+
 echo "✓ 数据库已初始化"
 
 # 7. 配置 Nginx
@@ -212,8 +229,23 @@ cd /var/www/portfolio/src/admin/backend
 # 停止旧进程
 pm2 delete admin-backend 2>/dev/null || true
 
+# 检查启动文件
+if [ -f "dist/server.js" ]; then
+    START_FILE="dist/server.js"
+elif [ -f "dist/app.js" ]; then
+    START_FILE="dist/app.js"
+else
+    echo "⚠️  未找到编译后的文件，使用 ts-node 启动..."
+    START_FILE="src/server.ts"
+    pm2 start $START_FILE --name admin-backend --interpreter ts-node --update-env
+    pm2 save
+    pm2 startup systemd -u root --hp /root
+    echo "✓ 后端服务已启动（ts-node 模式）"
+    exit 0
+fi
+
 # 启动新进程
-pm2 start dist/server.js --name admin-backend --update-env
+pm2 start $START_FILE --name admin-backend --update-env
 
 # 保存 PM2 配置
 pm2 save
