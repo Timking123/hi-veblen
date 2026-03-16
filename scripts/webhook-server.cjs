@@ -53,11 +53,15 @@ function verifySignature(payload, signature) {
   );
 }
 
-// 执行部署脚本
+// 执行部署脚本（异步，避免超时）
 function deploy() {
   return new Promise((resolve, reject) => {
     log('开始自动部署...');
     
+    // 立即返回成功，避免 GitHub Webhook 超时
+    resolve('部署已在后台启动');
+    
+    // 在后台执行部署
     const deployScript = `
       cd ${CONFIG.projectPath} && \
       git pull origin main && \
@@ -78,13 +82,11 @@ function deploy() {
       if (error) {
         log(`部署失败: ${error.message}`, 'ERROR');
         log(`错误输出: ${stderr}`, 'ERROR');
-        reject(error);
         return;
       }
       
       log('部署成功！');
       log(`输出: ${stdout}`);
-      resolve(stdout);
     });
   });
 }
