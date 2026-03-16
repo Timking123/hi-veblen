@@ -279,15 +279,15 @@ export function getPerformanceInfo(): {
     hardwareConcurrency?: number
   } = {}
   
-  // @ts-expect-error - memory is non-standard
+  // @ts-ignore - memory is non-standard
   if (performance.memory) {
-    // @ts-expect-error - memory is non-standard
+    // @ts-ignore - memory is non-standard
     info.memory = performance.memory.jsHeapSizeLimit
   }
   
-  // @ts-expect-error - connection is experimental
+  // @ts-ignore - connection is experimental
   if (navigator.connection) {
-    // @ts-expect-error - connection is experimental
+    // @ts-ignore - connection is experimental
     info.connection = navigator.connection.effectiveType
   }
   
