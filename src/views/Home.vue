@@ -179,7 +179,7 @@
       </div>
     </section>
 
-    <!-- Footer with ICP License -->
+    <!-- Footer with ICP License - 备案号页脚 -->
     <footer ref="footerSection" class="site-footer" style="opacity: 0">
       <div class="footer-content">
         <p class="icp-license">
