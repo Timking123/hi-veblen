@@ -1268,11 +1268,11 @@ const scrollToNext = () => {
 
 /* ========== 页脚样式 ========== */
 .site-footer {
-  padding: var(--spacing-2xl) var(--spacing-lg);
+  padding: var(--spacing-lg) var(--spacing-lg);
   background: var(--bg-card);
   backdrop-filter: blur(12px);
   border-top: 1px solid var(--border);
-  margin-top: var(--spacing-3xl);
+  margin-top: var(--spacing-2xl);
   opacity: 0;
 }
 
@@ -1283,7 +1283,7 @@ const scrollToNext = () => {
 }
 
 .icp-license {
-  margin-bottom: var(--spacing-sm);
+  margin-bottom: var(--spacing-xs);
 }
 
 .icp-link {
@@ -1316,7 +1316,7 @@ const scrollToNext = () => {
 
 @media (max-width: 768px) {
   .site-footer {
-    padding: var(--spacing-xl) var(--spacing-md);
+    padding: var(--spacing-md) var(--spacing-md);
   }
   
   .icp-link,
