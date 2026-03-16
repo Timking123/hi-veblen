@@ -62,18 +62,19 @@ function deploy() {
       cd ${CONFIG.projectPath} && \
       git pull origin main && \
       echo "代码已更新" && \
-      npm install --production && \
+      npm install && \
       echo "依赖已安装" && \
       npm run build:skip-check && \
       echo "前端已构建" && \
       sudo cp -r dist/* /usr/share/nginx/html/ && \
+      sudo chown -R www-data:www-data /usr/share/nginx/html && \
       echo "前端已部署" && \
       cd src/admin/backend && \
       pm2 restart admin-backend && \
       echo "后端服务已重启"
     `;
     
-    exec(deployScript, (error, stdout, stderr) => {
+    exec(deployScript, { maxBuffer: 10 * 1024 * 1024 }, (error, stdout, stderr) => {
       if (error) {
         log(`部署失败: ${error.message}`, 'ERROR');
         log(`错误输出: ${stderr}`, 'ERROR');
