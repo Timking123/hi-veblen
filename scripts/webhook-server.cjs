@@ -64,6 +64,10 @@ function deploy() {
       echo "代码已更新" && \
       npm install --production && \
       echo "依赖已安装" && \
+      npm run build:skip-check && \
+      echo "前端已构建" && \
+      sudo cp -r dist/* /usr/share/nginx/html/ && \
+      echo "前端已部署" && \
       cd src/admin/backend && \
       pm2 restart admin-backend && \
       echo "后端服务已重启"
