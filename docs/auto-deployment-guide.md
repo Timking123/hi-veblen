@@ -38,18 +38,13 @@
 
 ### 配置步骤
 
-#### 1. 在服务器上运行设置脚本
+#### 1. 在服务器上启动 Webhook 服务
 
 ```bash
 cd /var/www/portfolio
-bash scripts/setup-webhook.sh
+pm2 start scripts/webhook-server.cjs --name webhook-server
+pm2 save
 ```
-
-脚本会自动：
-- 生成安全密钥
-- 配置防火墙
-- 启动 Webhook 服务器
-- 显示配置信息
 
 #### 2. 在 GitHub 配置 Webhook
 
@@ -81,16 +76,16 @@ bash scripts/setup-webhook.sh
 
 ```bash
 # 查看 Webhook 服务状态
-pm2 status webhook
+pm2 status webhook-server
 
 # 查看实时日志
-pm2 logs webhook
+pm2 logs webhook-server
 
 # 重启服务
-pm2 restart webhook
+pm2 restart webhook-server
 
 # 停止服务
-pm2 stop webhook
+pm2 stop webhook-server
 
 # 查看历史日志
 tail -f /var/www/portfolio/logs/webhook.log
@@ -433,8 +428,8 @@ echo "服务器已自动更新" | mail -s "部署通知" your-email@example.com
 
 ```bash
 # Webhook 方式
-pm2 status webhook
-pm2 logs webhook
+pm2 status webhook-server
+pm2 logs webhook-server
 
 # 定时拉取方式
 tail -f logs/auto-pull.log

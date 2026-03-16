@@ -18,7 +18,7 @@ const path = require('path');
 // 配置
 const CONFIG = {
   port: 9000,
-  secret: 'your-webhook-secret-here', // 在 GitHub Webhook 设置中配置的密钥
+  secret: process.env.WEBHOOK_SECRET || '', // 在 GitHub Webhook 设置中配置的密钥
   projectPath: '/var/www/portfolio',
   logFile: '/var/www/portfolio/logs/webhook.log'
 };
