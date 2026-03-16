@@ -178,6 +178,25 @@
         </router-link>
       </div>
     </section>
+
+    <!-- Footer with ICP License -->
+    <footer ref="footerSection" class="site-footer" style="opacity: 0">
+      <div class="footer-content">
+        <p class="icp-license">
+          <a 
+            href="https://beian.miit.gov.cn/" 
+            target="_blank" 
+            rel="noopener noreferrer"
+            class="icp-link"
+          >
+            粤ICP备2026024503号-1
+          </a>
+        </p>
+        <p class="copyright">
+          © {{ currentYear }} {{ profile.name }}. All rights reserved.
+        </p>
+      </div>
+    </footer>
   </div>
 </template>
 
@@ -293,6 +312,10 @@ const highlightsSection = ref<HTMLElement | null>(null)
 const statsSection = ref<HTMLElement | null>(null)
 const interestsSection = ref<HTMLElement | null>(null)
 const quickLinksSection = ref<HTMLElement | null>(null)
+const footerSection = ref<HTMLElement | null>(null)
+
+// 当前年份
+const currentYear = new Date().getFullYear()
 
 // Apply scroll animations
 useScrollAnimation(greetingRef, { animationClass: 'animate-fadeInUp', threshold: 0.1 })
@@ -307,6 +330,7 @@ useScrollAnimation(highlightsSection, { animationClass: 'animate-fadeInUp', thre
 useScrollAnimation(statsSection, { animationClass: 'animate-fadeInUp', threshold: 0.2 })
 useScrollAnimation(interestsSection, { animationClass: 'animate-fadeInUp', threshold: 0.2 })
 useScrollAnimation(quickLinksSection, { animationClass: 'animate-fadeInUp', threshold: 0.2 })
+useScrollAnimation(footerSection, { animationClass: 'animate-fadeInUp', threshold: 0.2 })
 
 // Typing effect
 const typingText = ref('')
@@ -1239,6 +1263,65 @@ const scrollToNext = () => {
   .toast-enter-from,
   .toast-leave-to {
     transform: translateX(-50%);
+  }
+}
+
+/* ========== 页脚样式 ========== */
+.site-footer {
+  padding: var(--spacing-2xl) var(--spacing-lg);
+  background: var(--bg-card);
+  backdrop-filter: blur(12px);
+  border-top: 1px solid var(--border);
+  margin-top: var(--spacing-3xl);
+  opacity: 0;
+}
+
+.footer-content {
+  max-width: 1200px;
+  margin: 0 auto;
+  text-align: center;
+}
+
+.icp-license {
+  margin-bottom: var(--spacing-sm);
+}
+
+.icp-link {
+  color: var(--text-secondary);
+  text-decoration: none;
+  font-size: 0.875rem;
+  transition: all var(--transition-base);
+  display: inline-flex;
+  align-items: center;
+  gap: var(--spacing-xs);
+  padding: var(--spacing-xs) var(--spacing-sm);
+  border-radius: var(--radius-sm);
+}
+
+.icp-link:hover {
+  color: var(--primary);
+  background: rgba(0, 217, 255, 0.1);
+}
+
+.icp-link:focus {
+  outline: 2px solid var(--primary);
+  outline-offset: 2px;
+}
+
+.copyright {
+  color: var(--text-muted);
+  font-size: 0.8rem;
+  margin: 0;
+}
+
+@media (max-width: 768px) {
+  .site-footer {
+    padding: var(--spacing-xl) var(--spacing-md);
+  }
+  
+  .icp-link,
+  .copyright {
+    font-size: 0.75rem;
   }
 }
 </style>
