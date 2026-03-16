@@ -57,9 +57,6 @@ const SESSION_EXPIRY = 30 * 60 * 1000
 /** 会话时间戳存储键 */
 const SESSION_TIMESTAMP_KEY = 'analytics_session_timestamp'
 
-/** 已上报页面存储键（用于去重） */
-const REPORTED_PAGES_KEY = 'analytics_reported_pages'
-
 /** 访问已上报标记键 */
 const VISIT_REPORTED_KEY = 'analytics_visit_reported'
 
