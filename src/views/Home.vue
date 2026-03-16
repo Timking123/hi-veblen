@@ -179,7 +179,7 @@
       </div>
     </section>
 
-    <!-- Footer with ICP License - 备案号页脚（已启用 Webhook 自动部署）-->
+    <!-- Footer with ICP License - 备案号页脚（异步部署已启用）-->
     <footer ref="footerSection" class="site-footer" style="opacity: 0">
       <div class="footer-content">
         <p class="icp-license">
