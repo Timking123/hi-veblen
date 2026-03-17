@@ -549,6 +549,207 @@ describe('useTheme 属性测试', () => {
   })
 
   /**
+   * 属性 8：主题偏好持久化往返（Website V3）
+   * 
+   * *对于任意* 主题选择（dark/light/system），设置主题后，localStorage 应该保存该选择；
+   * 刷新页面后，应该从 localStorage 读取并恢复该主题。
+   * 
+   * **Validates: Requirements 2.6**
+   */
+  describe('Feature: website-v3-major-update, Property 8: 主题偏好持久化往返', () => {
+    it('主题设置后应该能从 localStorage 恢复', () => {
+      fc.assert(
+        fc.property(
+          themeModeArb,
+          (themeMode) => {
+            const { setTheme, initTheme, mode, reset } = useTheme()
+            
+            // 重置状态
+            reset()
+            
+            // 初始化主题系统
+            initTheme()
+            
+            // 设置主题
+            setTheme(themeMode)
+            
+            // 验证 localStorage 中的值
+            const saved = localStorageMock._getStore()[STORAGE_KEY]
+            expect(saved).toBe(themeMode)
+            
+            // 模拟页面刷新：重置状态
+            reset()
+            
+            // 重新初始化（会从 localStorage 读取）
+            initTheme()
+            
+            // 验证恢复的主题与设置的主题一致
+            expect(mode.value).toBe(themeMode)
+          }
+        ),
+        { numRuns: 100 }
+      )
+    })
+
+    it('所有主题模式（dark/light/system）的往返一致性', () => {
+      fc.assert(
+        fc.property(
+          fc.array(themeModeArb, { minLength: 1, maxLength: 5 }),
+          (themeModes) => {
+            const { setTheme, initTheme, mode, reset } = useTheme()
+            
+            // 对每个主题模式进行往返测试
+            for (const themeMode of themeModes) {
+              // 重置状态
+              reset()
+              localStorageMock.clear()
+              
+              // 初始化
+              initTheme()
+              
+              // 设置主题
+              setTheme(themeMode)
+              
+              // 验证保存
+              expect(localStorageMock._getStore()[STORAGE_KEY]).toBe(themeMode)
+              
+              // 模拟刷新
+              reset()
+              
+              // 重新初始化
+              initTheme()
+              
+              // 验证恢复
+              expect(mode.value).toBe(themeMode)
+            }
+          }
+        ),
+        { numRuns: 100 }
+      )
+    })
+
+    it('主题往返后 DOM 状态应该正确', () => {
+      fc.assert(
+        fc.property(
+          themeModeArb,
+          systemPreferenceArb,
+          (themeMode, prefersDark) => {
+            // 设置系统偏好
+            matchMediaMock = createMatchMediaMock(prefersDark)
+            window.matchMedia = vi.fn().mockReturnValue(matchMediaMock)
+            
+            const { setTheme, initTheme, resolvedTheme, reset } = useTheme()
+            
+            // 第一次：设置主题
+            reset()
+            initTheme()
+            setTheme(themeMode)
+            
+            const expectedTheme1 = resolvedTheme.value
+            const domTheme1 = document.documentElement.getAttribute('data-theme')
+            expect(domTheme1).toBe(expectedTheme1)
+            
+            // 模拟刷新
+            reset()
+            document.documentElement.removeAttribute('data-theme')
+            
+            // 第二次：从 localStorage 恢复
+            initTheme()
+            
+            const expectedTheme2 = resolvedTheme.value
+            const domTheme2 = document.documentElement.getAttribute('data-theme')
+            
+            // DOM 状态应该与恢复的主题一致
+            expect(domTheme2).toBe(expectedTheme2)
+            // 两次的 resolvedTheme 应该相同
+            expect(expectedTheme2).toBe(expectedTheme1)
+          }
+        ),
+        { numRuns: 100 }
+      )
+    })
+
+    it('localStorage 不可用时应该优雅降级', () => {
+      fc.assert(
+        fc.property(
+          themeModeArb,
+          (themeMode) => {
+            // 模拟 localStorage 不可用
+            const brokenStorage = {
+              getItem: vi.fn(() => { throw new Error('Storage unavailable') }),
+              setItem: vi.fn(() => { throw new Error('Storage unavailable') }),
+              removeItem: vi.fn(),
+              clear: vi.fn(),
+              _getStore: () => ({}),
+            }
+            Object.defineProperty(window, 'localStorage', {
+              value: brokenStorage,
+              writable: true,
+            })
+            
+            const { setTheme, initTheme, mode, reset } = useTheme()
+            
+            // 应该不抛出错误
+            expect(() => {
+              reset()
+              initTheme()
+              setTheme(themeMode)
+            }).not.toThrow()
+            
+            // 主题应该被设置（即使无法持久化）
+            expect(mode.value).toBe(themeMode)
+            
+            // 恢复正常的 localStorage
+            Object.defineProperty(window, 'localStorage', {
+              value: localStorageMock,
+              writable: true,
+            })
+          }
+        ),
+        { numRuns: 100 }
+      )
+    })
+
+    it('连续多次往返应该保持一致性', () => {
+      fc.assert(
+        fc.property(
+          themeModeArb,
+          fc.integer({ min: 2, max: 5 }),
+          (themeMode, roundTrips) => {
+            const { setTheme, initTheme, mode, reset } = useTheme()
+            
+            // 第一次设置
+            reset()
+            localStorageMock.clear()
+            initTheme()
+            setTheme(themeMode)
+            
+            // 多次往返
+            for (let i = 0; i < roundTrips; i++) {
+              // 模拟刷新
+              reset()
+              
+              // 重新初始化
+              initTheme()
+              
+              // 验证恢复的值
+              expect(mode.value).toBe(themeMode)
+              
+              // 再次设置相同的值
+              setTheme(themeMode)
+            }
+            
+            // 最终验证
+            expect(mode.value).toBe(themeMode)
+            expect(localStorageMock._getStore()[STORAGE_KEY]).toBe(themeMode)
+          }
+        ),
+        { numRuns: 100 }
+      )
+    })
+  })
+
+  /**
    * 额外的组合属性测试
    */
   describe('组合属性测试', () => {

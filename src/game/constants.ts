@@ -12,7 +12,7 @@ export const GAME_CONFIG = {
   CANVAS_HEIGHT: 600,
   FPS: 60,
   PLAYER_INITIAL_HEALTH: 10,
-  PLAYER_INITIAL_SPEED: 5,
+  PLAYER_INITIAL_SPEED: 10, // 从 5 提升到 10（2 倍速度）
   NUKE_MAX_PROGRESS: 100
 }
 
@@ -43,7 +43,7 @@ export const SCENE_CONFIG = {
 
 // 移动配置
 export const MOVEMENT_CONFIG = {
-  PLAYER_MOVE_DISTANCE: PIXEL_BLOCK_CONFIG.SIZE, // 1 像素块
+  PLAYER_MOVE_DISTANCE: PIXEL_BLOCK_CONFIG.SIZE * 2, // 2 像素块（从 1 像素块提升到 2 像素块，速度提升 2 倍）
   PLAYER_MOVE_INTERVAL: 100, // 长按移动间隔（ms）
   ENEMY_MOVE_INTERVAL: 500, // 敌人移动间隔（ms）
   ENEMY_DOWN_INTERVAL: 500 // 敌人下降间隔（ms）
@@ -176,9 +176,9 @@ export const INITIAL_MACHINE_GUN: MachineGunConfig = {
 
 export const INITIAL_MISSILE_LAUNCHER = {
   missileCount: 10,
-  missileDamage: 5,
+  missileDamage: 7.5, // 从 5 提升到 7.5（1.5 倍）
   missileSpeed: 12,
-  explosionRadius: 3
+  explosionRadius: 4.5 // 从 3 提升到 4.5（1.5 倍）
 }
 
 // ============= 敌人配置 =============
@@ -312,9 +312,9 @@ export const ENEMY_CONFIGS: Record<EnemyType, Omit<EnemyConfig, 'text' | 'isBoss
     },
     missileLauncher: {
       missileCount: Infinity,
-      missileDamage: 5,
+      missileDamage: 7.5, // 从 5 提升到 7.5（1.5 倍）
       missileSpeed: 12,
-      explosionRadius: 3
+      explosionRadius: 4.5 // 从 3 提升到 4.5（1.5 倍）
     },
     dropRates: {
       machineGun: 0.2,

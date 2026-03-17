@@ -174,7 +174,8 @@ const clearFilter = () => {
 .skills-page {
   min-height: 100vh;
   padding: 6rem 2rem 4rem;
-  background: var(--bg-primary, #0a0e27);
+  position: relative;
+  z-index: 1;
 }
 
 .skills-container {

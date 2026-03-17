@@ -126,9 +126,9 @@ const toggleExpand = (id: string) => {
 .experience-page {
   min-height: 100vh;
   padding: 6rem 2rem 4rem;
-  background: var(--bg-primary, #0a0e27);
   position: relative;
   overflow: hidden;
+  z-index: 1;
 }
 
 .experience-container {

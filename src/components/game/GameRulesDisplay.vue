@@ -358,25 +358,14 @@ defineExpose({
   max-height: 90vh;
   padding: 40px;
   overflow-y: auto;
+  /* 隐藏滚动条但保持滚动功能 */
+  scrollbar-width: none; /* Firefox */
+  -ms-overflow-style: none; /* IE 和 Edge */
 }
 
-/* 自定义滚动条 */
+/* 隐藏 Webkit 浏览器（Chrome、Safari）的滚动条 */
 .rules-content::-webkit-scrollbar {
-  width: 10px;
-}
-
-.rules-content::-webkit-scrollbar-track {
-  background: #000;
-  border: 1px solid #00ff00;
-}
-
-.rules-content::-webkit-scrollbar-thumb {
-  background: #00ff00;
-  border-radius: 5px;
-}
-
-.rules-content::-webkit-scrollbar-thumb:hover {
-  background: #00cc00;
+  display: none;
 }
 
 .rules-title {

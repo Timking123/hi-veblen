@@ -12,7 +12,8 @@
 </template>
 
 <script setup lang="ts">
-import { ref, onMounted, onUnmounted } from 'vue'
+import { ref, onMounted, onUnmounted, watch, computed } from 'vue'
+import { useTheme } from '@/composables/useTheme'
 
 interface ParticleConfig {
   count?: number
@@ -20,6 +21,7 @@ interface ParticleConfig {
   speed?: number
   size?: number
   connectionDistance?: number
+  theme?: 'dark' | 'light'
 }
 
 interface Particle {
@@ -38,6 +40,27 @@ const props = withDefaults(defineProps<ParticleConfig>(), {
   speed: 0.5,
   size: 2,
   connectionDistance: 150
+})
+
+// 使用主题 composable
+const { resolvedTheme } = useTheme()
+
+// 根据主题计算粒子颜色
+const particleColor = computed(() => {
+  // 如果 props 中指定了颜色，优先使用 props 的颜色
+  if (props.color !== '#00D9FF') {
+    return props.color
+  }
+  
+  // 否则根据主题动态调整
+  // 深色主题：使用青色 #00d9ff
+  // 亮色主题：使用相同颜色但降低透明度
+  return resolvedTheme.value === 'dark' ? '#00d9ff' : '#00d9ff'
+})
+
+// 根据主题计算粒子透明度
+const particleOpacity = computed(() => {
+  return resolvedTheme.value === 'dark' ? 1.0 : 0.6
 })
 
 const canvasRef = ref<HTMLCanvasElement | null>(null)
@@ -127,6 +150,10 @@ const drawParticles = () => {
 
   ctx.clearRect(0, 0, canvasWidth, canvasHeight)
 
+  // 获取当前主题的颜色和透明度
+  const color = particleColor.value
+  const opacity = particleOpacity.value
+
   // Draw connections between nearby particles
   for (let i = 0; i < particles.length; i++) {
     for (let j = i + 1; j < particles.length; j++) {
@@ -135,8 +162,8 @@ const drawParticles = () => {
       const distance = Math.sqrt(dx * dx + dy * dy)
 
       if (distance < props.connectionDistance) {
-        const opacity = (1 - distance / props.connectionDistance) * 0.3
-        ctx.strokeStyle = `${props.color}${Math.floor(opacity * 255).toString(16).padStart(2, '0')}`
+        const lineOpacity = (1 - distance / props.connectionDistance) * 0.3 * opacity
+        ctx.strokeStyle = `${color}${Math.floor(lineOpacity * 255).toString(16).padStart(2, '0')}`
         ctx.lineWidth = 0.5
         ctx.beginPath()
         ctx.moveTo(particles[i].x, particles[i].y)
@@ -148,7 +175,8 @@ const drawParticles = () => {
 
   // Draw particles
   particles.forEach((particle) => {
-    ctx!.fillStyle = props.color
+    // 应用主题透明度
+    ctx!.fillStyle = `${color}${Math.floor(opacity * 255).toString(16).padStart(2, '0')}`
     ctx!.beginPath()
     ctx!.arc(particle.x, particle.y, particle.size, 0, Math.PI * 2)
     ctx!.fill()
@@ -212,6 +240,15 @@ onMounted(() => {
   window.addEventListener('mouseleave', handleMouseLeave)
 })
 
+// 监听主题变化，实时更新粒子颜色
+watch(resolvedTheme, () => {
+  // 主题变化时重绘粒子
+  // 由于使用了 computed 属性，下一帧会自动使用新的颜色
+  if (ctx) {
+    drawParticles()
+  }
+})
+
 onUnmounted(() => {
   if (animationFrameId !== null) {
     cancelAnimationFrame(animationFrameId)
@@ -252,6 +289,20 @@ onUnmounted(() => {
   background-size: 400% 400%;
   animation: gradientFlow 15s ease infinite;
   pointer-events: none;
+  transition: background 0.3s ease;
+}
+
+/* 亮色主题的背景渐变 */
+[data-theme='light'] .gradient-background {
+  background: linear-gradient(
+    135deg,
+    #e8f4f8 0%,
+    #f0f8fc 25%,
+    #f5fafd 50%,
+    #f0f8fc 75%,
+    #e8f4f8 100%
+  );
+  background-size: 400% 400%;
 }
 
 @keyframes gradientFlow {

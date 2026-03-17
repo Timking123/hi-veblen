@@ -85,8 +85,8 @@ describe('PlayerAircraft Movement Property Tests', () => {
     })
 
     it('should use MOVEMENT_CONFIG.PLAYER_MOVE_DISTANCE constant', () => {
-      // 验证常量值为 8（1 像素块）
-      expect(MOVEMENT_CONFIG.PLAYER_MOVE_DISTANCE).toBe(8)
+      // 验证常量值为 16（2 像素块，速度提升 2 倍）
+      expect(MOVEMENT_CONFIG.PLAYER_MOVE_DISTANCE).toBe(16)
       
       const initialX = player.x
       player.move(1, 0)
@@ -109,14 +109,14 @@ describe('PlayerAircraft Movement Property Tests', () => {
       const pixelBlockSize = MOVEMENT_CONFIG.PLAYER_MOVE_DISTANCE
       const interval = MOVEMENT_CONFIG.PLAYER_MOVE_INTERVAL
       
-      // 验证间隔为 200ms
-      expect(interval).toBe(200)
+      // 验证间隔为 100ms（V2 版本）
+      expect(interval).toBe(100)
       
-      // 模拟长按：每 200ms 调用一次 move
+      // 模拟长按：每 100ms 调用一次 move
       player.move(1, 0) // t=0ms
       expect(player.x).toBe(initialX + pixelBlockSize)
       
-      player.move(1, 0) // t=200ms
+      player.move(1, 0) // t=100ms
       expect(player.x).toBe(initialX + pixelBlockSize * 2)
       
       player.move(1, 0) // t=400ms

@@ -81,19 +81,20 @@ export class EffectSystem {
 
   /**
    * 获取爆炸半径
+   * 注意：爆炸特效尺寸已提升到原来的 1.5 倍（需求 3.4）
    */
   private getExplosionRadius(size: ExplosionSize): number {
     switch (size) {
       case ExplosionSize.SMALL:
-        return PIXEL_BLOCK_CONFIG.SIZE * 2 // 2 像素块
+        return PIXEL_BLOCK_CONFIG.SIZE * 3 // 3 像素块（从 2 提升到 3，1.5 倍）
       case ExplosionSize.MEDIUM:
-        return PIXEL_BLOCK_CONFIG.SIZE * 3 // 3 像素块
+        return PIXEL_BLOCK_CONFIG.SIZE * 4.5 // 4.5 像素块（从 3 提升到 4.5，1.5 倍）
       case ExplosionSize.LARGE:
-        return PIXEL_BLOCK_CONFIG.SIZE * 4 // 4 像素块
+        return PIXEL_BLOCK_CONFIG.SIZE * 6 // 6 像素块（从 4 提升到 6，1.5 倍）
       case ExplosionSize.HUGE:
-        return PIXEL_BLOCK_CONFIG.SIZE * 6 // 6 像素块
+        return PIXEL_BLOCK_CONFIG.SIZE * 9 // 9 像素块（从 6 提升到 9，1.5 倍）
       default:
-        return PIXEL_BLOCK_CONFIG.SIZE * 2
+        return PIXEL_BLOCK_CONFIG.SIZE * 3
     }
   }
 

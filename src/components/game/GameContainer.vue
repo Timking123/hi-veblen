@@ -319,8 +319,8 @@ const initGame = (): void => {
       scaleMultiplier: 1.5 // 场景扩大 50%
     })
 
-    // 创建增强输入管理器
-    inputManager = new EnhancedInputManager()
+    // 创建增强输入管理器（传递 canvas 以支持移动端控制）
+    inputManager = new EnhancedInputManager(gameCanvas.value)
 
     // 获取缩放后的 Canvas 尺寸
     const canvasWidth = gameEngine.getCanvasWidth()
@@ -727,6 +727,12 @@ const handleEnemyBehavior = (): void => {
       if (dropType && gameEngine) {
         // 在敌人位置生成掉落物
         const pickup = new Pickup(dropType, enemy.x + enemy.width / 2 - 15, enemy.y + enemy.height / 2 - 15)
+        
+        // 设置拾取回调，应用掉落物效果
+        pickup.setOnPickup((type: PickupType) => {
+          applyPickupEffect(type)
+        })
+        
         pickups.push(pickup)
         gameEngine.addEntity(pickup)
         console.log(`[游戏] 生成掉落物: ${dropType}`)
