@@ -10,9 +10,15 @@ import { MOVEMENT_CONFIG, SHOOTING_CONFIG } from '../constants'
 
 describe('EnhancedInputManager Property Tests', () => {
   let inputManager: EnhancedInputManager
+  let canvas: HTMLCanvasElement
   
   beforeEach(() => {
-    inputManager = new EnhancedInputManager()
+    // 创建模拟 canvas
+    canvas = document.createElement('canvas')
+    canvas.width = 800
+    canvas.height = 600
+    
+    inputManager = new EnhancedInputManager(canvas)
     vi.useFakeTimers()
   })
   
@@ -357,7 +363,10 @@ describe('EnhancedInputManager Property Tests', () => {
       inputManager.destroy()
       
       // 创建新的输入管理器
-      const newManager = new EnhancedInputManager()
+      const newCanvas = document.createElement('canvas')
+      newCanvas.width = 800
+      newCanvas.height = 600
+      const newManager = new EnhancedInputManager(newCanvas)
       expect(newManager.isKeyHeld('d')).toBe(false)
       newManager.destroy()
     })

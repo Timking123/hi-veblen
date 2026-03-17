@@ -511,9 +511,9 @@ function getDefaultGameConfig(): string {
         },
         initialMissileLauncher: {
           missileCount: 10,
-          missileDamage: 5,
+          missileDamage: 7.5, // 从 5 提升到 7.5（1.5 倍）
           missileSpeed: 12,
-          explosionRadius: 3
+          explosionRadius: 4.5 // 从 3 提升到 4.5（1.5 倍）
         }
       },
       movement: {

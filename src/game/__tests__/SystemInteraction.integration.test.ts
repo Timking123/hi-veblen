@@ -71,8 +71,8 @@ describe('集成测试 33.2: 系统交互', () => {
     player = new PlayerAircraft(400, 500, gameEngine.getCanvasWidth(), gameEngine.getCanvasHeight())
     gameEngine.addEntity(player)
 
-    // 初始化输入管理器
-    inputManager = new EnhancedInputManager()
+    // 初始化输入管理器（传递 canvas 以支持移动端控制）
+    inputManager = new EnhancedInputManager(canvas)
 
     // Mock 音频系统
     vi.spyOn(gameEngine.getAudioSystem(), 'playSoundEffect')

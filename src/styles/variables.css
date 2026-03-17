@@ -83,3 +83,33 @@
   --safe-area-inset-bottom: env(safe-area-inset-bottom, 0px);
   --safe-area-inset-left: env(safe-area-inset-left, 0px);
 }
+
+/* ========== 亮色主题 ========== */
+[data-theme='light'] {
+  /* 背景色 */
+  --bg-primary: #f5f7fa;
+  --bg-secondary: #ffffff;
+  --bg-tertiary: #e8ecf1;
+  
+  /* 文字颜色 */
+  --text-primary: #1a202c;
+  --text-secondary: #4a5568;
+  --text-tertiary: #4a5568; /* 调整为与 text-secondary 相同，确保对比度符合 WCAG AA */
+  
+  /* 主题色（保持不变，但需要调整透明度使用） */
+  --primary: #00d9ff;
+  --secondary: #7b61ff;
+  --accent: #ff6b9d;
+  
+  /* 边框和分隔线 */
+  --border-color: rgba(0, 0, 0, 0.1);
+  --divider-color: rgba(0, 0, 0, 0.05);
+  
+  /* 卡片和容器 */
+  --card-bg: rgba(255, 255, 255, 0.8);
+  --card-border: rgba(0, 0, 0, 0.1);
+  
+  /* 粒子背景 */
+  --particle-color: #00d9ff;
+  --particle-opacity: 0.6;
+}

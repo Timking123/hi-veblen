@@ -1,11 +1,12 @@
 /**
  * 增强输入管理器
- * 负责改进的键盘输入处理，支持单次按键、长按重复和按键释放检测
+ * 负责统一处理键盘和触摸输入，集成移动端控制器
  * 
- * 需求: 8.1, 8.2, 8.3, 11.1, 11.2, 11.3
+ * 验证需求: 6.12, 8.2
  */
 
 import { MOVEMENT_CONFIG, SHOOTING_CONFIG } from './constants'
+import { MobileController, type JoystickState, type ButtonState } from './MobileController'
 
 /**
  * 按键状态接口
@@ -19,15 +20,54 @@ interface KeyState {
 }
 
 /**
+ * 输入状态接口
+ * 统一的输入状态，包含移动方向和武器按键
+ */
+export interface InputState {
+  // 移动方向
+  moveX: number  // -1, 0, 1
+  moveY: number  // -1, 0, 1
+  
+  // 武器按键
+  fire: boolean
+  missile: boolean
+  nuke: boolean
+  
+  // 输入源
+  source: 'keyboard' | 'touch'
+}
+
+/**
  * 增强输入管理器类
+ * 集成键盘输入和移动端触摸控制
  */
 export class EnhancedInputManager {
   private keyStates: Map<string, KeyState> = new Map()
   private lastGunFireTime: number = 0
   private missileKeyWasDown: boolean = false
+  private mobileController: MobileController | null = null
+  private canvas: HTMLCanvasElement
 
-  constructor() {
+  constructor(canvas: HTMLCanvasElement) {
+    this.canvas = canvas
     this.setupEventListeners()
+    this.initializeMobileController()
+  }
+
+  /**
+   * 初始化移动端控制器
+   * 在移动设备上自动启用移动端控制器
+   */
+  private initializeMobileController(): void {
+    this.mobileController = new MobileController(this.canvas)
+    
+    // 如果是移动设备，初始化触摸控制
+    if (this.mobileController.detectMobile()) {
+      this.mobileController.initialize()
+      console.debug('[EnhancedInputManager] 移动端控制器已启用')
+    } else {
+      console.debug('[EnhancedInputManager] 桌面设备，使用键盘控制')
+    }
   }
 
   /**
@@ -93,6 +133,97 @@ export class EnhancedInputManager {
     for (const state of this.keyStates.values()) {
       state.justPressed = false
       state.justReleased = false
+    }
+  }
+
+  /**
+   * 获取统一的输入状态
+   * 集成键盘和触摸输入，提供统一的接口
+   * @returns 输入状态对象
+   */
+  getInputState(): InputState {
+    // 检查是否使用移动端控制器
+    if (this.mobileController && this.mobileController.isMobileDevice) {
+      return this.getMobileInputState()
+    } else {
+      return this.getKeyboardInputState()
+    }
+  }
+
+  /**
+   * 获取移动端输入状态
+   * @returns 输入状态对象
+   */
+  private getMobileInputState(): InputState {
+    if (!this.mobileController) {
+      return this.getEmptyInputState('touch')
+    }
+
+    const joystickState: JoystickState = this.mobileController.getJoystickState()
+    const buttonState: ButtonState = this.mobileController.getButtonState()
+
+    // 将摇杆状态转换为离散的移动方向
+    const moveX = this.normalizeJoystickAxis(joystickState.x)
+    const moveY = this.normalizeJoystickAxis(joystickState.y)
+
+    return {
+      moveX,
+      moveY,
+      fire: buttonState.fire,
+      missile: buttonState.missile,
+      nuke: buttonState.nuke,
+      source: 'touch'
+    }
+  }
+
+  /**
+   * 获取键盘输入状态
+   * @returns 输入状态对象
+   */
+  private getKeyboardInputState(): InputState {
+    const movement = this.getMovementInput()
+
+    return {
+      moveX: movement.x,
+      moveY: movement.y,
+      fire: this.shouldFireGun(),
+      missile: this.shouldFireMissile(),
+      nuke: this.shouldLaunchNuke(),
+      source: 'keyboard'
+    }
+  }
+
+  /**
+   * 获取空的输入状态
+   * @param source 输入源
+   * @returns 空的输入状态对象
+   */
+  private getEmptyInputState(source: 'keyboard' | 'touch'): InputState {
+    return {
+      moveX: 0,
+      moveY: 0,
+      fire: false,
+      missile: false,
+      nuke: false,
+      source
+    }
+  }
+
+  /**
+   * 归一化摇杆轴值
+   * 将 -1 到 1 的连续值转换为 -1, 0, 1 的离散值
+   * @param value 摇杆轴值
+   * @returns 离散的方向值
+   */
+  private normalizeJoystickAxis(value: number): number {
+    const threshold = 0.3 // 死区阈值
+
+    if (value > threshold) {
+      return 1
+    } else if (value < -threshold) {
+      return -1
+    } else {
+      return 0
     }
   }
 
@@ -238,6 +369,16 @@ export class EnhancedInputManager {
   }
 
   /**
+   * 渲染移动端控制器
+   * @param ctx Canvas 2D 渲染上下文
+   */
+  render(ctx: CanvasRenderingContext2D): void {
+    if (this.mobileController && this.mobileController.isMobileDevice) {
+      this.mobileController.render(ctx)
+    }
+  }
+
+  /**
    * 重置输入状态
    */
   reset(): void {
@@ -252,6 +393,13 @@ export class EnhancedInputManager {
   destroy(): void {
     window.removeEventListener('keydown', this.handleKeyDown)
     window.removeEventListener('keyup', this.handleKeyUp)
+    
+    // 销毁移动端控制器
+    if (this.mobileController) {
+      this.mobileController.destroy()
+      this.mobileController = null
+    }
+    
     this.reset()
   }
 }

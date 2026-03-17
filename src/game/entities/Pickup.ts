@@ -22,6 +22,9 @@ export class Pickup implements Entity {
 
   type: PickupType
   fallSpeed: number = 2
+  
+  // 拾取回调函数
+  private onPickupCallback: ((type: PickupType) => void) | null = null
 
   private static idCounter = 0
   private static canvasHeight: number = SCENE_CONFIG.CANVAS_HEIGHT_V2
@@ -36,6 +39,13 @@ export class Pickup implements Entity {
     // 设置为 4x4 像素块的尺寸
     this.width = Pickup.pickupSize
     this.height = Pickup.pickupSize
+  }
+  
+  /**
+   * 设置拾取回调函数
+   */
+  setOnPickup(callback: (type: PickupType) => void): void {
+    this.onPickupCallback = callback
   }
 
   /**
@@ -305,9 +315,18 @@ export class Pickup implements Entity {
    * 碰撞处理
    */
   onCollision(other: Entity): void {
+    // 已销毁则忽略碰撞
+    if (!this.isActive) return
+    
     // 只与玩家碰撞
     if (other.id === 'player') {
       console.log(`[掉落物] 玩家拾取: ${this.type}`)
+      
+      // 触发拾取回调
+      if (this.onPickupCallback) {
+        this.onPickupCallback(this.type)
+      }
+      
       this.destroy()
     }
   }

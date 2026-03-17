@@ -608,9 +608,9 @@ export const DEFAULT_ENEMY_CONFIGS: Record<EnemyType, EnemyTypeConfig> = {
     },
     missileLauncher: {
       missileCount: Infinity,
-      missileDamage: 5,
+      missileDamage: 7.5, // 从 5 提升到 7.5（1.5 倍）
       missileSpeed: 12,
-      explosionRadius: 3
+      explosionRadius: 4.5 // 从 3 提升到 4.5（1.5 倍）
     },
     dropRates: {
       machineGun: 0.2,
@@ -690,9 +690,9 @@ export const DEFAULT_GAME_CONFIG: GameConfig = {
       },
       initialMissileLauncher: {
         missileCount: 10,
-        missileDamage: 5,
+        missileDamage: 7.5, // 从 5 提升到 7.5（1.5 倍）
         missileSpeed: 12,
-        explosionRadius: 3
+        explosionRadius: 4.5 // 从 3 提升到 4.5（1.5 倍）
       }
     },
     movement: {
