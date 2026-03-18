@@ -12,18 +12,18 @@
         <button
           class="choice-button yes-button"
           :class="{ pressed: yesButtonPressed }"
-          @touchstart.prevent="handleYesPress"
-          @touchend.prevent="handleYesRelease"
-          @click.prevent="handleYesClick"
+          @touchstart="handleYesPress"
+          @touchend="handleYesRelease"
+          @click="handleYesClick"
         >
           <span class="button-label">Y</span>
         </button>
         <button
           class="choice-button no-button"
           :class="{ pressed: noButtonPressed }"
-          @touchstart.prevent="handleNoPress"
-          @touchend.prevent="handleNoRelease"
-          @click.prevent="handleNoClick"
+          @touchstart="handleNoPress"
+          @touchend="handleNoRelease"
+          @click="handleNoClick"
         >
           <span class="button-label">N</span>
         </button>
@@ -165,10 +165,17 @@ function handleYesRelease() {
 /**
  * 处理 Y 按钮点击
  */
-function handleYesClick() {
+function handleYesClick(event: Event) {
+  event.preventDefault()
+  event.stopPropagation()
   console.log('[CMD] 用户点击 Y 按钮')
-  closeWindow()
-  easterEggStore.enterRules()
+  
+  // 确保按钮状态重置
+  setTimeout(() => {
+    yesButtonPressed.value = false
+    closeWindow()
+    easterEggStore.enterRules()
+  }, 100)
 }
 
 /**
@@ -192,10 +199,17 @@ function handleNoRelease() {
 /**
  * 处理 N 按钮点击
  */
-function handleNoClick() {
+function handleNoClick(event: Event) {
+  event.preventDefault()
+  event.stopPropagation()
   console.log('[CMD] 用户点击 N 按钮')
-  closeWindow()
-  easterEggStore.restoreNormalPage()
+  
+  // 确保按钮状态重置
+  setTimeout(() => {
+    noButtonPressed.value = false
+    closeWindow()
+    easterEggStore.restoreNormalPage()
+  }, 100)
 }
 
 /**

@@ -232,18 +232,18 @@ const toggleExpand = (id: string) => {
 
 .card-content {
   flex: 1;
-  background: rgba(21, 25, 50, 0.6);
+  background: linear-gradient(135deg, rgba(0, 217, 255, 0.08), rgba(123, 97, 255, 0.08));
   backdrop-filter: blur(10px);
-  border: 1px solid rgba(255, 255, 255, 0.1);
+  border: 1px solid rgba(0, 217, 255, 0.2);
   border-radius: 16px;
   overflow: hidden;
   transition: all 0.4s cubic-bezier(0.4, 0, 0.2, 1);
 }
 
 .experience-card:hover .card-content {
-  background: rgba(21, 25, 50, 0.8);
-  border-color: rgba(0, 217, 255, 0.3);
-  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.4);
+  background: linear-gradient(135deg, rgba(0, 217, 255, 0.15), rgba(123, 97, 255, 0.15));
+  border-color: rgba(0, 217, 255, 0.4);
+  box-shadow: 0 12px 40px rgba(0, 217, 255, 0.2);
   transform: translateY(-4px);
 }
 

@@ -252,7 +252,7 @@ const getGrade = (score: number): string => {
   align-items: center;
   gap: 0.5rem;
   padding: 1rem 1.5rem;
-  background: rgba(21, 25, 50, 0.6);
+  background: linear-gradient(135deg, rgba(0, 217, 255, 0.1), rgba(123, 97, 255, 0.1));
   border: 1px solid rgba(0, 217, 255, 0.2);
   border-radius: 8px;
   color: var(--text-primary, #ffffff);
@@ -274,7 +274,7 @@ const getGrade = (score: number): string => {
 }
 
 .honor-tag:hover {
-  background: rgba(21, 25, 50, 0.9);
+  background: linear-gradient(135deg, rgba(0, 217, 255, 0.2), rgba(123, 97, 255, 0.2));
   border-color: var(--primary, #00d9ff);
   transform: translateY(-4px);
   box-shadow: 0 8px 24px rgba(0, 217, 255, 0.3);
@@ -319,8 +319,8 @@ const getGrade = (score: number): string => {
 }
 
 .chart-wrapper {
-  background: rgba(21, 25, 50, 0.4);
-  border: 1px solid rgba(255, 255, 255, 0.1);
+  background: linear-gradient(135deg, rgba(0, 217, 255, 0.05), rgba(123, 97, 255, 0.05));
+  border: 1px solid rgba(0, 217, 255, 0.2);
   border-radius: 12px;
   padding: 2rem;
   margin-bottom: 2rem;
@@ -340,8 +340,8 @@ const getGrade = (score: number): string => {
   align-items: center;
   gap: 1rem;
   padding: 1rem 1.5rem;
-  background: rgba(21, 25, 50, 0.4);
-  border: 1px solid rgba(255, 255, 255, 0.05);
+  background: linear-gradient(135deg, rgba(0, 217, 255, 0.05), rgba(123, 97, 255, 0.05));
+  border: 1px solid rgba(0, 217, 255, 0.1);
   border-radius: 8px;
   transition: all 0.3s ease;
   cursor: pointer;
@@ -361,7 +361,7 @@ const getGrade = (score: number): string => {
 }
 
 .course-item:hover {
-  background: rgba(21, 25, 50, 0.7);
+  background: linear-gradient(135deg, rgba(0, 217, 255, 0.15), rgba(123, 97, 255, 0.15));
   border-color: rgba(0, 217, 255, 0.3);
   transform: translateX(8px);
 }
@@ -397,7 +397,7 @@ const getGrade = (score: number): string => {
 .course-detail-card {
   position: sticky;
   bottom: 2rem;
-  background: rgba(21, 25, 50, 0.95);
+  background: var(--bg-card);
   border: 1px solid rgba(0, 217, 255, 0.3);
   border-radius: 12px;
   padding: 1.5rem;
