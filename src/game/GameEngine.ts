@@ -46,9 +46,8 @@ export class GameEngine {
     // 设置场景缩放参数（默认使用 V2 配置的 1.5x）
     this.scaleMultiplier = options?.scaleMultiplier ?? SCENE_CONFIG.SCALE_MULTIPLIER
 
-    // 设置 Canvas 尺寸（应用缩放）
-    this.canvas.width = Math.floor(GAME_CONFIG.CANVAS_WIDTH * this.scaleMultiplier)
-    this.canvas.height = Math.floor(GAME_CONFIG.CANVAS_HEIGHT * this.scaleMultiplier)
+    // 初始化画布尺寸（自适应屏幕）
+    this.resizeCanvas()
 
     console.log(`[游戏引擎] Canvas 尺寸: ${this.canvas.width}x${this.canvas.height} (缩放: ${this.scaleMultiplier}x)`)
 
@@ -514,6 +513,44 @@ export class GameEngine {
    */
   getScaleMultiplier(): number {
     return this.scaleMultiplier
+  }
+
+  /**
+   * 调整画布尺寸以适配屏幕
+   * 保持 4:3 的宽高比，并根据屏幕尺寸自动缩放
+   */
+  resizeCanvas(): void {
+    // 获取容器尺寸（通常是窗口尺寸）
+    const containerWidth = window.innerWidth
+    const containerHeight = window.innerHeight
+
+    // 基础尺寸（4:3 宽高比）
+    const baseWidth = GAME_CONFIG.CANVAS_WIDTH
+    const baseHeight = GAME_CONFIG.CANVAS_HEIGHT
+    const aspectRatio = baseWidth / baseHeight
+
+    // 计算适配后的尺寸
+    let canvasWidth: number
+    let canvasHeight: number
+
+    // 根据容器宽高比决定缩放方式
+    const containerAspectRatio = containerWidth / containerHeight
+
+    if (containerAspectRatio > aspectRatio) {
+      // 容器更宽，以高度为基准
+      canvasHeight = Math.min(containerHeight * 0.9, baseHeight * this.scaleMultiplier)
+      canvasWidth = canvasHeight * aspectRatio
+    } else {
+      // 容器更高，以宽度为基准
+      canvasWidth = Math.min(containerWidth * 0.9, baseWidth * this.scaleMultiplier)
+      canvasHeight = canvasWidth / aspectRatio
+    }
+
+    // 应用缩放倍数
+    this.canvas.width = Math.floor(canvasWidth)
+    this.canvas.height = Math.floor(canvasHeight)
+
+    console.log(`[游戏引擎] 画布尺寸调整: ${this.canvas.width}x${this.canvas.height}`)
   }
 
   /**

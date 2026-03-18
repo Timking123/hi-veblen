@@ -1,25 +1,17 @@
 {
-  "success": false,
-  "timestamp": "2026-03-17T20:19:19.512Z",
+  "success": true,
+  "timestamp": "2026-03-17T20:42:34.784Z",
   "environment": "test",
   "checks": [
     {
-      "name": "comments",
-      "passed": false,
-      "issues": [],
-      "metrics": {
-        "filesChecked": 0,
-        "averageCoverage": 0,
-        "averageQuality": 0,
-        "lowQualityFiles": 0
-      }
-    },
-    {
-      "name": "debug",
+      "name": "todos",
       "passed": true,
       "issues": [],
       "metrics": {
-        "debugCodeCount": 0
+        "totalTodos": 0,
+        "highPriority": 0,
+        "mediumPriority": 0,
+        "lowPriority": 0
       }
     }
   ],
