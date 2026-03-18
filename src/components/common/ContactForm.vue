@@ -274,7 +274,7 @@ const handleSubmit = async () => {
   width: 100%;
   padding: var(--spacing-lg) var(--spacing-xl);
   background: linear-gradient(135deg, var(--primary), var(--secondary));
-  color: var(--text-primary);
+  color: #ffffff;
   border: none;
   border-radius: var(--radius-md);
   font-size: 1.125rem;
@@ -395,7 +395,7 @@ const handleSubmit = async () => {
   width: 100%;
   padding: var(--spacing-md) var(--spacing-xl);
   background: linear-gradient(135deg, var(--primary), var(--secondary));
-  color: var(--text-primary);
+  color: #ffffff;
   border: none;
   border-radius: var(--radius-md);
   font-size: 1rem;

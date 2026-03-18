@@ -31,7 +31,7 @@ export const profileData: Profile = {
       school: '广州华商学院',
       college: '人工智能学院',
       major: '软件工程专业',
-      period: '2021.09 - 2025.06',
+      period: '2023.09 - 2025.06',
       rank: '综合排名：年级前10%',
       honors: [
         '优秀学生干部',
