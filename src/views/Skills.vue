@@ -314,8 +314,8 @@ const clearFilter = () => {
 }
 
 .chart-wrapper {
-  background: rgba(21, 25, 50, 0.4);
-  border: 1px solid rgba(255, 255, 255, 0.1);
+  background: linear-gradient(135deg, rgba(0, 217, 255, 0.05), rgba(123, 97, 255, 0.05));
+  border: 1px solid rgba(0, 217, 255, 0.2);
   border-radius: 12px;
   padding: 2rem;
   margin-bottom: 2rem;
@@ -333,8 +333,8 @@ const clearFilter = () => {
   justify-content: space-between;
   align-items: center;
   padding: 1rem 1.5rem;
-  background: rgba(21, 25, 50, 0.6);
-  border: 1px solid rgba(255, 255, 255, 0.1);
+  background: linear-gradient(135deg, rgba(0, 217, 255, 0.08), rgba(123, 97, 255, 0.08));
+  border: 1px solid rgba(0, 217, 255, 0.2);
   border-radius: 8px;
   cursor: pointer;
   transition: all 0.3s ease;
@@ -354,7 +354,7 @@ const clearFilter = () => {
 }
 
 .skill-tag:hover {
-  background: rgba(21, 25, 50, 0.9);
+  background: linear-gradient(135deg, rgba(0, 217, 255, 0.15), rgba(123, 97, 255, 0.15));
   border-color: var(--primary, #00d9ff);
   transform: translateY(-4px);
   box-shadow: 0 8px 24px rgba(0, 217, 255, 0.3);
@@ -387,7 +387,7 @@ const clearFilter = () => {
   bottom: 2rem;
   right: 2rem;
   max-width: 400px;
-  background: rgba(21, 25, 50, 0.95);
+  background: var(--bg-card);
   border: 1px solid rgba(0, 217, 255, 0.3);
   border-radius: 12px;
   padding: 1.5rem;
@@ -490,14 +490,14 @@ const clearFilter = () => {
   align-items: center;
   gap: 1rem;
   padding: 1rem 1.5rem;
-  background: rgba(21, 25, 50, 0.6);
-  border: 1px solid rgba(255, 255, 255, 0.1);
+  background: linear-gradient(135deg, rgba(0, 217, 255, 0.08), rgba(123, 97, 255, 0.08));
+  border: 1px solid rgba(0, 217, 255, 0.2);
   border-radius: 8px;
   transition: all 0.3s ease;
 }
 
 .project-card:hover {
-  background: rgba(21, 25, 50, 0.9);
+  background: linear-gradient(135deg, rgba(0, 217, 255, 0.15), rgba(123, 97, 255, 0.15));
   border-color: var(--primary, #00d9ff);
   transform: translateY(-2px);
   box-shadow: 0 4px 16px rgba(0, 217, 255, 0.2);

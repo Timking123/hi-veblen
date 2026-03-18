@@ -479,7 +479,7 @@ onUnmounted(() => {
 .icon {
   width: 28px;
   height: 28px;
-  color: var(--text-primary);
+  color: #ffffff;
 }
 
 .info-content {
@@ -495,7 +495,7 @@ onUnmounted(() => {
 
 .info-value {
   font-size: 1.125rem;
-  color: var(--text-primary);
+  color: #ffffff;
   margin: 0;
   font-weight: 600;
 }
@@ -572,7 +572,7 @@ onUnmounted(() => {
   gap: var(--spacing-sm);
   padding: var(--spacing-md) var(--spacing-xl);
   background: linear-gradient(135deg, var(--primary), var(--secondary));
-  color: var(--text-primary);
+  color: #ffffff;
   border: none;
   border-radius: var(--radius-md);
   font-size: 1rem;
