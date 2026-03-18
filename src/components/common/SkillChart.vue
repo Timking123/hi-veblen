@@ -139,7 +139,7 @@ const initChart = () => {
         },
         splitLine: {
           lineStyle: {
-            color: 'rgba(255, 255, 255, 0.1)',
+            color: 'rgba(160, 174, 192, 0.2)',
           },
         },
         splitArea: {
@@ -156,7 +156,7 @@ const initChart = () => {
         },
         axisLine: {
           lineStyle: {
-            color: 'rgba(255, 255, 255, 0.1)',
+            color: 'rgba(160, 174, 192, 0.2)',
           },
         },
       },

@@ -107,19 +107,19 @@ withDefaults(defineProps<TimelineProps>(), {
 
 .timeline-content {
   flex: 1;
-  background: rgba(21, 25, 50, 0.6);
+  background: linear-gradient(135deg, rgba(0, 217, 255, 0.08), rgba(123, 97, 255, 0.08));
   backdrop-filter: blur(10px);
-  border: 1px solid rgba(255, 255, 255, 0.1);
+  border: 1px solid rgba(0, 217, 255, 0.2);
   border-radius: 12px;
   padding: 1.5rem;
   transition: all 0.3s ease;
 }
 
 .timeline-content:hover {
-  background: rgba(21, 25, 50, 0.8);
-  border-color: rgba(0, 217, 255, 0.3);
+  background: linear-gradient(135deg, rgba(0, 217, 255, 0.15), rgba(123, 97, 255, 0.15));
+  border-color: rgba(0, 217, 255, 0.4);
   transform: translateX(8px);
-  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.3);
+  box-shadow: 0 8px 32px rgba(0, 217, 255, 0.2);
 }
 
 .timeline-header {
