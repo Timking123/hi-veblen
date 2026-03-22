@@ -191,6 +191,15 @@
           >
             粤ICP备2026024503号-1
           </a>
+          <span class="separator">|</span>
+          <a 
+            href="http://www.beian.gov.cn/portal/registerSystemInfo?recordcode=44030002011250" 
+            target="_blank" 
+            rel="noopener noreferrer"
+            class="icp-link"
+          >
+            粤公网安备44030002011250号
+          </a>
         </p>
         <p class="copyright">
           © {{ currentYear }} {{ profile.name }}. All rights reserved.
@@ -1284,6 +1293,12 @@ const scrollToNext = () => {
 
 .icp-license {
   margin-bottom: var(--spacing-xs);
+}
+
+.icp-license .separator {
+  color: var(--text-secondary);
+  font-size: 0.875rem;
+  margin: 0 var(--spacing-xs);
 }
 
 .icp-link {
