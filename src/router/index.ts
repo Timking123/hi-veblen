@@ -33,6 +33,25 @@ const routes: RouteRecordRaw[] = [
     component: () => import('@/views/Projects.vue'),
     meta: {
       title: '项目展示',
+      transition: 'glitch-dissolve',
+    },
+  },
+  {
+    path: '/gallery',
+    name: 'Gallery',
+    component: () => import('@/views/Gallery.vue'),
+    meta: {
+      title: '视觉记忆舱',
+      transition: 'warp',
+    },
+  },
+  {
+    path: '/os',
+    name: 'LegacyOS',
+    component: () => import('@/views/LegacyOS.vue'),
+    meta: {
+      title: 'Legacy OS',
+      transition: 'desktop-hijack',
     },
   },
   {
@@ -46,6 +65,7 @@ const routes: RouteRecordRaw[] = [
     component: () => import('@/views/ProjectDetail.vue'),
     meta: {
       title: '项目详情',
+      transition: 'archive-scan',
     },
   },
   {

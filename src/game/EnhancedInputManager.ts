@@ -44,7 +44,10 @@ export interface InputState {
 export class EnhancedInputManager {
   private keyStates: Map<string, KeyState> = new Map()
   private lastGunFireTime: number = 0
+  private lastMobileGunFireTime: number = 0
   private missileKeyWasDown: boolean = false
+  private mobileMissileWasDown: boolean = false
+  private mobileNukeWasDown: boolean = false
   private mobileController: MobileController | null = null
   private canvas: HTMLCanvasElement
 
@@ -263,6 +266,14 @@ export class EnhancedInputManager {
    * @returns 移动向量 { x, y }，值为 -1, 0, 或 1
    */
   getMovementInput(): { x: number; y: number } {
+    if (this.mobileController && this.mobileController.isMobileDevice) {
+      const joystickState = this.mobileController.getJoystickState()
+      return {
+        x: this.normalizeJoystickAxis(joystickState.x),
+        y: this.normalizeJoystickAxis(joystickState.y)
+      }
+    }
+
     const now = Date.now()
     let x = 0
     let y = 0
@@ -317,6 +328,19 @@ export class EnhancedInputManager {
    * @returns 是否应该发射
    */
   shouldFireGun(): boolean {
+    if (this.mobileController && this.mobileController.isMobileDevice) {
+      const { fire } = this.mobileController.getButtonState()
+      if (!fire) return false
+
+      const now = Date.now()
+      if (now - this.lastMobileGunFireTime >= SHOOTING_CONFIG.PLAYER_GUN_COOLDOWN) {
+        this.lastMobileGunFireTime = now
+        return true
+      }
+
+      return false
+    }
+
     const gunKey = this.keyStates.get('j')
     if (!gunKey || !gunKey.isDown) {
       return false
@@ -338,6 +362,22 @@ export class EnhancedInputManager {
    * @returns 是否应该发射
    */
   shouldFireMissile(): boolean {
+    if (this.mobileController && this.mobileController.isMobileDevice) {
+      const { missile } = this.mobileController.getButtonState()
+
+      if (!missile) {
+        this.mobileMissileWasDown = false
+        return false
+      }
+
+      if (!this.mobileMissileWasDown) {
+        this.mobileMissileWasDown = true
+        return true
+      }
+
+      return false
+    }
+
     const missileKey = this.keyStates.get('k')
     
     if (!missileKey || !missileKey.isDown) {
@@ -365,6 +405,22 @@ export class EnhancedInputManager {
    * @returns 是否应该发射
    */
   shouldLaunchNuke(): boolean {
+    if (this.mobileController && this.mobileController.isMobileDevice) {
+      const { nuke } = this.mobileController.getButtonState()
+
+      if (!nuke) {
+        this.mobileNukeWasDown = false
+        return false
+      }
+
+      if (!this.mobileNukeWasDown) {
+        this.mobileNukeWasDown = true
+        return true
+      }
+
+      return false
+    }
+
     return this.isKeyJustPressed(' ')
   }
 
@@ -384,7 +440,10 @@ export class EnhancedInputManager {
   reset(): void {
     this.keyStates.clear()
     this.lastGunFireTime = 0
+    this.lastMobileGunFireTime = 0
     this.missileKeyWasDown = false
+    this.mobileMissileWasDown = false
+    this.mobileNukeWasDown = false
   }
 
   /**

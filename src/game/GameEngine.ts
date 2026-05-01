@@ -29,6 +29,7 @@ export class GameEngine {
   private onUpdateCallback: ((deltaTime: number) => void) | null = null
   private onGameOverCallback: ((score: number) => void) | null = null
   private backgroundRenderer: ((ctx: CanvasRenderingContext2D) => void) | null = null
+  private foregroundRenderer: ((ctx: CanvasRenderingContext2D) => void) | null = null
   private poolManager: PoolManager
   private scaleMultiplier: number = 1.0
   private effectSystem: EffectSystem
@@ -360,6 +361,11 @@ export class GameEngine {
     
     // 渲染效果（爆炸动画）
     this.effectSystem.render(this.ctx)
+
+    // 渲染前景层（例如移动端虚拟控制器）
+    if (this.foregroundRenderer) {
+      this.foregroundRenderer(this.ctx)
+    }
     
     // 恢复变换（移除震动偏移）
     this.ctx.restore()
@@ -604,6 +610,13 @@ export class GameEngine {
    */
   setBackgroundRenderer(renderer: (ctx: CanvasRenderingContext2D) => void): void {
     this.backgroundRenderer = renderer
+  }
+
+  /**
+   * 设置前景渲染器
+   */
+  setForegroundRenderer(renderer: ((ctx: CanvasRenderingContext2D) => void) | null): void {
+    this.foregroundRenderer = renderer
   }
   
   /**

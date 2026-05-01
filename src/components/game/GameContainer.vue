@@ -14,6 +14,10 @@
           </div>
           <div class="health-text">{{ playerHealth }}/{{ playerMaxHealth }}</div>
         </div>
+        <div class="score-display">
+          <span class="score-label-hud">SCORE</span>
+          <span class="score-number">{{ gameStats.totalScore.toLocaleString() }}</span>
+        </div>
       </div>
 
       <!-- 右上角：导弹数量显示 -->
@@ -80,10 +84,19 @@
       </div>
     </div>
 
+    <!-- 关卡切换提示 -->
+    <div v-if="isStageTransitioning" class="stage-transition-overlay">
+      <div class="stage-transition-message">
+        <div class="stage-transition-title">{{ stageTransitionMessage }}</div>
+        <div class="stage-transition-subtitle">补给已整理，准备进入下一段旅程...</div>
+      </div>
+    </div>
+
     <!-- 游戏暂停提示 -->
-    <div v-if="isPaused" class="pause-overlay">
+    <div v-if="isPaused && !isStageTransitioning" class="pause-overlay">
       <div class="pause-message">
         <p>游戏已暂停</p>
+        <p class="pause-hint">按 P / Esc 或点击按钮继续</p>
         <button @click="resumeGame" class="resume-button">继续游戏</button>
         <button @click="exitGame" class="exit-button">退出游戏</button>
       </div>
@@ -97,6 +110,7 @@
         <p>到达关卡: {{ gameStats.highestStage }}</p>
         <p>击杀敌人: {{ gameStats.totalKills }}</p>
         <div class="game-over-buttons">
+          <button @click="restartGame" class="resume-button">再来一局</button>
           <button @click="toggleLeaderboard" class="leaderboard-button">
             {{ showLeaderboard ? '隐藏排行榜' : '查看排行榜' }}
           </button>
@@ -225,7 +239,7 @@ import { MissileLauncher } from '@/game/weapons/MissileLauncher'
 import { NuclearBomb } from '@/game/weapons/NuclearBomb'
 import { StageManager } from '@/game/StageManager'
 import { SceneRenderer } from '@/game/SceneRenderer'
-import { GAME_CONFIG } from '@/game/constants'
+import { GAME_CONFIG, MOVEMENT_CONFIG } from '@/game/constants'
 import { PickupType } from '@/game/types'
 import { PoolManager } from '@/game/PoolManager'
 // 排行榜和成就系统
@@ -245,6 +259,8 @@ const gameCanvas = ref<HTMLCanvasElement | null>(null)
 const isGameActive = ref(false)
 const isPaused = ref(false)
 const isGameOver = ref(false)
+const isStageTransitioning = ref(false)
+const hasGameCompleted = ref(false)
 const hasError = ref(false)
 const errorMessage = ref('')
 const fps = ref(0)
@@ -260,6 +276,12 @@ const playerHealth = ref(10)
 const playerMaxHealth = ref(10)
 const missileCount = ref(10)
 const isMusicEnabled = ref(true)
+const stageTransitionMessage = ref('')
+const lastIncomingDamageTime = ref(0)
+
+const PLAYER_DAMAGE_INVULNERABILITY_MS = 500
+const CONTROLS_HINT_DURATION_MS = 5000
+const STAGE_TRANSITION_DURATION_MS = 2000
 
 // 排行榜和成就相关状态
 const showLeaderboard = ref(false)
@@ -285,6 +307,8 @@ let gameEngine: GameEngine | null = null
 let inputManager: EnhancedInputManager | null = null
 let fpsInterval: number | null = null
 let resizeTimeout: number | null = null // 窗口 resize 防抖定时器
+let controlsHintTimeout: number | null = null
+let stageTransitionTimeout: number | null = null
 
 // 游戏对象
 let player: PlayerAircraft | null = null
@@ -419,6 +443,10 @@ const startGame = async (): Promise<void> => {
     isGameActive.value = true
     isPaused.value = false
     isGameOver.value = false
+    isStageTransitioning.value = false
+    hasGameCompleted.value = false
+    showLeaderboard.value = false
+    showAchievementList.value = false
 
     // 重置游戏统计
     resetGameStats()
@@ -457,9 +485,13 @@ const startGame = async (): Promise<void> => {
 
     // 显示操作提示
     showControls.value = true
-    setTimeout(() => {
+    if (controlsHintTimeout !== null) {
+      clearTimeout(controlsHintTimeout)
+    }
+    controlsHintTimeout = window.setTimeout(() => {
       showControls.value = false
-    }, 5000) // 5秒后隐藏
+      controlsHintTimeout = null
+    }, CONTROLS_HINT_DURATION_MS)
 
     // 设置玩家控制
     setupPlayerControls()
@@ -493,20 +525,23 @@ const setupPlayerControls = (): void => {
     // 设置背景渲染器
     updateSceneBackground()
 
+    // 设置前景渲染器（移动端虚拟控制器）
+    gameEngine.setForegroundRenderer((ctx) => {
+      inputManager?.render(ctx)
+    })
+
     // 设置更新回调
     gameEngine.setOnUpdate((deltaTime) => {
       try {
-        // 更新输入管理器（清除单帧状态）
-        if (inputManager) {
-          inputManager.update(deltaTime)
-        }
-        
         handlePlayerMovement()
         handleWeaponFiring()
         handleEnemySpawning(deltaTime)
         handleEnemyBehavior()
         handlePickupBehavior()
         handleNuclearBomb(deltaTime)
+
+        // 本帧输入处理完成后再清除单帧状态
+        inputManager?.update(deltaTime)
       } catch (error) {
         console.error('[游戏容器] 游戏循环错误:', error)
         showError('游戏运行时发生错误')
@@ -530,7 +565,7 @@ const handlePlayerMovement = (): void => {
   
   if (movement.x !== 0 || movement.y !== 0) {
     // 使用像素块移动距离
-    const moveDistance = 8 // PIXEL_BLOCK_CONFIG.SIZE
+    const moveDistance = MOVEMENT_CONFIG.PLAYER_MOVE_DISTANCE
     player.x += movement.x * moveDistance
     player.y += movement.y * moveDistance
     
@@ -718,9 +753,10 @@ const handleEnemyBehavior = (): void => {
         }
       }
 
-      // 敌人死亡，增加核弹进度
+      // 敌人死亡，增加核弹进度：精英/Boss 给更多进度
       if (nuclearBomb) {
-        nuclearBomb.addProgress(1)
+        const nukeGain = isBoss ? 20 : isElite ? 5 : 2
+        nuclearBomb.addProgress(nukeGain)
       }
 
       // 掉落判定
@@ -902,6 +938,22 @@ const checkCollision = (a: { x: number; y: number; width: number; height: number
 }
 
 /**
+ * 对玩家造成伤害，并提供短暂无敌帧避免同帧多次扣血
+ */
+const applyPlayerDamage = (damage: number): boolean => {
+  if (!player || !player.isActive || damage <= 0) return false
+
+  const now = Date.now()
+  if (now - lastIncomingDamageTime.value < PLAYER_DAMAGE_INVULNERABILITY_MS) {
+    return false
+  }
+
+  lastIncomingDamageTime.value = now
+  player.takeDamage(damage)
+  return true
+}
+
+/**
  * 处理敌人与玩家的碰撞
  */
 const handleEnemyPlayerCollision = (enemy: Enemy): void => {
@@ -909,7 +961,7 @@ const handleEnemyPlayerCollision = (enemy: Enemy): void => {
 
   // 敌人对玩家造成等于其剩余血量的伤害
   const damage = enemy.getCurrentHealth()
-  player.takeDamage(damage)
+  applyPlayerDamage(damage)
 
   // 销毁敌人
   enemy.destroy()
@@ -936,7 +988,7 @@ const handleProjectileCollisions = (): void => {
         }
 
         // 对玩家造成伤害
-        player!.takeDamage(damage)
+        applyPlayerDamage(damage)
 
         // 销毁子弹/导弹
         entity.destroy()
@@ -976,8 +1028,22 @@ const clearAllEnemiesAndProjectiles = (): void => {
 
   console.log('[游戏] 核弹发射！清除所有敌人和敌方子弹')
 
-  // 清除所有敌人
-  enemies.forEach((enemy) => {
+  // 清除所有敌人，并保留击杀/关卡进度，避免核弹导致关卡卡死
+  const clearedEnemies = [...enemies]
+  clearedEnemies.forEach((enemy) => {
+    const isElite = enemy.config.isElite || false
+    const isBoss = enemy.config.isBoss || false
+
+    recordKill(isElite, isBoss)
+
+    if (stageManager) {
+      if (isBoss) {
+        stageManager.recordBossKill()
+      } else {
+        stageManager.recordKill()
+      }
+    }
+
     enemy.destroy()
   })
   enemies = []
@@ -998,18 +1064,27 @@ const clearAllEnemiesAndProjectiles = (): void => {
  * 处理关卡切换
  */
 const handleStageAdvance = (): void => {
-  if (!stageManager || !gameEngine) return
+  if (!stageManager || !gameEngine || isStageTransitioning.value || hasGameCompleted.value) return
 
   console.log('[游戏] 准备切换关卡')
 
   // 记录关卡完成（检查无伤通关）
   recordStageComplete()
 
+  isStageTransitioning.value = true
+  stageTransitionMessage.value = `关卡 ${stageManager.getCurrentStageNumber()} 完成！`
+
   // 暂停游戏
   pauseGame()
 
+  if (stageTransitionTimeout !== null) {
+    clearTimeout(stageTransitionTimeout)
+  }
+
   // 显示关卡切换提示
-  setTimeout(() => {
+  stageTransitionTimeout = window.setTimeout(() => {
+    stageTransitionTimeout = null
+
     if (stageManager!.advanceStage()) {
       console.log(`[游戏] 进入关卡 ${stageManager!.getCurrentStageNumber()}`)
 
@@ -1036,10 +1111,14 @@ const handleStageAdvance = (): void => {
         console.log('[游戏] 切换到新关卡音乐')
       }
 
+      isStageTransitioning.value = false
+
       // 恢复游戏
       resumeGame()
+    } else {
+      isStageTransitioning.value = false
     }
-  }, 2000)
+  }, STAGE_TRANSITION_DURATION_MS)
 }
 
 /**
@@ -1060,6 +1139,9 @@ const updateSceneBackground = (): void => {
  * 处理游戏通关
  */
 const handleGameComplete = (): void => {
+  if (hasGameCompleted.value) return
+
+  hasGameCompleted.value = true
   console.log('[游戏] 游戏通关！')
 
   // 记录最后一关完成
@@ -1105,7 +1187,7 @@ const handleGameComplete = (): void => {
  * 暂停游戏
  */
 const pauseGame = (): void => {
-  if (!gameEngine) return
+  if (!gameEngine || isGameOver.value || hasGameCompleted.value) return
 
   console.log('[游戏容器] 暂停游戏')
   isPaused.value = true
@@ -1116,7 +1198,7 @@ const pauseGame = (): void => {
  * 恢复游戏
  */
 const resumeGame = (): void => {
-  if (!gameEngine) return
+  if (!gameEngine || isGameOver.value || hasGameCompleted.value) return
 
   console.log('[游戏容器] 恢复游戏')
   isPaused.value = false
@@ -1131,12 +1213,40 @@ const endGame = (): void => {
 
   console.log('[游戏容器] 游戏结束')
   isGameOver.value = true
+  isPaused.value = false
+  isStageTransitioning.value = false
   gameEngine.stop()
 
   if (fpsInterval !== null) {
     clearInterval(fpsInterval)
     fpsInterval = null
   }
+}
+
+/**
+ * 重新开始游戏
+ */
+const restartGame = (): void => {
+  console.log('[游戏容器] 重新开始游戏')
+
+  window.removeEventListener('resize', handleWindowResize)
+  PoolManager.destroy()
+  cleanupGame()
+
+  isGameActive.value = true
+  isPaused.value = false
+  isGameOver.value = false
+  isStageTransitioning.value = false
+  hasGameCompleted.value = false
+  hasError.value = false
+  errorMessage.value = ''
+  showLeaderboard.value = false
+  showAchievementList.value = false
+
+  setTimeout(() => {
+    initGame()
+    startGame()
+  }, 100)
 }
 
 /**
@@ -1157,6 +1267,8 @@ const exitGame = (): void => {
   isGameActive.value = false
   isPaused.value = false
   isGameOver.value = false
+  isStageTransitioning.value = false
+  hasGameCompleted.value = false
   hasError.value = false
   errorMessage.value = ''
 
@@ -1171,6 +1283,21 @@ const exitGame = (): void => {
  * 清理游戏资源
  */
 const cleanupGame = (): void => {
+  gameEngine?.setForegroundRenderer(null)
+
+  if (controlsHintTimeout !== null) {
+    clearTimeout(controlsHintTimeout)
+    controlsHintTimeout = null
+  }
+
+  if (stageTransitionTimeout !== null) {
+    clearTimeout(stageTransitionTimeout)
+    stageTransitionTimeout = null
+  }
+
+  showControls.value = false
+  isStageTransitioning.value = false
+
   // 停止游戏引擎
   if (gameEngine) {
     try {
@@ -1234,15 +1361,8 @@ const handleWindowResize = (): void => {
     }
     
     // 如果游戏正在运行且未暂停，暂时暂停游戏
-    if (isGameActive.value && !isPaused.value && !isGameOver.value && !hasError.value) {
+    if (isGameActive.value && !isPaused.value && !isGameOver.value && !hasError.value && !isStageTransitioning.value) {
       pauseGame()
-      
-      // 显示提示
-      setTimeout(() => {
-        if (isPaused.value) {
-          alert('窗口大小已改变，游戏已暂停。请点击"继续游戏"按钮恢复。')
-        }
-      }, 100)
     }
     
     resizeTimeout = null
@@ -1253,7 +1373,7 @@ const handleWindowResize = (): void => {
 watch(
   () => easterEggStore.phase,
   (newPhase) => {
-    if (newPhase === 'playing') {
+    if (newPhase === 'playing' && !isGameActive.value) {
       // 延迟初始化，确保 DOM 已渲染
       setTimeout(() => {
         initGame()
@@ -1273,6 +1393,8 @@ onMounted(() => {
     startGame()
   }
 
+  window.addEventListener('keydown', handleGlobalGameKeydown)
+
   // 监听页面刷新/关闭
   window.addEventListener('beforeunload', handleBeforeUnload)
 })
@@ -1283,16 +1405,34 @@ onUnmounted(() => {
 
   // 移除事件监听
   window.removeEventListener('resize', handleWindowResize)
+  window.removeEventListener('keydown', handleGlobalGameKeydown)
   window.removeEventListener('beforeunload', handleBeforeUnload)
 
   cleanupGame()
 })
 
 /**
+ * 处理全局游戏快捷键
+ */
+const handleGlobalGameKeydown = (event: KeyboardEvent): void => {
+  if (!isGameActive.value || isGameOver.value || hasError.value || isStageTransitioning.value) return
+
+  const key = event.key.toLowerCase()
+  if (key !== 'p' && key !== 'escape') return
+
+  event.preventDefault()
+  if (isPaused.value) {
+    resumeGame()
+  } else {
+    pauseGame()
+  }
+}
+
+/**
  * 处理页面刷新/关闭
  */
 const handleBeforeUnload = (e: BeforeUnloadEvent): void => {
-  if (isGameActive.value && !isGameOver.value) {
+  if (isGameActive.value && !isGameOver.value && !hasGameCompleted.value) {
     // 清理游戏状态
     cleanupGame()
     
@@ -1469,7 +1609,8 @@ const resetGameStats = (): void => {
     perfectStages: 0
   }
   gameStartTime.value = Date.now()
-  stageStartHealth.value = 10
+  stageStartHealth.value = player?.health ?? GAME_CONFIG.PLAYER_INITIAL_HEALTH
+  lastIncomingDamageTime.value = 0
   highlightedScoreId.value = ''
   newlyUnlockedAchievements.value = []
 }
@@ -1500,6 +1641,7 @@ defineExpose({
   pauseGame,
   resumeGame,
   endGame,
+  restartGame,
   exitGame,
   // 排行榜和成就相关
   gameStats,
@@ -1652,6 +1794,36 @@ defineExpose({
   font-weight: bold;
   font-size: 13px;
   text-shadow: 0 0 5px rgba(255, 0, 0, 0.5);
+}
+
+/* 分数显示 */
+.score-display {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: 10px;
+  background: rgba(0, 0, 0, 0.85);
+  padding: 10px 15px;
+  border: 3px solid #ff6b9d;
+  border-radius: 4px;
+  font-family: 'Courier New', 'Consolas', monospace;
+  color: #ff6b9d;
+  box-shadow: 0 0 15px rgba(255, 107, 157, 0.5), inset 0 0 10px rgba(255, 107, 157, 0.1);
+}
+
+.score-label-hud {
+  font-size: 12px;
+  font-weight: bold;
+  letter-spacing: 1px;
+  color: #ffd1e1;
+}
+
+.score-number {
+  min-width: 90px;
+  text-align: right;
+  font-size: 16px;
+  font-weight: bold;
+  text-shadow: 0 0 8px rgba(255, 107, 157, 0.65);
 }
 
 /* 导弹数量显示 */
@@ -1903,6 +2075,7 @@ defineExpose({
   color: #00ff00;
 }
 
+.stage-transition-overlay,
 .pause-overlay,
 .game-over-overlay {
   position: absolute;
@@ -1915,6 +2088,47 @@ defineExpose({
   justify-content: center;
   align-items: center;
   z-index: 10001;
+}
+
+.stage-transition-overlay {
+  pointer-events: none;
+  background:
+    radial-gradient(circle at center, rgba(0, 217, 255, 0.2) 0%, rgba(0, 0, 0, 0.88) 62%),
+    rgba(0, 0, 0, 0.85);
+}
+
+.stage-transition-message {
+  background: #000;
+  border: 4px solid #00d9ff;
+  border-radius: 8px;
+  padding: 36px 44px;
+  text-align: center;
+  font-family: 'Press Start 2P', monospace;
+  color: #00d9ff;
+  box-shadow: 0 0 30px rgba(0, 217, 255, 0.55), inset 0 0 18px rgba(0, 217, 255, 0.18);
+  animation: stageTransitionPulse 1.2s ease-in-out infinite;
+}
+
+.stage-transition-title {
+  margin-bottom: 16px;
+  font-size: 18px;
+  color: #ffff00;
+  text-shadow: 0 0 12px rgba(255, 255, 0, 0.7);
+}
+
+.stage-transition-subtitle {
+  font-size: 10px;
+  line-height: 1.8;
+  color: #00ff00;
+}
+
+@keyframes stageTransitionPulse {
+  0%, 100% {
+    transform: scale(1);
+  }
+  50% {
+    transform: scale(1.03);
+  }
 }
 
 .pause-message,
@@ -1933,6 +2147,12 @@ defineExpose({
 .game-over-message p {
   margin: 0 0 20px 0;
   font-size: 16px;
+}
+
+.pause-hint {
+  color: #ffff00;
+  font-size: 10px !important;
+  line-height: 1.8;
 }
 
 .game-over-message h2 {

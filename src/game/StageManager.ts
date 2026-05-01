@@ -19,6 +19,7 @@ export class StageManager {
   private spawnedEnemies: number = 0
   private killedEnemies: number = 0
   private bossSpawned: boolean = false
+  private bossKilled: boolean = false
 
   constructor() {
     this.currentStage = STAGES[0]
@@ -64,7 +65,7 @@ export class StageManager {
    * 获取剩余敌人数量
    */
   getRemainingCount(): number {
-    return this.currentStage.totalEnemies - this.killedEnemies
+    return Math.max(0, this.currentStage.totalEnemies - this.killedEnemies)
   }
 
   /**
@@ -140,6 +141,12 @@ export class StageManager {
    * 记录 Boss 被击杀
    */
   recordBossKill(): void {
+    if (this.bossKilled) {
+      console.warn('[关卡管理器] Boss 已记录击杀，忽略重复调用')
+      return
+    }
+
+    this.bossKilled = true
     console.log(`[关卡管理器] Boss 被击杀`)
   }
 
@@ -147,8 +154,8 @@ export class StageManager {
    * 是否可以进入下一关
    */
   canAdvanceStage(): boolean {
-    // Boss 已生成且已被击杀（通过检查是否还有敌人存活）
-    return this.bossSpawned && this.getRemainingCount() === 0
+    // 只有非最终关卡在 Boss 被击杀后才能进入下一关
+    return !this.isFinalStage() && this.bossSpawned && this.bossKilled && this.getRemainingCount() === 0
   }
 
   /**
@@ -171,6 +178,7 @@ export class StageManager {
     this.spawnedEnemies = 0
     this.killedEnemies = 0
     this.bossSpawned = false
+    this.bossKilled = false
 
     console.log(`[关卡管理器] 进入关卡 ${this.getCurrentStageNumber()}: ${this.currentStage.name}`)
 
@@ -188,7 +196,7 @@ export class StageManager {
    * 是否游戏通关
    */
   isGameComplete(): boolean {
-    return this.isFinalStage() && this.bossSpawned && this.getRemainingCount() === 0
+    return this.isFinalStage() && this.bossSpawned && this.bossKilled && this.getRemainingCount() === 0
   }
 
   /**
@@ -207,6 +215,7 @@ export class StageManager {
     this.spawnedEnemies = 0
     this.killedEnemies = 0
     this.bossSpawned = false
+    this.bossKilled = false
     console.log('[关卡管理器] 已重置')
   }
 }

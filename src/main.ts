@@ -4,6 +4,7 @@ import router from './router'
 import App from './App.vue'
 import './style.css'
 import { initAnalytics } from './utils/analytics'
+import { initWebVitals } from './utils/webVitals'
 
 const app = createApp(App)
 const pinia = createPinia()
@@ -17,3 +18,4 @@ app.mount('#app')
 // 需求: 2.1.1 - 上报页面访问
 // 需求: 2.2.3 - 上报设备信息、浏览器信息
 initAnalytics(router)
+initWebVitals()

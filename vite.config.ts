@@ -204,9 +204,11 @@ export default defineConfig(({ mode }) => {
                 return 'vue-vendor'
               }
               
-              // ECharts 单独分包（体积较大，约 1MB+）
-              // 只有技能页面使用，单独分包可以减少首屏加载时间
-              if (id.includes('echarts') || id.includes('zrender')) {
+              // ECharts 与 zrender 拆分为独立缓存块，避免单个 chunk 过大
+              if (id.includes('zrender')) {
+                return 'zrender-vendor'
+              }
+              if (id.includes('echarts')) {
                 return 'echarts-vendor'
               }
               
@@ -239,7 +241,7 @@ export default defineConfig(({ mode }) => {
       },
       
       // Chunk size warnings
-      chunkSizeWarningLimit: 1000,
+      chunkSizeWarningLimit: 1200,
       
       // Enable CSS code splitting
       cssCodeSplit: true,

@@ -47,6 +47,7 @@
 <script setup lang="ts">
 import { ref, watch, onMounted, onUnmounted } from 'vue'
 import { useEasterEggStore } from '@/stores/easterEgg'
+import { playAudioCue } from '@/audio/feedback'
 import { GamePhase } from '@/game/types'
 import { ResponsiveDetector } from '@/utils/responsiveDetector'
 
@@ -97,6 +98,7 @@ watch(() => easterEggStore.phase, (newPhase) => {
  * 开始打字机效果
  */
 function startTypingEffect() {
+  playAudioCue('boot')
   typingIndex = 0
   displayedText.value = ''
   showCursor.value = true
@@ -105,6 +107,7 @@ function startTypingEffect() {
     if (typingIndex < fullText.length) {
       displayedText.value += fullText[typingIndex]
       typingIndex++
+      playAudioCue('hover')
       typingTimer = window.setTimeout(typeNextChar, 80)
     } else {
       // 打字完成，显示输入区域

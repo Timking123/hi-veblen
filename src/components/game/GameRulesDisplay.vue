@@ -1,5 +1,5 @@
 <template>
-  <div v-if="isVisible" class="rules-window">
+  <div v-if="isVisible" class="rules-window" @click="handleScreenClick">
     <div class="rules-content">
       <!-- 标题 -->
       <div class="rules-title">
@@ -28,7 +28,7 @@
       
       <!-- 跳过提示 -->
       <div v-if="!isComplete" class="skip-hint">
-        按任意键跳过...
+        按任意键或点击屏幕跳过...
       </div>
     </div>
   </div>
@@ -103,7 +103,7 @@ const ruleSections = [
   }
 ]
 
-const continuePrompt = '按任意键开始游戏...'
+const continuePrompt = '按任意键或点击屏幕开始游戏...'
 
 // 打字机效果相关
 let typingTimer: number | null = null
@@ -265,6 +265,15 @@ const startCursorBlink = (): void => {
 }
 
 /**
+ * 进入游戏
+ */
+const continueToGame = (): void => {
+  console.log('[游戏规则] 用户继续游戏')
+  hide()
+  easterEggStore.enterGame()
+}
+
+/**
  * 处理键盘输入
  */
 const handleKeyPress = (_event: KeyboardEvent): void => {
@@ -278,10 +287,22 @@ const handleKeyPress = (_event: KeyboardEvent): void => {
   
   // 如果已完成，按任意键继续
   if (isComplete.value) {
-    console.log('[游戏规则] 用户按键继续游戏')
-    hide()
-    easterEggStore.enterGame()
+    continueToGame()
   }
+}
+
+/**
+ * 处理屏幕点击/触摸，补足移动端没有物理键盘时的启动入口
+ */
+const handleScreenClick = (): void => {
+  if (!isVisible.value) return
+
+  if (!isComplete.value) {
+    skip()
+    return
+  }
+
+  continueToGame()
 }
 
 /**
