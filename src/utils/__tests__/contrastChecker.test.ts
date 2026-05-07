@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest'
+import { describe, expect, it } from '@/test/vitest-globals'
 import {
   hexToRgb,
   getRelativeLuminance,
@@ -6,7 +6,7 @@ import {
   meetsWCAGAA,
   meetsWCAGAAA,
   getContrastLevel,
-  formatContrastRatio
+  formatContrastRatio,
 } from '../contrastChecker'
 
 describe('contrastChecker', () => {
@@ -207,31 +207,31 @@ describe('contrastChecker', () => {
       backgrounds: {
         'bg-primary': '#f5f7fa',
         'bg-secondary': '#ffffff',
-        'bg-tertiary': '#e8ecf1'
+        'bg-tertiary': '#e8ecf1',
       },
       texts: {
         'text-primary': '#1a202c',
         'text-secondary': '#4a5568',
-        'text-tertiary': '#4a5568'
-      }
+        'text-tertiary': '#4a5568',
+      },
     }
 
     it('所有文字颜色与 bg-primary 的对比度应符合 WCAG AA', () => {
-      Object.values(lightThemeColors.texts).forEach((textColor) => {
+      Object.values(lightThemeColors.texts).forEach(textColor => {
         const passes = meetsWCAGAA(textColor, lightThemeColors.backgrounds['bg-primary'])
         expect(passes).toBe(true)
       })
     })
 
     it('所有文字颜色与 bg-secondary 的对比度应符合 WCAG AA', () => {
-      Object.values(lightThemeColors.texts).forEach((textColor) => {
+      Object.values(lightThemeColors.texts).forEach(textColor => {
         const passes = meetsWCAGAA(textColor, lightThemeColors.backgrounds['bg-secondary'])
         expect(passes).toBe(true)
       })
     })
 
     it('所有文字颜色与 bg-tertiary 的对比度应符合 WCAG AA', () => {
-      Object.values(lightThemeColors.texts).forEach((textColor) => {
+      Object.values(lightThemeColors.texts).forEach(textColor => {
         const passes = meetsWCAGAA(textColor, lightThemeColors.backgrounds['bg-tertiary'])
         expect(passes).toBe(true)
       })

@@ -1,6 +1,15 @@
 <template>
-  <aside class="experience-settings" :class="{ 'experience-settings--open': open }" aria-label="体验设置">
-    <button class="experience-settings__toggle" type="button" :aria-expanded="open" @click="open = !open">
+  <aside
+    class="experience-settings"
+    :class="{ 'experience-settings--open': open }"
+    aria-label="体验设置"
+  >
+    <button
+      class="experience-settings__toggle"
+      type="button"
+      :aria-expanded="open"
+      @click="open = !open"
+    >
       SETTINGS
     </button>
     <div class="experience-settings__panel">
@@ -41,11 +50,31 @@
 import { onMounted, ref } from 'vue'
 import { playAudioCue } from '@/audio/feedback'
 
+type QualityLevel = 'ultra' | 'high' | 'medium' | 'low' | 'static'
+type ThemeMode = 'museum' | 'terminal' | 'legacy' | 'minimal'
+
+interface ExperienceSettingsState {
+  quality: QualityLevel
+  themeMode: ThemeMode
+  reducedMotion: boolean
+  disableScanlines: boolean
+}
+
 const open = ref(false)
-const quality = ref('high')
-const themeMode = ref('museum')
-const reducedMotion = ref(false)
-const disableScanlines = ref(false)
+const DEFAULT_EXPERIENCE_SETTINGS: ExperienceSettingsState = {
+  quality: 'medium',
+  themeMode: 'minimal',
+  reducedMotion: true,
+  disableScanlines: true,
+}
+
+const quality = ref<QualityLevel>(DEFAULT_EXPERIENCE_SETTINGS.quality)
+const themeMode = ref<ThemeMode>(DEFAULT_EXPERIENCE_SETTINGS.themeMode)
+const reducedMotion = ref<boolean>(DEFAULT_EXPERIENCE_SETTINGS.reducedMotion)
+const disableScanlines = ref<boolean>(DEFAULT_EXPERIENCE_SETTINGS.disableScanlines)
+
+const QUALITY_LEVELS = new Set<QualityLevel>(['ultra', 'high', 'medium', 'low', 'static'])
+const THEME_MODES = new Set<ThemeMode>(['museum', 'terminal', 'legacy', 'minimal'])
 
 const applySettings = () => {
   playAudioCue('click')
@@ -53,12 +82,15 @@ const applySettings = () => {
   document.documentElement.dataset.themeMode = themeMode.value
   document.documentElement.classList.toggle('is-reduced-motion', reducedMotion.value)
   document.documentElement.classList.toggle('is-scanlines-disabled', disableScanlines.value)
-  localStorage.setItem('hyj-experience-settings', JSON.stringify({
-    quality: quality.value,
-    themeMode: themeMode.value,
-    reducedMotion: reducedMotion.value,
-    disableScanlines: disableScanlines.value,
-  }))
+  localStorage.setItem(
+    'hyj-experience-settings',
+    JSON.stringify({
+      quality: quality.value,
+      themeMode: themeMode.value,
+      reducedMotion: reducedMotion.value,
+      disableScanlines: disableScanlines.value,
+    })
+  )
 }
 
 const reboot = () => {
@@ -70,11 +102,23 @@ const reboot = () => {
 onMounted(() => {
   const raw = localStorage.getItem('hyj-experience-settings')
   if (raw) {
-    const saved = JSON.parse(raw) as { quality?: string; themeMode?: string; reducedMotion?: boolean; disableScanlines?: boolean }
-    quality.value = saved.quality || 'high'
-    themeMode.value = saved.themeMode || 'museum'
-    reducedMotion.value = Boolean(saved.reducedMotion)
-    disableScanlines.value = Boolean(saved.disableScanlines)
+    try {
+      const saved = JSON.parse(raw) as Partial<ExperienceSettingsState>
+      quality.value =
+        saved.quality && QUALITY_LEVELS.has(saved.quality)
+          ? saved.quality
+          : DEFAULT_EXPERIENCE_SETTINGS.quality
+      themeMode.value =
+        saved.themeMode && THEME_MODES.has(saved.themeMode)
+          ? saved.themeMode
+          : DEFAULT_EXPERIENCE_SETTINGS.themeMode
+      reducedMotion.value = saved.reducedMotion ?? DEFAULT_EXPERIENCE_SETTINGS.reducedMotion
+      disableScanlines.value =
+        saved.disableScanlines ?? DEFAULT_EXPERIENCE_SETTINGS.disableScanlines
+    } catch (error) {
+      console.warn('[体验设置] 已忽略损坏的本地设置，恢复默认低干扰模式', error)
+      localStorage.removeItem('hyj-experience-settings')
+    }
   }
   applySettings()
 })

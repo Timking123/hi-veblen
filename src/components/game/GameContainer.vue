@@ -10,7 +10,10 @@
         <div class="health-display">
           <div class="health-icon">♥</div>
           <div class="health-bar">
-            <div class="health-fill" :style="{ width: (playerHealth / playerMaxHealth * 100) + '%' }"></div>
+            <div
+              class="health-fill"
+              :style="{ width: (playerHealth / playerMaxHealth) * 100 + '%' }"
+            ></div>
           </div>
           <div class="health-text">{{ playerHealth }}/{{ playerMaxHealth }}</div>
         </div>
@@ -26,10 +29,10 @@
           <div class="missile-icon">🚀</div>
           <div class="missile-text">{{ missileCount }}</div>
         </div>
-        
+
         <!-- 音乐开关按钮 -->
-        <button 
-          class="music-toggle-button" 
+        <button
+          class="music-toggle-button"
           @click="toggleMusic"
           :title="isMusicEnabled ? '关闭音乐' : '开启音乐'"
         >
@@ -120,7 +123,7 @@
           <button @click="exitGame" class="exit-button">返回首页</button>
         </div>
       </div>
-      
+
       <!-- 排行榜弹窗 -->
       <div v-if="showLeaderboard" class="leaderboard-modal">
         <div class="modal-content">
@@ -159,7 +162,7 @@
           </div>
         </div>
       </div>
-      
+
       <!-- 成就列表弹窗 -->
       <div v-if="showAchievementList" class="achievement-modal">
         <div class="modal-content">
@@ -168,7 +171,9 @@
             <div class="achievement-header-custom">
               <h2 class="achievement-title">🏅 成就系统</h2>
               <div class="achievement-progress-custom">
-                {{ achievementSystem.getAchievementStats().unlocked }}/{{ achievementSystem.getAchievementStats().total }}
+                {{ achievementSystem.getAchievementStats().unlocked }}/{{
+                  achievementSystem.getAchievementStats().total
+                }}
               </div>
             </div>
             <div class="achievement-grid-custom">
@@ -180,7 +185,12 @@
               >
                 <div class="item-icon-custom">
                   <span class="icon-emoji">{{ achievement.icon }}</span>
-                  <div v-if="!achievementSystem.isAchievementUnlocked(achievement.id)" class="lock-overlay">🔒</div>
+                  <div
+                    v-if="!achievementSystem.isAchievementUnlocked(achievement.id)"
+                    class="lock-overlay"
+                  >
+                    🔒
+                  </div>
                 </div>
                 <div class="item-info-achievement">
                   <h3 class="item-name">{{ achievement.name }}</h3>
@@ -195,8 +205,8 @@
 
     <!-- 成就解锁通知 -->
     <Transition name="achievement-notification">
-      <div 
-        v-if="showAchievementNotification && currentNotificationAchievement" 
+      <div
+        v-if="showAchievementNotification && currentNotificationAchievement"
         class="achievement-notification-popup"
         @click="closeAchievementNotification"
       >
@@ -244,7 +254,12 @@ import { PickupType } from '@/game/types'
 import { PoolManager } from '@/game/PoolManager'
 // 排行榜和成就系统
 import { LeaderboardManager } from '@/game/LeaderboardManager'
-import { AchievementSystem, DEFAULT_ACHIEVEMENTS, type Achievement, type GameStats } from '@/game/AchievementSystem'
+import {
+  AchievementSystem,
+  DEFAULT_ACHIEVEMENTS,
+  type Achievement,
+  type GameStats,
+} from '@/game/AchievementSystem'
 
 const easterEggStore = useEasterEggStore()
 
@@ -297,7 +312,7 @@ const gameStats = ref<GameStats>({
   highestStage: 1,
   totalKills: 0,
   totalPlayTime: 0,
-  perfectStages: 0
+  perfectStages: 0,
 })
 const gameStartTime = ref(0)
 const stageStartHealth = ref(10) // 关卡开始时的血量，用于判断无伤通关
@@ -341,7 +356,7 @@ const initGame = (): void => {
 
     // 创建游戏引擎（使用 V2 场景扩展配置）
     gameEngine = new GameEngine(gameCanvas.value, {
-      scaleMultiplier: 1.5 // 场景扩大 50%
+      scaleMultiplier: 1.5, // 场景扩大 50%
     })
 
     // 创建增强输入管理器（传递 canvas 以支持移动端控制）
@@ -352,10 +367,7 @@ const initGame = (): void => {
     const canvasHeight = gameEngine.getCanvasHeight()
 
     // 创建玩家飞机（位置需要根据缩放后的尺寸调整）
-    player = new PlayerAircraft(
-      canvasWidth / 2 - 20,
-      canvasHeight - 100
-    )
+    player = new PlayerAircraft(canvasWidth / 2 - 20, canvasHeight - 100)
     gameEngine.addEntity(player)
 
     // 注册玩家死亡回调，连接到游戏结束流程
@@ -383,7 +395,7 @@ const initGame = (): void => {
  */
 const checkCanvasSupport = (): boolean => {
   if (!gameCanvas.value) return false
-  
+
   try {
     const ctx = gameCanvas.value.getContext('2d')
     return ctx !== null
@@ -399,7 +411,7 @@ const showError = (message: string): void => {
   console.error('[游戏容器] 错误:', message)
   hasError.value = true
   errorMessage.value = message
-  
+
   // 停止游戏
   if (gameEngine) {
     try {
@@ -417,10 +429,10 @@ const handleErrorRetry = (): void => {
   console.log('[游戏容器] 重试游戏')
   hasError.value = false
   errorMessage.value = ''
-  
+
   // 清理旧资源
   cleanupGame()
-  
+
   // 重新初始化
   setTimeout(() => {
     initGame()
@@ -459,10 +471,10 @@ const startGame = async (): Promise<void> => {
 
     // 初始化音频系统
     await gameEngine.initializeAudio()
-    
+
     // 恢复音频上下文（处理浏览器自动播放策略）
     await gameEngine.resumeAudio()
-    
+
     // 获取音频系统并设置到武器和对象池
     const audioSystem = gameEngine.getAudioSystem()
     if (audioSystem) {
@@ -472,12 +484,12 @@ const startGame = async (): Promise<void> => {
       if (missileLauncher) {
         missileLauncher.setAudioSystem(audioSystem)
       }
-      
+
       // 设置音频系统到对象池管理器
       const poolManager = PoolManager.getInstance()
       poolManager.setAudioSystem(audioSystem)
     }
-    
+
     // 播放第一关音乐
     if (audioSystem && stageManager) {
       audioSystem.playBackgroundMusic(stageManager.getCurrentStageNumber(), false)
@@ -526,12 +538,12 @@ const setupPlayerControls = (): void => {
     updateSceneBackground()
 
     // 设置前景渲染器（移动端虚拟控制器）
-    gameEngine.setForegroundRenderer((ctx) => {
+    gameEngine.setForegroundRenderer(ctx => {
       inputManager?.render(ctx)
     })
 
     // 设置更新回调
-    gameEngine.setOnUpdate((deltaTime) => {
+    gameEngine.setOnUpdate(deltaTime => {
       try {
         handlePlayerMovement()
         handleWeaponFiring()
@@ -562,17 +574,17 @@ const handlePlayerMovement = (): void => {
   // 使用增强输入管理器获取移动输入
   // 自动处理单次按键和长按逻辑（200ms 间隔）
   const movement = inputManager.getMovementInput()
-  
+
   if (movement.x !== 0 || movement.y !== 0) {
     // 使用像素块移动距离
     const moveDistance = MOVEMENT_CONFIG.PLAYER_MOVE_DISTANCE
     player.x += movement.x * moveDistance
     player.y += movement.y * moveDistance
-    
+
     // 边界检测
     const canvasWidth = gameEngine.getCanvasWidth()
     const canvasHeight = gameEngine.getCanvasHeight()
-    
+
     if (player.x < 0) player.x = 0
     if (player.x + player.width > canvasWidth) player.x = canvasWidth - player.width
     if (player.y < 0) player.y = 0
@@ -590,7 +602,7 @@ const handleWeaponFiring = (): void => {
   // 发射机炮（J键）- 使用射速限制（200ms 冷却）
   if (inputManager.shouldFireGun()) {
     const bullets = machineGun.fire(player.getCenterX(), player.y, 'player')
-    bullets.forEach((bullet) => gameEngine!.addEntity(bullet))
+    bullets.forEach(bullet => gameEngine!.addEntity(bullet))
   }
 
   // 发射导弹（K键）- 单次发射，长按不连续发射
@@ -655,13 +667,13 @@ const spawnEnemy = (): void => {
   const y = -50
 
   const enemy = new Enemy(type, x, y, isElite, false, scaleMultiplier)
-  
+
   // 设置音频系统到敌人（敌人武器不播放音效）
   const audioSystem = gameEngine.getAudioSystem()
   if (audioSystem) {
     enemy.setAudioSystem(audioSystem)
   }
-  
+
   enemies.push(enemy)
   gameEngine.addEntity(enemy)
 
@@ -686,18 +698,18 @@ const spawnBoss = (): void => {
   const y = -100
 
   const boss = new Enemy(bossType, x, y, false, true, scaleMultiplier)
-  
+
   // 设置音频系统到 Boss（敌人武器不播放音效）
   const audioSystem = gameEngine.getAudioSystem()
   if (audioSystem) {
     boss.setAudioSystem(audioSystem)
   }
-  
+
   enemies.push(boss)
   gameEngine.addEntity(boss)
 
   console.log(`[游戏] 生成 Boss: ${bossType}`)
-  
+
   // 切换到 BOSS 战音乐
   if (audioSystem && stageManager) {
     audioSystem.playBackgroundMusic(stageManager.getCurrentStageNumber(), true)
@@ -717,7 +729,7 @@ const handleEnemyBehavior = (): void => {
     return
   }
 
-  enemies.forEach((enemy) => {
+  enemies.forEach(enemy => {
     if (!enemy.isActive) return
 
     // 追踪玩家
@@ -725,7 +737,7 @@ const handleEnemyBehavior = (): void => {
 
     // 攻击玩家
     const projectiles = enemy.attack()
-    projectiles.forEach((projectile) => {
+    projectiles.forEach(projectile => {
       gameEngine!.addEntity(projectile)
     })
 
@@ -737,13 +749,13 @@ const handleEnemyBehavior = (): void => {
 
   // 清理死亡的敌人
   const beforeCount = enemies.length
-  enemies = enemies.filter((enemy) => {
+  enemies = enemies.filter(enemy => {
     if (!enemy.isActive) {
       // 记录击杀并更新分数
       const isElite = enemy.config.isElite || false
       const isBoss = enemy.config.isBoss || false
       recordKill(isElite, isBoss)
-      
+
       // 记录到关卡管理器
       if (stageManager) {
         if (isBoss) {
@@ -763,13 +775,17 @@ const handleEnemyBehavior = (): void => {
       const dropType = enemy.die()
       if (dropType && gameEngine) {
         // 在敌人位置生成掉落物
-        const pickup = new Pickup(dropType, enemy.x + enemy.width / 2 - 15, enemy.y + enemy.height / 2 - 15)
-        
+        const pickup = new Pickup(
+          dropType,
+          enemy.x + enemy.width / 2 - 15,
+          enemy.y + enemy.height / 2 - 15
+        )
+
         // 设置拾取回调，应用掉落物效果
         pickup.setOnPickup((type: PickupType) => {
           applyPickupEffect(type)
         })
-        
+
         pickups.push(pickup)
         gameEngine.addEntity(pickup)
         console.log(`[游戏] 生成掉落物: ${dropType}`)
@@ -804,7 +820,7 @@ const handlePickupBehavior = (): void => {
   if (!player || !gameEngine || !player.isActive) return
 
   // 清理不活跃的掉落物
-  pickups = pickups.filter((pickup) => {
+  pickups = pickups.filter(pickup => {
     if (!pickup.isActive) {
       return false
     }
@@ -928,13 +944,11 @@ const handleNuclearBomb = (deltaTime: number): void => {
 /**
  * 检测碰撞（AABB）
  */
-const checkCollision = (a: { x: number; y: number; width: number; height: number }, b: { x: number; y: number; width: number; height: number }): boolean => {
-  return (
-    a.x < b.x + b.width &&
-    a.x + a.width > b.x &&
-    a.y < b.y + b.height &&
-    a.y + a.height > b.y
-  )
+const checkCollision = (
+  a: { x: number; y: number; width: number; height: number },
+  b: { x: number; y: number; width: number; height: number }
+): boolean => {
+  return a.x < b.x + b.width && a.x + a.width > b.x && a.y < b.y + b.height && a.y + a.height > b.y
 }
 
 /**
@@ -977,7 +991,7 @@ const handleProjectileCollisions = (): void => {
 
   const allEntities = gameEngine.getEntities()
 
-  allEntities.forEach((entity) => {
+  allEntities.forEach(entity => {
     // 只检测敌方子弹和导弹
     if (entity.id.startsWith('bullet-enemy') || entity.id.startsWith('missile-enemy')) {
       if (checkCollision(player!, entity)) {
@@ -1030,7 +1044,7 @@ const clearAllEnemiesAndProjectiles = (): void => {
 
   // 清除所有敌人，并保留击杀/关卡进度，避免核弹导致关卡卡死
   const clearedEnemies = [...enemies]
-  clearedEnemies.forEach((enemy) => {
+  clearedEnemies.forEach(enemy => {
     const isElite = enemy.config.isElite || false
     const isBoss = enemy.config.isBoss || false
 
@@ -1050,7 +1064,7 @@ const clearAllEnemiesAndProjectiles = (): void => {
 
   // 清除所有敌方子弹和导弹
   const allEntities = gameEngine.getEntities()
-  allEntities.forEach((entity) => {
+  allEntities.forEach(entity => {
     // 检查是否是敌方子弹或导弹
     if (entity.id.startsWith('bullet-enemy') || entity.id.startsWith('missile-enemy')) {
       entity.destroy()
@@ -1098,12 +1112,12 @@ const handleStageAdvance = (): void => {
 
       // 清理屏幕上的子弹和导弹
       const allEntities = gameEngine!.getEntities()
-      allEntities.forEach((entity) => {
+      allEntities.forEach(entity => {
         if (entity.id.startsWith('bullet') || entity.id.startsWith('missile')) {
           entity.destroy()
         }
       })
-      
+
       // 切换到新关卡的音乐
       const audioSystem = gameEngine!.getAudioSystem()
       if (audioSystem && stageManager) {
@@ -1128,7 +1142,7 @@ const updateSceneBackground = (): void => {
   if (!gameEngine || !stageManager) return
 
   const currentStage = stageManager.getCurrentStage()
-  gameEngine.setBackgroundRenderer((ctx) => {
+  gameEngine.setBackgroundRenderer(ctx => {
     SceneRenderer.renderBackground(ctx, currentStage.background)
   })
 
@@ -1272,11 +1286,8 @@ const exitGame = (): void => {
   hasError.value = false
   errorMessage.value = ''
 
-  // 重置彩蛋状态
-  easterEggStore.reset()
-
-  // 刷新页面返回首页（恢复崩塌后的页面）
-  window.location.href = '/'
+  // 重置彩蛋状态并返回首页
+  easterEggStore.reset({ reload: true })
 }
 
 /**
@@ -1350,21 +1361,27 @@ const handleWindowResize = (): void => {
   if (resizeTimeout !== null) {
     clearTimeout(resizeTimeout)
   }
-  
+
   // 设置新的定时器，300ms 后执行
   resizeTimeout = window.setTimeout(() => {
     console.log('[游戏容器] 窗口大小变化，调整画布尺寸')
-    
+
     // 调整画布尺寸
     if (gameEngine) {
       gameEngine.resizeCanvas()
     }
-    
+
     // 如果游戏正在运行且未暂停，暂时暂停游戏
-    if (isGameActive.value && !isPaused.value && !isGameOver.value && !hasError.value && !isStageTransitioning.value) {
+    if (
+      isGameActive.value &&
+      !isPaused.value &&
+      !isGameOver.value &&
+      !hasError.value &&
+      !isStageTransitioning.value
+    ) {
       pauseGame()
     }
-    
+
     resizeTimeout = null
   }, 300)
 }
@@ -1372,7 +1389,7 @@ const handleWindowResize = (): void => {
 // 监听游戏阶段变化
 watch(
   () => easterEggStore.phase,
-  (newPhase) => {
+  newPhase => {
     if (newPhase === 'playing' && !isGameActive.value) {
       // 延迟初始化，确保 DOM 已渲染
       setTimeout(() => {
@@ -1415,7 +1432,8 @@ onUnmounted(() => {
  * 处理全局游戏快捷键
  */
 const handleGlobalGameKeydown = (event: KeyboardEvent): void => {
-  if (!isGameActive.value || isGameOver.value || hasError.value || isStageTransitioning.value) return
+  if (!isGameActive.value || isGameOver.value || hasError.value || isStageTransitioning.value)
+    return
 
   const key = event.key.toLowerCase()
   if (key !== 'p' && key !== 'escape') return
@@ -1435,10 +1453,10 @@ const handleBeforeUnload = (e: BeforeUnloadEvent): void => {
   if (isGameActive.value && !isGameOver.value && !hasGameCompleted.value) {
     // 清理游戏状态
     cleanupGame()
-    
+
     // 恢复正常页面
     easterEggStore.reset()
-    
+
     // 提示用户
     e.preventDefault()
     e.returnValue = ''
@@ -1450,7 +1468,7 @@ const handleBeforeUnload = (e: BeforeUnloadEvent): void => {
  */
 const toggleMusic = (): void => {
   if (!gameEngine) return
-  
+
   const audioSystem = gameEngine.getAudioSystem()
   if (audioSystem) {
     audioSystem.toggleMusic()
@@ -1464,12 +1482,12 @@ const toggleMusic = (): void => {
  */
 const updateGameStats = (): void => {
   if (!stageManager) return
-  
+
   // 更新游戏时间
   if (gameStartTime.value > 0) {
     gameStats.value.totalPlayTime = Date.now() - gameStartTime.value
   }
-  
+
   // 更新最高关卡
   const currentStageNum = stageManager.getCurrentStageNumber()
   if (currentStageNum > gameStats.value.highestStage) {
@@ -1483,15 +1501,18 @@ const updateGameStats = (): void => {
  */
 const checkAchievements = (): void => {
   updateGameStats()
-  
+
   const newAchievements = achievementSystem.checkAchievements(gameStats.value)
-  
+
   if (newAchievements.length > 0) {
-    console.log('[游戏容器] 解锁新成就:', newAchievements.map(a => a.name))
-    
+    console.log(
+      '[游戏容器] 解锁新成就:',
+      newAchievements.map(a => a.name)
+    )
+
     // 将新解锁的成就加入队列
     newlyUnlockedAchievements.value.push(...newAchievements)
-    
+
     // 显示第一个成就通知
     if (!showAchievementNotification.value) {
       showNextAchievementNotification()
@@ -1508,10 +1529,10 @@ const showNextAchievementNotification = (): void => {
     currentNotificationAchievement.value = null
     return
   }
-  
+
   currentNotificationAchievement.value = newlyUnlockedAchievements.value.shift()!
   showAchievementNotification.value = true
-  
+
   // 4秒后自动关闭并显示下一个
   setTimeout(() => {
     showNextAchievementNotification()
@@ -1534,24 +1555,26 @@ const closeAchievementNotification = (): void => {
  */
 const saveGameScore = (): void => {
   updateGameStats()
-  
+
   const score = gameStats.value.totalScore
   const stage = gameStats.value.highestStage
-  
+
   // 获取已解锁的成就
   const unlockedAchievements = achievementSystem.getUnlockedAchievements()
-  
+
   // 添加分数到排行榜
   const result = leaderboardManager.addScore({
     playerName: '玩家',
     score,
     stage,
     timestamp: Date.now(),
-    achievements: unlockedAchievements
+    achievements: unlockedAchievements,
   })
-  
-  console.log(`[游戏容器] 保存分数: ${score}, 排名: ${result.rank}, 是否高分: ${result.isHighScore}`)
-  
+
+  console.log(
+    `[游戏容器] 保存分数: ${score}, 排名: ${result.rank}, 是否高分: ${result.isHighScore}`
+  )
+
   // 如果是高分，高亮显示
   if (result.isHighScore) {
     const scores = leaderboardManager.getScores()
@@ -1567,7 +1590,7 @@ const saveGameScore = (): void => {
  */
 const recordKill = (isElite: boolean = false, isBoss: boolean = false): void => {
   gameStats.value.totalKills++
-  
+
   // 计算分数：普通敌人 100 分，精英 300 分，Boss 1000 分
   let scoreGain = 100
   if (isBoss) {
@@ -1576,7 +1599,7 @@ const recordKill = (isElite: boolean = false, isBoss: boolean = false): void => 
     scoreGain = 300
   }
   gameStats.value.totalScore += scoreGain
-  
+
   // 每击杀 10 个敌人检查一次成就
   if (gameStats.value.totalKills % 10 === 0) {
     checkAchievements()
@@ -1592,7 +1615,7 @@ const recordStageComplete = (): void => {
     gameStats.value.perfectStages++
     console.log('[游戏容器] 无伤通关！完美关卡数:', gameStats.value.perfectStages)
   }
-  
+
   // 检查成就
   checkAchievements()
 }
@@ -1606,7 +1629,7 @@ const resetGameStats = (): void => {
     highestStage: 1,
     totalKills: 0,
     totalPlayTime: 0,
-    perfectStages: 0
+    perfectStages: 0,
   }
   gameStartTime.value = Date.now()
   stageStartHealth.value = player?.health ?? GAME_CONFIG.PLAYER_INITIAL_HEALTH
@@ -1650,7 +1673,7 @@ defineExpose({
   toggleLeaderboard,
   toggleAchievementList,
   leaderboardManager,
-  achievementSystem
+  achievementSystem,
 })
 </script>
 
@@ -1667,7 +1690,8 @@ defineExpose({
   align-items: center;
   z-index: 10000;
   /* 安全区域适配：全屏游戏容器需要考虑所有安全区域 */
-  padding: var(--safe-area-inset-top) var(--safe-area-inset-right) var(--safe-area-inset-bottom) var(--safe-area-inset-left);
+  padding: var(--safe-area-inset-top) var(--safe-area-inset-right) var(--safe-area-inset-bottom)
+    var(--safe-area-inset-left);
   box-sizing: border-box;
 }
 
@@ -1696,7 +1720,8 @@ defineExpose({
   pointer-events: none;
   z-index: 10001;
   /* 安全区域适配：HUD 需要在安全区域内显示 */
-  padding: var(--safe-area-inset-top) var(--safe-area-inset-right) var(--safe-area-inset-bottom) var(--safe-area-inset-left);
+  padding: var(--safe-area-inset-top) var(--safe-area-inset-right) var(--safe-area-inset-bottom)
+    var(--safe-area-inset-left);
 }
 
 .hud-top-left {
@@ -1739,7 +1764,9 @@ defineExpose({
   font-family: 'Courier New', 'Consolas', monospace;
   font-size: 14px;
   color: #ff0000;
-  box-shadow: 0 0 15px rgba(255, 0, 0, 0.5), inset 0 0 10px rgba(255, 0, 0, 0.1);
+  box-shadow:
+    0 0 15px rgba(255, 0, 0, 0.5),
+    inset 0 0 10px rgba(255, 0, 0, 0.1);
 }
 
 .health-icon {
@@ -1750,7 +1777,8 @@ defineExpose({
 }
 
 @keyframes heartbeat {
-  0%, 100% {
+  0%,
+  100% {
     transform: scale(1);
   }
   50% {
@@ -1808,7 +1836,9 @@ defineExpose({
   border-radius: 4px;
   font-family: 'Courier New', 'Consolas', monospace;
   color: #ff6b9d;
-  box-shadow: 0 0 15px rgba(255, 107, 157, 0.5), inset 0 0 10px rgba(255, 107, 157, 0.1);
+  box-shadow:
+    0 0 15px rgba(255, 107, 157, 0.5),
+    inset 0 0 10px rgba(255, 107, 157, 0.1);
 }
 
 .score-label-hud {
@@ -1838,7 +1868,9 @@ defineExpose({
   font-family: 'Courier New', 'Consolas', monospace;
   font-size: 16px;
   color: #00ffff;
-  box-shadow: 0 0 15px rgba(0, 255, 255, 0.5), inset 0 0 10px rgba(0, 255, 255, 0.1);
+  box-shadow:
+    0 0 15px rgba(0, 255, 255, 0.5),
+    inset 0 0 10px rgba(0, 255, 255, 0.1);
 }
 
 .missile-icon {
@@ -1849,7 +1881,8 @@ defineExpose({
 }
 
 @keyframes missileGlow {
-  0%, 100% {
+  0%,
+  100% {
     filter: brightness(1);
   }
   50% {
@@ -1879,14 +1912,18 @@ defineExpose({
   color: #ffff00;
   cursor: pointer;
   transition: all 0.3s ease;
-  box-shadow: 0 0 15px rgba(255, 255, 0, 0.5), inset 0 0 10px rgba(255, 255, 0, 0.1);
+  box-shadow:
+    0 0 15px rgba(255, 255, 0, 0.5),
+    inset 0 0 10px rgba(255, 255, 0, 0.1);
   pointer-events: auto;
 }
 
 .music-toggle-button:hover {
   background: rgba(255, 255, 0, 0.1);
   border-color: #ffff00;
-  box-shadow: 0 0 20px rgba(255, 255, 0, 0.7), inset 0 0 15px rgba(255, 255, 0, 0.2);
+  box-shadow:
+    0 0 20px rgba(255, 255, 0, 0.7),
+    inset 0 0 15px rgba(255, 255, 0, 0.2);
   transform: scale(1.05);
 }
 
@@ -1902,7 +1939,8 @@ defineExpose({
 }
 
 @keyframes musicPulse {
-  0%, 100% {
+  0%,
+  100% {
     opacity: 1;
   }
   50% {
@@ -1930,7 +1968,9 @@ defineExpose({
   font-family: 'Courier New', 'Consolas', monospace;
   font-size: 12px;
   color: #ffff00;
-  box-shadow: 0 0 15px rgba(255, 255, 0, 0.5), inset 0 0 10px rgba(255, 255, 0, 0.1);
+  box-shadow:
+    0 0 15px rgba(255, 255, 0, 0.5),
+    inset 0 0 10px rgba(255, 255, 0, 0.1);
 }
 
 .nuke-label {
@@ -1988,7 +2028,9 @@ defineExpose({
   font-family: 'Courier New', 'Consolas', monospace;
   font-size: 12px;
   color: #00ff00;
-  box-shadow: 0 0 15px rgba(0, 255, 0, 0.5), inset 0 0 10px rgba(0, 255, 0, 0.1);
+  box-shadow:
+    0 0 15px rgba(0, 255, 0, 0.5),
+    inset 0 0 10px rgba(0, 255, 0, 0.1);
 }
 
 .info-item {
@@ -2105,7 +2147,9 @@ defineExpose({
   text-align: center;
   font-family: 'Press Start 2P', monospace;
   color: #00d9ff;
-  box-shadow: 0 0 30px rgba(0, 217, 255, 0.55), inset 0 0 18px rgba(0, 217, 255, 0.18);
+  box-shadow:
+    0 0 30px rgba(0, 217, 255, 0.55),
+    inset 0 0 18px rgba(0, 217, 255, 0.18);
   animation: stageTransitionPulse 1.2s ease-in-out infinite;
 }
 
@@ -2123,7 +2167,8 @@ defineExpose({
 }
 
 @keyframes stageTransitionPulse {
-  0%, 100% {
+  0%,
+  100% {
     transform: scale(1);
   }
   50% {
@@ -2372,8 +2417,13 @@ defineExpose({
 }
 
 @keyframes highlightPulse {
-  0%, 100% { box-shadow: 0 0 15px rgba(255, 107, 157, 0.4); }
-  50% { box-shadow: 0 0 25px rgba(255, 107, 157, 0.6); }
+  0%,
+  100% {
+    box-shadow: 0 0 15px rgba(255, 107, 157, 0.4);
+  }
+  50% {
+    box-shadow: 0 0 25px rgba(255, 107, 157, 0.6);
+  }
 }
 
 .item-rank-custom {
@@ -2439,8 +2489,13 @@ defineExpose({
 }
 
 @keyframes newBadgePulse {
-  0%, 100% { transform: scale(1); }
-  50% { transform: scale(1.05); }
+  0%,
+  100% {
+    transform: scale(1);
+  }
+  50% {
+    transform: scale(1.05);
+  }
 }
 
 .empty-state {
@@ -2590,8 +2645,15 @@ defineExpose({
 }
 
 @keyframes glowPulse {
-  0%, 100% { opacity: 0.5; transform: scale(1); }
-  50% { opacity: 1; transform: scale(1.1); }
+  0%,
+  100% {
+    opacity: 0.5;
+    transform: scale(1);
+  }
+  50% {
+    opacity: 1;
+    transform: scale(1.1);
+  }
 }
 
 .notification-content {
@@ -2621,9 +2683,15 @@ defineExpose({
 }
 
 @keyframes iconBounce {
-  0% { transform: scale(0); }
-  50% { transform: scale(1.2); }
-  100% { transform: scale(1); }
+  0% {
+    transform: scale(0);
+  }
+  50% {
+    transform: scale(1.2);
+  }
+  100% {
+    transform: scale(1);
+  }
 }
 
 .notification-info {
@@ -2663,12 +2731,24 @@ defineExpose({
 }
 
 @keyframes notificationEnter {
-  0% { transform: translateX(100%) scale(0.8); opacity: 0; }
-  100% { transform: translateX(0) scale(1); opacity: 1; }
+  0% {
+    transform: translateX(100%) scale(0.8);
+    opacity: 0;
+  }
+  100% {
+    transform: translateX(0) scale(1);
+    opacity: 1;
+  }
 }
 
 @keyframes notificationLeave {
-  0% { transform: translateX(0) scale(1); opacity: 1; }
-  100% { transform: translateX(100%) scale(0.8); opacity: 0; }
+  0% {
+    transform: translateX(0) scale(1);
+    opacity: 1;
+  }
+  100% {
+    transform: translateX(100%) scale(0.8);
+    opacity: 0;
+  }
 }
 </style>

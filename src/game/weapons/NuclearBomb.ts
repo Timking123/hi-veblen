@@ -1,6 +1,6 @@
 /**
  * 核弹系统
- * 
+ *
  * 功能：
  * - 进度条管理（0-100）
  * - 击杀敌人增加进度
@@ -151,12 +151,7 @@ export class NuclearBomb {
       const stemHeight = cloudProgress * 200
       const stemWidth = 40
       ctx.fillStyle = `rgba(255, 100, 0, ${cloudAlpha * 0.8})`
-      ctx.fillRect(
-        centerX - stemWidth / 2,
-        centerY,
-        stemWidth,
-        stemHeight
-      )
+      ctx.fillRect(centerX - stemWidth / 2, centerY, stemWidth, stemHeight)
 
       // 蘑菇云顶部
       const capRadius = cloudProgress * 100
@@ -165,7 +160,7 @@ export class NuclearBomb {
       // 外层云
       ctx.fillStyle = `rgba(255, 150, 0, ${cloudAlpha * 0.6})`
       ctx.beginPath()
-      ctx.arc(capY, capY, capRadius * 1.2, 0, Math.PI * 2)
+      ctx.arc(centerX, capY, capRadius * 1.2, 0, Math.PI * 2)
       ctx.fill()
 
       // 中层云

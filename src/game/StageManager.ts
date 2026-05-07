@@ -1,6 +1,6 @@
 /**
  * 关卡管理器
- * 
+ *
  * 功能：
  * - 管理三个关卡的配置和状态
  * - 控制敌人生成频率和类型
@@ -81,10 +81,7 @@ export class StageManager {
    */
   shouldSpawnBoss(): boolean {
     // 当所有普通敌人都被击杀，且 Boss 未生成时
-    return (
-      this.killedEnemies >= this.currentStage.totalEnemies &&
-      !this.bossSpawned
-    )
+    return this.killedEnemies >= this.currentStage.totalEnemies && !this.bossSpawned
   }
 
   /**
@@ -131,16 +128,24 @@ export class StageManager {
    * 记录敌人被击杀
    */
   recordKill(): void {
+    if (this.killedEnemies >= this.currentStage.totalEnemies) {
+      console.warn('[关卡管理器] 普通敌人击杀数已达上限，忽略重复调用')
+      return
+    }
+
     this.killedEnemies++
-    console.log(
-      `[关卡管理器] 击杀敌人 ${this.killedEnemies}/${this.currentStage.totalEnemies}`
-    )
+    console.log(`[关卡管理器] 击杀敌人 ${this.killedEnemies}/${this.currentStage.totalEnemies}`)
   }
 
   /**
    * 记录 Boss 被击杀
    */
   recordBossKill(): void {
+    if (!this.bossSpawned) {
+      console.warn('[关卡管理器] Boss 尚未生成，忽略击杀记录')
+      return
+    }
+
     if (this.bossKilled) {
       console.warn('[关卡管理器] Boss 已记录击杀，忽略重复调用')
       return
@@ -155,7 +160,9 @@ export class StageManager {
    */
   canAdvanceStage(): boolean {
     // 只有非最终关卡在 Boss 被击杀后才能进入下一关
-    return !this.isFinalStage() && this.bossSpawned && this.bossKilled && this.getRemainingCount() === 0
+    return (
+      !this.isFinalStage() && this.bossSpawned && this.bossKilled && this.getRemainingCount() === 0
+    )
   }
 
   /**
@@ -196,7 +203,9 @@ export class StageManager {
    * 是否游戏通关
    */
   isGameComplete(): boolean {
-    return this.isFinalStage() && this.bossSpawned && this.bossKilled && this.getRemainingCount() === 0
+    return (
+      this.isFinalStage() && this.bossSpawned && this.bossKilled && this.getRemainingCount() === 0
+    )
   }
 
   /**

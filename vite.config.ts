@@ -7,7 +7,7 @@ import { fileURLToPath, URL } from 'node:url'
 export default defineConfig(({ mode }) => {
   // Load env file based on `mode` in the current working directory.
   const env = loadEnv(mode, process.cwd(), '')
-  
+
   return {
     plugins: [
       vue(),
@@ -17,11 +17,17 @@ export default defineConfig(({ mode }) => {
       // 验证: 需求 3.7 - 在 manifest.json 中定义应用元数据
       VitePWA({
         registerType: 'autoUpdate',
-        includeAssets: ['favicon.ico', 'apple-touch-icon.png', 'pwa-192x192.png', 'pwa-512x512.png'],
+        includeAssets: [
+          'favicon.ico',
+          'apple-touch-icon.png',
+          'pwa-192x192.png',
+          'pwa-512x512.png',
+        ],
         manifest: {
           name: '黄彦杰 - 个人求职网站',
           short_name: '黄彦杰',
-          description: '黄彦杰的个人求职网站，展示前端开发、软件需求分析专业技能、项目经验和教育背景。',
+          description:
+            '黄彦杰的个人求职网站，展示前端开发、软件需求分析专业技能、项目经验和教育背景。',
           theme_color: '#0A0E27',
           background_color: '#0A0E27',
           display: 'standalone',
@@ -35,26 +41,26 @@ export default defineConfig(({ mode }) => {
               src: 'pwa-192x192.png',
               sizes: '192x192',
               type: 'image/png',
-              purpose: 'any'
+              purpose: 'any',
             },
             {
               src: 'pwa-512x512.png',
               sizes: '512x512',
               type: 'image/png',
-              purpose: 'any'
+              purpose: 'any',
             },
             {
               src: 'pwa-512x512.png',
               sizes: '512x512',
               type: 'image/png',
-              purpose: 'maskable'
+              purpose: 'maskable',
             },
             {
               src: 'apple-touch-icon.png',
               sizes: '180x180',
               type: 'image/png',
-              purpose: 'apple touch icon'
-            }
+              purpose: 'apple touch icon',
+            },
           ],
           screenshots: [
             {
@@ -62,16 +68,16 @@ export default defineConfig(({ mode }) => {
               sizes: '1280x720',
               type: 'image/png',
               form_factor: 'wide',
-              label: '黄彦杰个人网站 - 桌面版'
+              label: '黄彦杰个人网站 - 桌面版',
             },
             {
               src: 'screenshot-narrow.png',
               sizes: '750x1334',
               type: 'image/png',
               form_factor: 'narrow',
-              label: '黄彦杰个人网站 - 移动版'
-            }
-          ]
+              label: '黄彦杰个人网站 - 移动版',
+            },
+          ],
         },
         // Service Worker 缓存策略配置（使用 Workbox）
         workbox: {
@@ -91,12 +97,12 @@ export default defineConfig(({ mode }) => {
                 cacheName: 'google-fonts-cache',
                 expiration: {
                   maxEntries: 10,
-                  maxAgeSeconds: 60 * 60 * 24 * 365 // 1 年
+                  maxAgeSeconds: 60 * 60 * 24 * 365, // 1 年
                 },
                 cacheableResponse: {
-                  statuses: [0, 200]
-                }
-              }
+                  statuses: [0, 200],
+                },
+              },
             },
             {
               // 缓存 Google Fonts 字体文件
@@ -106,12 +112,12 @@ export default defineConfig(({ mode }) => {
                 cacheName: 'gstatic-fonts-cache',
                 expiration: {
                   maxEntries: 10,
-                  maxAgeSeconds: 60 * 60 * 24 * 365 // 1 年
+                  maxAgeSeconds: 60 * 60 * 24 * 365, // 1 年
                 },
                 cacheableResponse: {
-                  statuses: [0, 200]
-                }
-              }
+                  statuses: [0, 200],
+                },
+              },
             },
             {
               // 缓存图片资源
@@ -121,9 +127,9 @@ export default defineConfig(({ mode }) => {
                 cacheName: 'images-cache',
                 expiration: {
                   maxEntries: 50,
-                  maxAgeSeconds: 60 * 60 * 24 * 30 // 30 天
-                }
-              }
+                  maxAgeSeconds: 60 * 60 * 24 * 30, // 30 天
+                },
+              },
             },
             {
               // 缓存 PDF 文件（简历）
@@ -133,9 +139,9 @@ export default defineConfig(({ mode }) => {
                 cacheName: 'pdf-cache',
                 expiration: {
                   maxEntries: 5,
-                  maxAgeSeconds: 60 * 60 * 24 * 7 // 7 天
-                }
-              }
+                  maxAgeSeconds: 60 * 60 * 24 * 7, // 7 天
+                },
+              },
             },
             {
               // 缓存音频文件
@@ -145,40 +151,40 @@ export default defineConfig(({ mode }) => {
                 cacheName: 'audio-cache',
                 expiration: {
                   maxEntries: 20,
-                  maxAgeSeconds: 60 * 60 * 24 * 30 // 30 天
-                }
-              }
-            }
+                  maxAgeSeconds: 60 * 60 * 24 * 30, // 30 天
+                },
+              },
+            },
           ],
           // 跳过等待，立即激活新的 Service Worker
           skipWaiting: true,
           // 立即控制所有客户端
-          clientsClaim: true
+          clientsClaim: true,
         },
         // 开发模式下也启用 PWA（用于测试）
         devOptions: {
           enabled: false, // 生产环境才启用
-          type: 'module'
-        }
-      })
+          type: 'module',
+        },
+      }),
     ],
-    
+
     // Base public path
     base: env.VITE_BASE_URL || '/',
-    
+
     resolve: {
       alias: {
-        '@': fileURLToPath(new URL('./src', import.meta.url))
-      }
+        '@': fileURLToPath(new URL('./src', import.meta.url)),
+      },
     },
-    
+
     build: {
       // Output directory
       outDir: 'dist',
-      
+
       // Generate sourcemaps for production (set to false for smaller builds)
       sourcemap: mode === 'development',
-      
+
       // Minify options
       minify: 'terser',
       terserOptions: {
@@ -188,7 +194,7 @@ export default defineConfig(({ mode }) => {
           drop_debugger: mode === 'production',
         },
       },
-      
+
       // Code splitting configuration（代码分割配置）
       // 验证: 需求 4.3 - 将路由组件拆分为独立的代码块，实现按需加载
       // 验证: 需求 4.4 - 对大型第三方库（如 ECharts）进行单独分包
@@ -203,7 +209,7 @@ export default defineConfig(({ mode }) => {
               if (id.includes('vue') || id.includes('pinia') || id.includes('vue-router')) {
                 return 'vue-vendor'
               }
-              
+
               // ECharts 与 zrender 拆分为独立缓存块，避免单个 chunk 过大
               if (id.includes('zrender')) {
                 return 'zrender-vendor'
@@ -211,56 +217,56 @@ export default defineConfig(({ mode }) => {
               if (id.includes('echarts')) {
                 return 'echarts-vendor'
               }
-              
+
               // 其他第三方依赖统一打包
               return 'vendor'
             }
-            
+
             // 路由组件使用动态导入，Vite 会自动进行代码分割
             // 无需在此处额外配置
           },
-          
+
           // Asset file naming
-          assetFileNames: (assetInfo) => {
+          assetFileNames: assetInfo => {
             const info = assetInfo.name?.split('.') || []
             let extType = info[info.length - 1]
-            
+
             if (/\.(png|jpe?g|gif|svg|webp|avif)$/i.test(assetInfo.name || '')) {
               extType = 'images'
             } else if (/\.(woff2?|eot|ttf|otf)$/i.test(assetInfo.name || '')) {
               extType = 'fonts'
             }
-            
+
             return `assets/${extType}/[name]-[hash][extname]`
           },
-          
+
           // Chunk file naming
           chunkFileNames: 'assets/js/[name]-[hash].js',
           entryFileNames: 'assets/js/[name]-[hash].js',
         },
       },
-      
+
       // Chunk size warnings
       chunkSizeWarningLimit: 1200,
-      
+
       // Enable CSS code splitting
       cssCodeSplit: true,
-      
+
       // Asset inline limit (smaller assets will be inlined as base64)
       assetsInlineLimit: 4096,
-      
+
       // Report compressed size
       reportCompressedSize: true,
-      
+
       // Target browsers
       target: 'es2015',
     },
-    
+
     // Optimize dependencies
     optimizeDeps: {
       include: ['vue', 'vue-router', 'pinia', 'echarts'],
     },
-    
+
     // Server configuration
     server: {
       port: 5173,
@@ -273,23 +279,28 @@ export default defineConfig(({ mode }) => {
         '/api': {
           target: 'http://localhost:3001',
           changeOrigin: true,
-          secure: false
-        }
-      }
+          secure: false,
+        },
+      },
     },
-    
+
     // Preview configuration
     preview: {
       port: 4173,
       host: true,
       open: true,
     },
-    
+
     // Test configuration
     test: {
       globals: true,
       environment: 'happy-dom',
       setupFiles: ['./src/test/setup.ts'],
+      include: ['src/**/*.{test,spec}.{js,ts}'],
+      pool: 'forks',
+      alias: {
+        vitest: fileURLToPath(new URL('./src/test/vitest-globals.ts', import.meta.url)),
+      },
       exclude: [
         '**/node_modules/**',
         '**/dist/**',

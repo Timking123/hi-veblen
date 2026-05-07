@@ -84,12 +84,7 @@
 
         <!-- 蜡烛 -->
         <div class="candles">
-          <div
-            v-for="i in 3"
-            :key="i"
-            class="candle"
-            :class="{ 'candle-lit': candlesLit }"
-          >
+          <div v-for="i in 3" :key="i" class="candle" :class="{ 'candle-lit': candlesLit }">
             <div class="candle-stick"></div>
             <div class="candle-flame"></div>
           </div>
@@ -137,14 +132,14 @@ const balloonsLeft = ref<Balloon[]>([
   { color: '#FF6B6B', popped: false },
   { color: '#4ECDC4', popped: false },
   { color: '#FFE66D', popped: false },
-  { color: '#95E1D3', popped: false }
+  { color: '#95E1D3', popped: false },
 ])
 
 const balloonsRight = ref<Balloon[]>([
   { color: '#A8E6CF', popped: false },
   { color: '#FFD3B6', popped: false },
   { color: '#FFAAA5', popped: false },
-  { color: '#FF8B94', popped: false }
+  { color: '#FF8B94', popped: false },
 ])
 
 // 礼花数据
@@ -155,13 +150,13 @@ interface Firework {
 const fireworksLeft = ref<Firework[]>([
   { launched: false },
   { launched: false },
-  { launched: false }
+  { launched: false },
 ])
 
 const fireworksRight = ref<Firework[]>([
   { launched: false },
   { launched: false },
-  { launched: false }
+  { launched: false },
 ])
 
 // 蛋糕状态
@@ -184,12 +179,12 @@ const showCard = ref(false)
 const popBalloon = (balloon: Balloon): void => {
   if (!balloon.popped) {
     balloon.popped = true
-    
+
     // 需求 18.1: 气球点击时播放音效
     if (audioSystem) {
       audioSystem.playSoundEffect(SoundEffect.BALLOON_POP)
     }
-    
+
     console.log('[庆祝页面] 气球爆炸')
   }
 }
@@ -203,7 +198,7 @@ const getConfettiStyle = () => {
     backgroundColor: colors[Math.floor(Math.random() * colors.length)],
     left: `${Math.random() * 100}%`,
     animationDelay: `${Math.random() * 0.5}s`,
-    animationDuration: `${0.5 + Math.random() * 0.5}s`
+    animationDuration: `${0.5 + Math.random() * 0.5}s`,
   }
 }
 
@@ -213,12 +208,12 @@ const getConfettiStyle = () => {
 const launchFirework = (firework: Firework): void => {
   if (!firework.launched) {
     firework.launched = true
-    
+
     // 需求 18.5: 礼花点击时播放音效
     if (audioSystem) {
       audioSystem.playSoundEffect(SoundEffect.FIREWORK_LAUNCH)
     }
-    
+
     console.log('[庆祝页面] 礼花发射')
   }
 }
@@ -231,12 +226,12 @@ const handleBannerClick = (): void => {
   setTimeout(() => {
     bannerWaving.value = false
   }, 1000)
-  
+
   // 需求 18.2: 横幅点击时播放音效
   if (audioSystem) {
     audioSystem.playSoundEffect(SoundEffect.BANNER_SHAKE)
   }
-  
+
   console.log('[庆祝页面] 横幅晃动')
 }
 
@@ -246,12 +241,12 @@ const handleBannerClick = (): void => {
 const unrollCarpet = (): void => {
   if (!carpetUnrolled.value) {
     carpetUnrolled.value = true
-    
+
     // 需求 18.4: 红毯点击时播放音效
     if (audioSystem) {
       audioSystem.playSoundEffect(SoundEffect.CARPET_ROLL)
     }
-    
+
     console.log('[庆祝页面] 红毯铺开')
   }
 }
@@ -266,12 +261,12 @@ const handleCakeClick = (): void => {
     // 首次点击：点亮蜡烛
     candlesLit.value = true
     candleLitTime.value = Date.now()
-    
+
     // 需求 18.3: 蛋糕点击时播放音效
     if (audioSystem) {
       audioSystem.playSoundEffect(SoundEffect.CAKE_LIGHT)
     }
-    
+
     console.log('[庆祝页面] 蜡烛点亮')
   } else if (cakeClickCount.value >= 2 && Date.now() - candleLitTime.value >= 1000) {
     // 第二次点击（蜡烛点亮1秒后）：显示贺卡
@@ -292,15 +287,13 @@ const closeCard = (): void => {
  */
 const returnToHome = (): void => {
   console.log('[庆祝页面] 返回首页')
-  easterEggStore.reset()
-  // 刷新页面返回首页（恢复崩塌后的页面）
-  window.location.href = '/'
+  easterEggStore.reset({ reload: true })
 }
 
 // 组件挂载
 onMounted(async () => {
   console.log('[庆祝页面] 组件已挂载')
-  
+
   // 初始化音频系统
   try {
     audioSystem = new AudioSystem()
@@ -345,7 +338,8 @@ onUnmounted(() => {
 }
 
 @keyframes bgShift {
-  0%, 100% {
+  0%,
+  100% {
     filter: hue-rotate(0deg);
   }
   50% {
@@ -359,7 +353,7 @@ onUnmounted(() => {
   top: 50px;
   left: 50%;
   transform: translateX(-50%);
-  background: linear-gradient(90deg, #FFD700, #FFA500, #FFD700);
+  background: linear-gradient(90deg, #ffd700, #ffa500, #ffd700);
   padding: 20px 60px;
   border-radius: 10px;
   box-shadow: 0 10px 30px rgba(0, 0, 0, 0.3);
@@ -389,7 +383,8 @@ onUnmounted(() => {
 }
 
 @keyframes wave {
-  0%, 100% {
+  0%,
+  100% {
     transform: translateX(-50%) rotate(0deg);
   }
   25% {
@@ -432,11 +427,14 @@ onUnmounted(() => {
   border-radius: 50% 50% 50% 50% / 60% 60% 40% 40%;
   cursor: pointer;
   position: relative;
-  animation: balloonFloat 3s ease-in-out infinite, balloonAppear 0.5s ease-out;
+  animation:
+    balloonFloat 3s ease-in-out infinite,
+    balloonAppear 0.5s ease-out;
   opacity: 0;
   animation-fill-mode: forwards;
-  box-shadow: inset -10px -10px 20px rgba(0, 0, 0, 0.2),
-              0 5px 15px rgba(0, 0, 0, 0.3);
+  box-shadow:
+    inset -10px -10px 20px rgba(0, 0, 0, 0.2),
+    0 5px 15px rgba(0, 0, 0, 0.3);
   transition: transform 0.3s;
 }
 
@@ -451,7 +449,8 @@ onUnmounted(() => {
 }
 
 @keyframes balloonFloat {
-  0%, 100% {
+  0%,
+  100% {
     transform: translateY(0);
   }
   50% {
@@ -500,10 +499,8 @@ onUnmounted(() => {
 
 @keyframes confettiFall {
   to {
-    transform: translate(
-      calc(var(--random-x, 0) * 100px),
-      calc(var(--random-y, 100) * 1px)
-    ) rotate(720deg);
+    transform: translate(calc(var(--random-x, 0) * 100px), calc(var(--random-y, 100) * 1px))
+      rotate(720deg);
     opacity: 0;
   }
 }
@@ -584,7 +581,7 @@ onUnmounted(() => {
   transform: translateX(-50%);
   width: 200px;
   height: 30px;
-  background: linear-gradient(90deg, #8B0000, #DC143C, #8B0000);
+  background: linear-gradient(90deg, #8b0000, #dc143c, #8b0000);
   border-radius: 50% 50% 0 0;
   box-shadow: 0 5px 15px rgba(0, 0, 0, 0.5);
   transition: all 1s ease-out;
@@ -597,9 +594,9 @@ onUnmounted(() => {
   transform: translateX(-50%);
   width: 200px;
   height: 0;
-  background: linear-gradient(180deg, #DC143C, #8B0000);
-  border-left: 10px solid #FFD700;
-  border-right: 10px solid #FFD700;
+  background: linear-gradient(180deg, #dc143c, #8b0000);
+  border-left: 10px solid #ffd700;
+  border-right: 10px solid #ffd700;
   transition: height 1s ease-out;
 }
 
@@ -648,23 +645,23 @@ onUnmounted(() => {
 .cake-layer-1 {
   width: 120px;
   height: 40px;
-  background: linear-gradient(180deg, #FFB6C1, #FF69B4);
-  border: 3px solid #FF1493;
+  background: linear-gradient(180deg, #ffb6c1, #ff69b4);
+  border: 3px solid #ff1493;
 }
 
 .cake-layer-2 {
   width: 100px;
   height: 35px;
-  background: linear-gradient(180deg, #FFD700, #FFA500);
-  border: 3px solid #FF8C00;
+  background: linear-gradient(180deg, #ffd700, #ffa500);
+  border: 3px solid #ff8c00;
   margin-top: -5px;
 }
 
 .cake-layer-3 {
   width: 80px;
   height: 30px;
-  background: linear-gradient(180deg, #98FB98, #00FA9A);
-  border: 3px solid #00FF7F;
+  background: linear-gradient(180deg, #98fb98, #00fa9a);
+  border: 3px solid #00ff7f;
   margin-top: -5px;
 }
 
@@ -686,7 +683,7 @@ onUnmounted(() => {
 .candle-stick {
   width: 8px;
   height: 30px;
-  background: linear-gradient(90deg, #FFF, #FFE4B5, #FFF);
+  background: linear-gradient(90deg, #fff, #ffe4b5, #fff);
   border-radius: 2px;
   box-shadow: 0 2px 5px rgba(0, 0, 0, 0.3);
 }
@@ -694,7 +691,7 @@ onUnmounted(() => {
 .candle-flame {
   width: 12px;
   height: 15px;
-  background: radial-gradient(circle, #FFD700, #FF4500);
+  background: radial-gradient(circle, #ffd700, #ff4500);
   border-radius: 50% 50% 50% 50% / 60% 60% 40% 40%;
   margin-top: -5px;
   opacity: 0;
@@ -707,7 +704,8 @@ onUnmounted(() => {
 }
 
 @keyframes flameFlicker {
-  0%, 100% {
+  0%,
+  100% {
     transform: scale(1);
   }
   50% {
@@ -740,8 +738,8 @@ onUnmounted(() => {
 }
 
 .card {
-  background: linear-gradient(135deg, #FFF 0%, #FFE4E1 100%);
-  border: 5px solid #FFD700;
+  background: linear-gradient(135deg, #fff 0%, #ffe4e1 100%);
+  border: 5px solid #ffd700;
   border-radius: 20px;
   padding: 40px;
   max-width: 500px;
@@ -763,7 +761,7 @@ onUnmounted(() => {
 .card-header {
   font-family: 'Press Start 2P', monospace;
   font-size: 24px;
-  color: #FF1493;
+  color: #ff1493;
   text-align: center;
   margin-bottom: 30px;
   text-shadow: 2px 2px 4px rgba(0, 0, 0, 0.2);
@@ -788,8 +786,8 @@ onUnmounted(() => {
   font-family: 'Press Start 2P', monospace;
   font-size: 14px;
   padding: 15px 30px;
-  background: linear-gradient(90deg, #FF1493, #FF69B4);
-  color: #FFF;
+  background: linear-gradient(90deg, #ff1493, #ff69b4);
+  color: #fff;
   border: none;
   border-radius: 10px;
   cursor: pointer;

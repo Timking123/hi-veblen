@@ -6,10 +6,21 @@ import { defineStore } from 'pinia'
 import { ref } from 'vue'
 import { GamePhase } from '@/game/types'
 
+interface SavedPageState {
+  scrollPosition: number
+  timestamp: number
+}
+
+const restorePageShell = (): void => {
+  if (typeof document !== 'undefined') {
+    document.body.style.overflow = ''
+  }
+}
+
 export const useEasterEggStore = defineStore('easterEgg', () => {
   // 状态
   const phase = ref<GamePhase>(GamePhase.IDLE)
-  const savedPageState = ref<any>(null)
+  const savedPageState = ref<SavedPageState | null>(null)
 
   /**
    * 进入页面崩塌动画阶段
@@ -17,13 +28,13 @@ export const useEasterEggStore = defineStore('easterEgg', () => {
   function enterCollapseAnimation() {
     console.log('[彩蛋] 进入崩塌动画阶段')
     phase.value = GamePhase.COLLAPSE_ANIMATION
-    
+
     // 保存当前页面状态
     savedPageState.value = {
       scrollPosition: window.scrollY,
-      timestamp: Date.now()
+      timestamp: Date.now(),
     }
-    
+
     // 阻止页面滚动
     document.body.style.overflow = 'hidden'
   }
@@ -63,22 +74,29 @@ export const useEasterEggStore = defineStore('easterEgg', () => {
   /**
    * 恢复正常页面
    */
-  function restoreNormalPage() {
+  function restoreNormalPage(options: { reload?: boolean } = {}) {
     console.log('[彩蛋] 恢复正常页面')
     phase.value = GamePhase.IDLE
-    
-    // 恢复页面滚动
-    document.body.style.overflow = ''
-    
-    // 刷新页面以恢复崩塌后的 DOM
-    window.location.href = '/'
+    restorePageShell()
+
+    const scrollPosition = savedPageState.value?.scrollPosition ?? 0
+    savedPageState.value = null
+
+    if (options.reload) {
+      window.location.href = '/'
+      return
+    }
+
+    window.requestAnimationFrame(() => {
+      window.scrollTo({ top: scrollPosition, behavior: 'instant' })
+    })
   }
 
   /**
    * 重置状态
    */
-  function reset() {
-    restoreNormalPage()
+  function reset(options: { reload?: boolean } = {}) {
+    restoreNormalPage(options)
   }
 
   return {
@@ -90,6 +108,6 @@ export const useEasterEggStore = defineStore('easterEgg', () => {
     enterGame,
     enterCelebration,
     restoreNormalPage,
-    reset
+    reset,
   }
 })
