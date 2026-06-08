@@ -13,7 +13,7 @@
    - 保存位置：`public/images/`
 
 2. **验证路径**
-   - 确保文件完整路径为：`C:\Users\12432\Desktop\MyWeb\public\images\avatar.png`
+   - 确保文件完整路径为：`C:\Users\12432\Desktop\Project\MyWeb\public\images\avatar.png`
    - 文件名可以是 `avatar.png` 或 `avatar.jpg`（当前配置为 PNG）
 
 3. **刷新浏览器**
@@ -95,7 +95,7 @@
 **快速操作提示：**
 1. 找到您的头像图片文件（PNG 格式）
 2. 确认文件名为 `avatar.png`
-3. 确认文件在 `C:\Users\12432\Desktop\MyWeb\public\images\` 目录
+3. 确认文件在 `C:\Users\12432\Desktop\Project\MyWeb\public\images\` 目录
 4. 刷新浏览器（F5）
 
 完成后，您的头像将以圆形形式显示在首页，带有发光动画效果！

@@ -52,7 +52,7 @@ if [ -f "./src/admin/backend/.env.production" ]; then
     source ./src/admin/backend/.env.production
 fi
 
-USERNAME="${ADMIN_USERNAME:-veblen}"
+USERNAME="${ADMIN_USERNAME:-admin}"
 PASSWORD="${ADMIN_PASSWORD:-changeme}"
 
 # 使用 Node.js 创建密码哈希并插入数据库

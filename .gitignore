@@ -16,6 +16,12 @@ dist-ssr
 .env
 .env.local
 .env.*.local
+.env.development
+.env.production
+src/.env.development
+src/.env.production
+src/admin/frontend/.env.development
+src/admin/frontend/.env.production
 
 # Editor directories and files
 .vscode/*
@@ -38,3 +44,24 @@ public/audio/**/*.mp3
 public/audio/**/*.wav
 public/audio/**/*.ogg
 !public/audio/**/README.md
+
+# Backend build output
+src/admin/backend/dist/
+
+# Admin uploaded files (runtime data)
+src/admin/file/
+
+# Snapshot directory
+.snapshots/
+
+# Test temp directory
+.test-temp/
+
+# Playwright report
+playwright-report/
+
+# Coding agent docs (development tooling)
+coding-agent-docs/
+
+# Agent skills spec
+agent_skills_spec.md

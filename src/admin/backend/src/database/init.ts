@@ -1,7 +1,7 @@
 /**
  * 数据库初始化脚本
  * 创建所有表结构并初始化数据库连接
- * 
+ *
  * 使用 sql.js（纯 JavaScript SQLite 实现）
  * 需求: 1.6 - 使用 SQLite 作为数据库，减少内存占用
  */
@@ -46,7 +46,7 @@ export function saveDatabase(): void {
   if (!db || dbPath === ':memory:') {
     return
   }
-  
+
   try {
     const data = db.export()
     const buffer = Buffer.from(data)
@@ -98,7 +98,7 @@ function createVisitsTable(database: SqlJsDatabase, silent?: boolean): void {
       created_at DATETIME DEFAULT CURRENT_TIMESTAMP
     )
   `)
-  
+
   // 创建索引以优化查询性能
   database.run(`CREATE INDEX IF NOT EXISTS idx_visits_created_at ON visits(created_at)`)
   database.run(`CREATE INDEX IF NOT EXISTS idx_visits_page ON visits(page)`)
@@ -125,7 +125,7 @@ function createMessagesTable(database: SqlJsDatabase, silent?: boolean): void {
       read_at DATETIME
     )
   `)
-  
+
   // 创建索引
   database.run(`CREATE INDEX IF NOT EXISTS idx_messages_status ON messages(status)`)
   database.run(`CREATE INDEX IF NOT EXISTS idx_messages_created_at ON messages(created_at)`)
@@ -223,7 +223,7 @@ function createSkillsTable(database: SqlJsDatabase, silent?: boolean): void {
       updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
     )
   `)
-  
+
   // 创建分类索引
   database.run(`CREATE INDEX IF NOT EXISTS idx_skills_category ON skills(category)`)
   if (!silent) {
@@ -275,7 +275,7 @@ function createProjectsTable(database: SqlJsDatabase, silent?: boolean): void {
       updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
     )
   `)
-  
+
   // 创建分类索引
   database.run(`CREATE INDEX IF NOT EXISTS idx_projects_category ON projects(category)`)
   if (!silent) {
@@ -341,7 +341,7 @@ function createGameLeaderboardTable(database: SqlJsDatabase, silent?: boolean): 
       created_at DATETIME DEFAULT CURRENT_TIMESTAMP
     )
   `)
-  
+
   // 创建分数降序索引
   database.run(`CREATE INDEX IF NOT EXISTS idx_leaderboard_score ON game_leaderboard(score DESC)`)
   if (!silent) {
@@ -430,7 +430,6 @@ function createStatisticsTable(database: SqlJsDatabase, silent?: boolean): void 
   }
 }
 
-
 /**
  * 创建所有数据库表
  * 按照依赖顺序创建表结构
@@ -439,19 +438,19 @@ function createAllTables(database: SqlJsDatabase, silent?: boolean): void {
   if (!silent) {
     console.log('\n开始创建数据库表结构...\n')
   }
-  
+
   // 启用外键约束
   database.run('PRAGMA foreign_keys = ON')
-  
+
   // 用户和认证相关
   createUsersTable(database, silent)
-  
+
   // 访问统计相关
   createVisitsTable(database, silent)
-  
+
   // 留言相关
   createMessagesTable(database, silent)
-  
+
   // 内容管理相关
   createProfileTable(database, silent)
   createEducationTable(database, silent)
@@ -460,19 +459,19 @@ function createAllTables(database: SqlJsDatabase, silent?: boolean): void {
   createSkillTreeTable(database, silent)
   createProjectsTable(database, silent)
   createCampusExperienceTable(database, silent)
-  
+
   // 文件管理相关
   createResumeVersionsTable(database, silent)
-  
+
   // 游戏相关
   createGameLeaderboardTable(database, silent)
   createGameAchievementsTable(database, silent)
   createGameConfigTable(database, silent)
-  
+
   // SEO 和统计相关
   createSeoConfigTable(database, silent)
   createStatisticsTable(database, silent)
-  
+
   if (!silent) {
     console.log('\n✓ 所有数据库表创建完成！\n')
   }
@@ -488,14 +487,14 @@ function getDefaultGameConfig(): string {
       playerInitialSpeed: 5,
       nukeMaxProgress: 100,
       enemySpawnRate: 3000,
-      stageTotalEnemies: 50
+      stageTotalEnemies: 50,
     },
     advanced: {
       scene: {
         canvasWidth: 800,
         canvasHeight: 600,
         scaleMultiplier: 1.5,
-        pixelBlockSize: 8
+        pixelBlockSize: 8,
       },
       player: {
         moveDistance: 8,
@@ -507,19 +506,19 @@ function getDefaultGameConfig(): string {
           trajectories: 1,
           fireRate: 3000,
           bulletDamage: 2,
-          bulletSpeed: 20
+          bulletSpeed: 20,
         },
         initialMissileLauncher: {
           missileCount: 10,
           missileDamage: 7.5, // 从 5 提升到 7.5（1.5 倍）
           missileSpeed: 12,
-          explosionRadius: 4.5 // 从 3 提升到 4.5（1.5 倍）
-        }
+          explosionRadius: 4.5, // 从 3 提升到 4.5（1.5 倍）
+        },
       },
       movement: {
         enemyMoveInterval: 500,
         enemyDownInterval: 500,
-        pickupMoveSpeed: 2
+        pickupMoveSpeed: 2,
       },
       shooting: {
         playerGunCooldown: 200,
@@ -527,28 +526,28 @@ function getDefaultGameConfig(): string {
         bulletSpeed: 0.08,
         bulletMoveInterval: 50,
         missileSpeed: 0.053,
-        missileMoveInterval: 80
+        missileMoveInterval: 80,
       },
       effects: {
         explosionDuration: 500,
         explosionFrames: 8,
         screenShakeDuration: 300,
         screenShakeIntensityMin: 2,
-        screenShakeIntensityMax: 4
+        screenShakeIntensityMax: 4,
       },
       audio: {
         musicVolume: 0.5,
         effectVolume: 0.7,
         maxConcurrentSounds: 10,
-        audioPoolSize: 5
+        audioPoolSize: 5,
       },
       performance: {
         targetFPS: 60,
         maxMemoryMB: 100,
         memoryCheckInterval: 5000,
-        cacheCleanupThreshold: 0.9
-      }
-    }
+        cacheCleanupThreshold: 0.9,
+      },
+    },
   })
 }
 
@@ -557,8 +556,8 @@ function getDefaultGameConfig(): string {
  * 需求: 1.1 - 提供用户登录认证功能，支持用户名密码登录
  */
 const DEFAULT_ADMIN = {
-  username: 'admin',
-  password: process.env.ADMIN_PASSWORD || ''
+  username: process.env.ADMIN_USERNAME || 'admin',
+  password: process.env.ADMIN_PASSWORD || '',
 }
 
 /**
@@ -570,7 +569,7 @@ function initializeSingletonTables(database: SqlJsDatabase, silent?: boolean): v
   if (!silent) {
     console.log('初始化单行表默认数据...\n')
   }
-  
+
   // 辅助函数：安全获取计数
   const getCount = (result: ReturnType<SqlJsDatabase['exec']>): number => {
     const firstResult = result[0]
@@ -582,7 +581,7 @@ function initializeSingletonTables(database: SqlJsDatabase, silent?: boolean): v
     }
     return 0
   }
-  
+
   // 检查并初始化默认管理员账户
   // 需求: 1.1 - 如果 users 表为空，则插入默认管理员
   const usersResult = database.exec('SELECT COUNT(*) as count FROM users')
@@ -590,15 +589,18 @@ function initializeSingletonTables(database: SqlJsDatabase, silent?: boolean): v
   if (usersCount === 0) {
     // 使用 bcryptjs 加密默认密码
     const passwordHash = hashPasswordSync(DEFAULT_ADMIN.password)
-    database.run(`
+    database.run(
+      `
       INSERT INTO users (username, password_hash)
       VALUES (?, ?)
-    `, [DEFAULT_ADMIN.username, passwordHash])
+    `,
+      [DEFAULT_ADMIN.username, passwordHash]
+    )
     if (!silent) {
       console.log(`✓ 默认管理员账户已创建 (用户名: ${DEFAULT_ADMIN.username})`)
     }
   }
-  
+
   // 检查并初始化 profile 表
   const profileResult = database.exec('SELECT COUNT(*) as count FROM profile')
   const profileCount = getCount(profileResult)
@@ -611,21 +613,24 @@ function initializeSingletonTables(database: SqlJsDatabase, silent?: boolean): v
       console.log('✓ 个人信息表默认数据已初始化')
     }
   }
-  
+
   // 检查并初始化 game_config 表
   const gameConfigResult = database.exec('SELECT COUNT(*) as count FROM game_config')
   const gameConfigCount = getCount(gameConfigResult)
   if (gameConfigCount === 0) {
     const defaultGameConfig = getDefaultGameConfig()
-    database.run(`
+    database.run(
+      `
       INSERT INTO game_config (id, enabled, debug_mode, config_json)
       VALUES (1, 1, 0, ?)
-    `, [defaultGameConfig])
+    `,
+      [defaultGameConfig]
+    )
     if (!silent) {
       console.log('✓ 游戏配置表默认数据已初始化')
     }
   }
-  
+
   // 检查并初始化 seo_config 表
   const seoConfigResult = database.exec('SELECT COUNT(*) as count FROM seo_config')
   const seoConfigCount = getCount(seoConfigResult)
@@ -638,7 +643,7 @@ function initializeSingletonTables(database: SqlJsDatabase, silent?: boolean): v
       console.log('✓ SEO 配置表默认数据已初始化')
     }
   }
-  
+
   // 检查并初始化 statistics 表
   const statisticsResult = database.exec('SELECT COUNT(*) as count FROM statistics')
   const statisticsCount = getCount(statisticsResult)
@@ -651,7 +656,7 @@ function initializeSingletonTables(database: SqlJsDatabase, silent?: boolean): v
       console.log('✓ 统计数据表默认数据已初始化')
     }
   }
-  
+
   if (!silent) {
     console.log('\n✓ 单行表默认数据初始化完成！\n')
   }
@@ -660,14 +665,14 @@ function initializeSingletonTables(database: SqlJsDatabase, silent?: boolean): v
 /**
  * 初始化数据库
  * 创建数据库连接、设置配置、创建表结构
- * 
+ *
  * @param customPath - 可选的自定义数据库路径（用于测试）
  * @param silent - 是否抑制日志输出（用于测试）
  * @returns Promise<SqlJsDatabase> 数据库实例
  */
 export async function initDatabase(customPath?: string, silent?: boolean): Promise<SqlJsDatabase> {
   dbPath = customPath || databaseConfig.path
-  
+
   if (!silent) {
     console.log('========================================')
     console.log('       后台管理系统数据库初始化')
@@ -676,11 +681,11 @@ export async function initDatabase(customPath?: string, silent?: boolean): Promi
     console.log(`外键约束: ${databaseConfig.foreignKeys ? '启用' : '禁用'}`)
     console.log('========================================\n')
   }
-  
+
   try {
     // 初始化 sql.js
     const SQL = await initSqlJs()
-    
+
     // 检查是否存在现有数据库文件
     let existingData: Buffer | undefined
     if (dbPath !== ':memory:' && fs.existsSync(dbPath)) {
@@ -698,27 +703,27 @@ export async function initDatabase(customPath?: string, silent?: boolean): Promi
         }
       }
     }
-    
+
     // 创建数据库实例
     db = existingData ? new SQL.Database(existingData) : new SQL.Database()
-    
+
     // 创建所有表
     createAllTables(db, silent)
-    
+
     // 初始化单行表默认数据
     initializeSingletonTables(db, silent)
-    
+
     // 保存数据库到文件
     if (!silent) {
       saveDatabase()
     }
-    
+
     if (!silent) {
       console.log('========================================')
       console.log('       数据库初始化成功！')
       console.log('========================================\n')
     }
-    
+
     return db
   } catch (error) {
     if (!silent) {
@@ -731,7 +736,7 @@ export async function initDatabase(customPath?: string, silent?: boolean): Promi
 /**
  * 关闭数据库连接
  * 在应用退出时调用
- * 
+ *
  * @param silent - 是否抑制日志输出（用于测试）
  */
 export function closeDatabase(silent?: boolean): void {
@@ -754,38 +759,38 @@ export function resetDatabase(): void {
   if (!db) {
     throw new Error('数据库未初始化')
   }
-  
+
   console.log('重置数据库...')
-  
+
   // 获取所有表名
   const tablesResult = db.exec(`
     SELECT name FROM sqlite_master 
     WHERE type='table' AND name NOT LIKE 'sqlite_%'
   `)
-  
+
   const firstResult = tablesResult[0]
   if (tablesResult.length > 0 && firstResult && firstResult.values) {
     const tables = firstResult.values.map(row => row[0] as string)
-    
+
     // 禁用外键约束以便删除表
     db.run('PRAGMA foreign_keys = OFF')
-    
+
     // 删除所有表
     for (const table of tables) {
       db.run(`DROP TABLE IF EXISTS ${table}`)
     }
-    
+
     // 重新启用外键约束
     db.run('PRAGMA foreign_keys = ON')
   }
-  
+
   // 重新创建所有表
   createAllTables(db)
   initializeSingletonTables(db)
-  
+
   // 保存数据库
   saveDatabase()
-  
+
   console.log('数据库重置完成')
 }
 
@@ -795,44 +800,44 @@ export { db }
 /**
  * 初始化默认内容数据
  * 将 profile.ts 中的现有数据自动导入到数据库中
- * 
+ *
  * @param silent - 是否抑制日志输出
  * @returns Promise<void>
  */
 export async function initializeDefaultContent(silent?: boolean): Promise<void> {
   const database = getDatabase()
-  
+
   if (!silent) {
     console.log('\n========================================')
     console.log('       导入默认内容数据')
     console.log('========================================\n')
   }
-  
+
   try {
     // 1. 导入个人信息（Profile）
     await importProfile(database, silent)
-    
+
     // 2. 导入教育经历（Education）
     await importEducation(database, silent)
-    
+
     // 3. 导入工作经历（Experience）
     await importExperience(database, silent)
-    
+
     // 4. 导入技能（Skills）
     await importSkills(database, silent)
-    
+
     // 5. 导入技能树（Skill Tree）
     await importSkillTree(database, silent)
-    
+
     // 6. 导入项目（Projects）
     await importProjects(database, silent)
-    
+
     // 7. 导入校园经历（Campus Experience）
     await importCampusExperience(database, silent)
-    
+
     // 保存数据库
     saveDatabase()
-    
+
     if (!silent) {
       console.log('\n========================================')
       console.log('       默认内容数据导入完成！')
@@ -857,10 +862,11 @@ function importProfile(database: SqlJsDatabase, silent?: boolean): void {
     }
     return
   }
-  
+
   const { name, title, phone, email, avatar, summary, jobIntentions } = profileData
-  
-  database.run(`
+
+  database.run(
+    `
     UPDATE profile SET
       name = ?,
       title = ?,
@@ -871,16 +877,10 @@ function importProfile(database: SqlJsDatabase, silent?: boolean): void {
       job_intentions = ?,
       updated_at = CURRENT_TIMESTAMP
     WHERE id = 1
-  `, [
-    name,
-    title,
-    phone,
-    email,
-    avatar,
-    summary,
-    JSON.stringify(jobIntentions)
-  ])
-  
+  `,
+    [name, title, phone, email, avatar, summary, JSON.stringify(jobIntentions)]
+  )
+
   if (!silent) {
     console.log('✓ 个人信息导入成功')
   }
@@ -892,31 +892,34 @@ function importProfile(database: SqlJsDatabase, silent?: boolean): void {
 function importEducation(database: SqlJsDatabase, silent?: boolean): void {
   // 检查是否已有数据
   const result = database.exec('SELECT COUNT(*) as count FROM education')
-  const count = result[0]?.values?.[0]?.[0] as number || 0
+  const count = (result[0]?.values?.[0]?.[0] as number) || 0
   if (count > 0) {
     if (!silent) {
       console.log('⏭ 教育经历已存在，跳过导入')
     }
     return
   }
-  
+
   profileData.education.forEach((edu, index) => {
-    database.run(`
+    database.run(
+      `
       INSERT INTO education (id, school, college, major, period, rank, honors, courses, sort_order)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `, [
-      edu.id,
-      edu.school,
-      edu.college,
-      edu.major,
-      edu.period,
-      edu.rank,
-      JSON.stringify(edu.honors),
-      JSON.stringify(edu.courses),
-      index
-    ])
+    `,
+      [
+        edu.id,
+        edu.school,
+        edu.college,
+        edu.major,
+        edu.period,
+        edu.rank,
+        JSON.stringify(edu.honors),
+        JSON.stringify(edu.courses),
+        index,
+      ]
+    )
   })
-  
+
   if (!silent) {
     console.log(`✓ 教育经历导入成功 (${profileData.education.length} 条记录)`)
   }
@@ -928,29 +931,32 @@ function importEducation(database: SqlJsDatabase, silent?: boolean): void {
 function importExperience(database: SqlJsDatabase, silent?: boolean): void {
   // 检查是否已有数据
   const result = database.exec('SELECT COUNT(*) as count FROM experience')
-  const count = result[0]?.values?.[0]?.[0] as number || 0
+  const count = (result[0]?.values?.[0]?.[0] as number) || 0
   if (count > 0) {
     if (!silent) {
       console.log('⏭ 工作经历已存在，跳过导入')
     }
     return
   }
-  
+
   profileData.experience.forEach((exp, index) => {
-    database.run(`
+    database.run(
+      `
       INSERT INTO experience (id, company, position, period, responsibilities, achievements, sort_order)
       VALUES (?, ?, ?, ?, ?, ?, ?)
-    `, [
-      exp.id,
-      exp.company,
-      exp.position,
-      exp.period,
-      JSON.stringify(exp.responsibilities),
-      JSON.stringify(exp.achievements || []),
-      index
-    ])
+    `,
+      [
+        exp.id,
+        exp.company,
+        exp.position,
+        exp.period,
+        JSON.stringify(exp.responsibilities),
+        JSON.stringify(exp.achievements || []),
+        index,
+      ]
+    )
   })
-  
+
   if (!silent) {
     console.log(`✓ 工作经历导入成功 (${profileData.experience.length} 条记录)`)
   }
@@ -962,28 +968,31 @@ function importExperience(database: SqlJsDatabase, silent?: boolean): void {
 function importSkills(database: SqlJsDatabase, silent?: boolean): void {
   // 检查是否已有数据
   const result = database.exec('SELECT COUNT(*) as count FROM skills')
-  const count = result[0]?.values?.[0]?.[0] as number || 0
+  const count = (result[0]?.values?.[0]?.[0] as number) || 0
   if (count > 0) {
     if (!silent) {
       console.log('⏭ 技能数据已存在，跳过导入')
     }
     return
   }
-  
+
   profileData.skills.forEach((skill, index) => {
-    database.run(`
+    database.run(
+      `
       INSERT INTO skills (name, level, category, experience, projects, sort_order)
       VALUES (?, ?, ?, ?, ?, ?)
-    `, [
-      skill.name,
-      skill.level,
-      skill.category,
-      skill.experience,
-      JSON.stringify(skill.projects),
-      index
-    ])
+    `,
+      [
+        skill.name,
+        skill.level,
+        skill.category,
+        skill.experience,
+        JSON.stringify(skill.projects),
+        index,
+      ]
+    )
   })
-  
+
   if (!silent) {
     console.log(`✓ 技能数据导入成功 (${profileData.skills.length} 条记录)`)
   }
@@ -998,18 +1007,14 @@ function insertSkillTreeNode(
   parentId: string | null,
   sortOrder: number
 ): void {
-  database.run(`
+  database.run(
+    `
     INSERT OR REPLACE INTO skill_tree (id, parent_id, name, level, experience, sort_order)
     VALUES (?, ?, ?, ?, ?, ?)
-  `, [
-    node.id,
-    parentId,
-    node.name,
-    node.level,
-    node.experience || null,
-    sortOrder
-  ])
-  
+  `,
+    [node.id, parentId, node.name, node.level, node.experience || null, sortOrder]
+  )
+
   // 递归插入子节点
   if (node.children && node.children.length > 0) {
     node.children.forEach((child, index) => {
@@ -1024,21 +1029,21 @@ function insertSkillTreeNode(
 function importSkillTree(database: SqlJsDatabase, silent?: boolean): void {
   // 检查是否已有数据
   const result = database.exec('SELECT COUNT(*) as count FROM skill_tree')
-  const count = result[0]?.values?.[0]?.[0] as number || 0
+  const count = (result[0]?.values?.[0]?.[0] as number) || 0
   if (count > 0) {
     if (!silent) {
       console.log('⏭ 技能树数据已存在，跳过导入')
     }
     return
   }
-  
+
   // 递归插入技能树
   insertSkillTreeNode(database, skillTreeData, null, 0)
-  
+
   // 统计插入的节点数
   const countResult = database.exec('SELECT COUNT(*) as count FROM skill_tree')
-  const totalCount = countResult[0]?.values?.[0]?.[0] as number || 0
-  
+  const totalCount = (countResult[0]?.values?.[0]?.[0] as number) || 0
+
   if (!silent) {
     console.log(`✓ 技能树数据导入成功 (${totalCount} 个节点)`)
   }
@@ -1050,37 +1055,40 @@ function importSkillTree(database: SqlJsDatabase, silent?: boolean): void {
 function importProjects(database: SqlJsDatabase, silent?: boolean): void {
   // 检查是否已有数据
   const result = database.exec('SELECT COUNT(*) as count FROM projects')
-  const count = result[0]?.values?.[0]?.[0] as number || 0
+  const count = (result[0]?.values?.[0]?.[0] as number) || 0
   if (count > 0) {
     if (!silent) {
       console.log('⏭ 项目数据已存在，跳过导入')
     }
     return
   }
-  
+
   projectsData.forEach((project, index) => {
-    database.run(`
+    database.run(
+      `
       INSERT INTO projects (
         id, name, description, period, role, technologies,
         highlights, screenshots, demo_url, source_url, category, sort_order
       )
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `, [
-      project.id,
-      project.name,
-      project.description,
-      project.period,
-      project.role,
-      JSON.stringify(project.technologies),
-      JSON.stringify(project.highlights),
-      JSON.stringify(project.screenshots),
-      project.demoUrl || null,
-      project.sourceUrl || null,
-      project.category,
-      index
-    ])
+    `,
+      [
+        project.id,
+        project.name,
+        project.description,
+        project.period,
+        project.role,
+        JSON.stringify(project.technologies),
+        JSON.stringify(project.highlights),
+        JSON.stringify(project.screenshots),
+        project.demoUrl || null,
+        project.sourceUrl || null,
+        project.category,
+        index,
+      ]
+    )
   })
-  
+
   if (!silent) {
     console.log(`✓ 项目数据导入成功 (${projectsData.length} 条记录)`)
   }
@@ -1092,26 +1100,24 @@ function importProjects(database: SqlJsDatabase, silent?: boolean): void {
 function importCampusExperience(database: SqlJsDatabase, silent?: boolean): void {
   // 检查是否已有数据
   const result = database.exec('SELECT COUNT(*) as count FROM campus_experience')
-  const count = result[0]?.values?.[0]?.[0] as number || 0
+  const count = (result[0]?.values?.[0]?.[0] as number) || 0
   if (count > 0) {
     if (!silent) {
       console.log('⏭ 校园经历已存在，跳过导入')
     }
     return
   }
-  
+
   profileData.campusExperience.forEach((exp, index) => {
-    database.run(`
+    database.run(
+      `
       INSERT INTO campus_experience (organization, position, period, sort_order)
       VALUES (?, ?, ?, ?)
-    `, [
-      exp.organization,
-      exp.position,
-      exp.period,
-      index
-    ])
+    `,
+      [exp.organization, exp.position, exp.period, index]
+    )
   })
-  
+
   if (!silent) {
     console.log(`✓ 校园经历导入成功 (${profileData.campusExperience.length} 条记录)`)
   }
