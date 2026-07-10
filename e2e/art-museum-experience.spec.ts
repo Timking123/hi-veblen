@@ -5,11 +5,15 @@ test.describe('Personal digital art museum experience', () => {
     await page.goto('/')
   })
 
-  test('renders art museum landing and WebGL enhancement layers', async ({ page }) => {
+  test('renders the museum entrance and Lingxi link', async ({ page }) => {
     await expect(page.getByText('PERSONAL DIGITAL ART MUSEUM')).toBeVisible()
     await expect(page.getByText('ENTER GALLERY')).toBeVisible()
-    await expect(page.getByTestId('shader-background')).toBeVisible()
-    await expect(page.getByTestId('route-distortion-canvas')).toBeVisible()
+    await expect(page.getByRole('link', { name: 'ENTER LINGXI' })).toHaveAttribute(
+      'href',
+      'https://lingxi.hi-veblen.com/',
+    )
+    await expect(page.getByTestId('shader-background')).toBeAttached()
+    await expect(page.getByTestId('route-distortion-canvas')).toBeAttached()
   })
 
   test('navigates through gallery and legacy OS as art experiences', async ({ page }) => {
