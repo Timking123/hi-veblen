@@ -1,17 +1,18 @@
 name: 发布门户与灵犀网页端
 
 on:
-  push:
-    branches:
-      - main
   workflow_dispatch:
 
 concurrency:
   group: hi-veblen-production
   cancel-in-progress: false
 
+env:
+  LINGXI_SHA: 55f6df2ac88b1e0873a9affa77e42529641b5d3c
+
 jobs:
-  deploy:
+  build:
+    name: 构建双站发布包
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -31,7 +32,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: Timking123/Lingxi
-          ref: master
+          ref: ${{ env.LINGXI_SHA }}
           path: lingxi-source
           token: ${{ secrets.LINGXI_REPO_TOKEN }}
           persist-credentials: false
@@ -48,7 +49,11 @@ jobs:
       - name: 构建门户
         run: |
           npm ci
-          npm run test -- src/views/__tests__/Home.test.ts
+          npm run type-check
+          npm run build --prefix src/admin/backend
+          npm run test
+          npx playwright install --with-deps
+          npm run test:e2e
           npm run build:skip-check
         env:
           VITE_SITE_URL: https://hi-veblen.com
@@ -66,17 +71,27 @@ jobs:
 
       - name: 组合不可变发布包
         run: |
-          mkdir -p release-package/portal release-package/lingxi
+          mkdir -p release-package/portal release-package/lingxi release-package/backend
           cp -a dist/. release-package/portal/
           cp -a lingxi-source/ui/frontend/dist/. release-package/lingxi/
           lingxi_sha="$(git -C lingxi-source rev-parse HEAD)"
+          test "$lingxi_sha" = "$LINGXI_SHA"
+          git -C lingxi-source archive --format=tar "$lingxi_sha" | tar -x -C release-package/backend
           printf '%s\n' "$GITHUB_SHA" > release-package/portal/release.txt
           printf '%s\n' "$lingxi_sha" > release-package/lingxi/release.txt
-          printf 'portal=%s\nlingxi=%s\n' "$GITHUB_SHA" "$lingxi_sha" > release-package/release.txt
+          printf '%s\n' "$lingxi_sha" > release-package/backend/release.txt
+          printf 'BRAIN_RELEASE_SHA=%s\n' "$lingxi_sha" > release-package/backend/.release.env
+          printf 'portal=%s\nlingxi=%s\nbackend=%s\n' \
+            "$GITHUB_SHA" "$lingxi_sha" "$lingxi_sha" > release-package/release.txt
           test -s release-package/portal/index.html
           test -s release-package/lingxi/index.html
+          test -s release-package/backend/brain/workspace/world_server.py
+          test -s release-package/backend/ui/backend/app.py
+          test -s release-package/backend/scripts/install_linux_services.sh
           test "$(cat release-package/portal/release.txt)" = "$GITHUB_SHA"
           test "$(cat release-package/lingxi/release.txt)" = "$lingxi_sha"
+          test "$(cat release-package/backend/release.txt)" = "$lingxi_sha"
+          test "$(cat release-package/backend/.release.env)" = "BRAIN_RELEASE_SHA=$lingxi_sha"
           grep -R -q 'https://lingxi.hi-veblen.com/' release-package/portal/assets
           for site in portal lingxi; do
             assets="$(grep -oE '/assets/[^" ]+\.(js|css)' "release-package/$site/index.html" | sort -u)"
@@ -85,7 +100,65 @@ jobs:
               test -s "release-package/$site/${asset#/}"
             done
           done
+          test -z "$(find release-package -type l -print -quit)"
+          (
+            cd release-package/backend
+            find . -type f -print0 | sort -z | xargs -0 sha256sum
+          ) > release-package/backend-files.sha256
+          test -s release-package/backend-files.sha256
           tar -C release-package -czf portal-dist.tar.gz .
+          sha256sum portal-dist.tar.gz > portal-dist.tar.gz.sha256
+
+      - name: 保存发布制品
+        uses: actions/upload-artifact@v4
+        with:
+          name: production-release-${{ github.sha }}
+          path: |
+            portal-dist.tar.gz
+            portal-dist.tar.gz.sha256
+          if-no-files-found: error
+          retention-days: 1
+
+  deploy:
+    name: 部署双站发布包
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: production
+    permissions:
+      contents: read
+
+    steps:
+      - name: 下载发布制品
+        uses: actions/download-artifact@v4
+        with:
+          name: production-release-${{ github.sha }}
+
+      - name: 校验发布制品
+        id: release
+        run: |
+          sha256sum --check portal-dist.tar.gz.sha256
+          package_sha256="$(cut -d ' ' -f 1 portal-dist.tar.gz.sha256)"
+          test "${#package_sha256}" -eq 64
+          printf 'package_sha256=%s\n' "$package_sha256" >> "$GITHUB_OUTPUT"
+
+      - name: 创建私有暂存目录
+        uses: appleboy/ssh-action@v1
+        with:
+          host: ${{ secrets.SERVER_HOST }}
+          username: ${{ secrets.SERVER_USER }}
+          key: ${{ secrets.SERVER_SSH_KEY }}
+          script: |
+            set -eu
+            umask 077
+            staging_root=/opt/hi-veblen/staging
+            upload_dir="$staging_root/run-${{ github.run_id }}-${{ github.run_attempt }}"
+            install -d -m 0700 "$staging_root"
+            if test -e "$upload_dir"; then
+              echo "发布暂存目录已存在，拒绝覆盖：$upload_dir" >&2
+              exit 1
+            fi
+            mkdir -m 0700 "$upload_dir"
 
       - name: 上传发布包
         uses: appleboy/scp-action@v1
@@ -94,7 +167,7 @@ jobs:
           username: ${{ secrets.SERVER_USER }}
           key: ${{ secrets.SERVER_SSH_KEY }}
           source: portal-dist.tar.gz
-          target: /tmp/hi-veblen-${{ github.run_id }}-${{ github.run_attempt }}
+          target: /opt/hi-veblen/staging/run-${{ github.run_id }}-${{ github.run_attempt }}
 
       - name: 原子切换并验证
         uses: appleboy/ssh-action@v1
@@ -105,25 +178,201 @@ jobs:
           script: |
             set -eu
 
-            upload_dir="/tmp/hi-veblen-${{ github.run_id }}-${{ github.run_attempt }}"
+            upload_dir="/opt/hi-veblen/staging/run-${{ github.run_id }}-${{ github.run_attempt }}"
+            archive="$upload_dir/portal-dist.tar.gz"
+            expected_archive_sha="${{ steps.release.outputs.package_sha256 }}"
             release_root="/opt/hi-veblen/releases"
             release="$release_root/release-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}"
+            project_root="/opt/myagent"
             portal_current="/opt/hi-veblen/portal-current"
             lingxi_current="/opt/hi-veblen/lingxi-current"
+            backend_current="$project_root/backend-current"
+
+            case "$expected_archive_sha" in
+              ''|*[!0-9a-f]*) echo "发布包摘要格式无效" >&2; exit 1 ;;
+            esac
+            test "${#expected_archive_sha}" -eq 64
+            test "$(sha256sum "$archive" | cut -d ' ' -f 1)" = "$expected_archive_sha"
+            python3 - "$archive" <<'PY'
+            import sys
+            import tarfile
+            from pathlib import PurePosixPath
+
+            with tarfile.open(sys.argv[1], "r:gz") as archive_file:
+                for member in archive_file.getmembers():
+                    path = PurePosixPath(member.name)
+                    if path.is_absolute() or ".." in path.parts:
+                        raise SystemExit(f"不安全的归档路径：{member.name}")
+                    if not (member.isfile() or member.isdir()):
+                        raise SystemExit(f"不允许的归档成员类型：{member.name}")
+            PY
 
             mkdir -p "$release_root"
             mkdir "$release"
-            tar -xzf "$upload_dir/portal-dist.tar.gz" -C "$release"
+            tar -xzf "$archive" -C "$release"
             test -s "$release/portal/index.html"
             test -s "$release/lingxi/index.html"
             test -s "$release/release.txt"
 
             expected_portal="$(sed -n 's/^portal=//p' "$release/release.txt")"
             expected_lingxi="$(sed -n 's/^lingxi=//p' "$release/release.txt")"
+            expected_backend="$(sed -n 's/^backend=//p' "$release/release.txt")"
             test -n "$expected_portal"
             test -n "$expected_lingxi"
+            test "$expected_backend" = "$expected_lingxi"
             test "$(cat "$release/portal/release.txt")" = "$expected_portal"
             test "$(cat "$release/lingxi/release.txt")" = "$expected_lingxi"
+            test "$(cat "$release/backend/release.txt")" = "$expected_backend"
+            test "$(cat "$release/backend/.release.env")" = "BRAIN_RELEASE_SHA=$expected_backend"
+            test -s "$release/backend-files.sha256"
+            (
+              cd "$release/backend"
+              sha256sum --check "$release/backend-files.sha256"
+            )
+
+            for required in brain/workspace/world_server.py ui/backend/app.py \
+              scripts/install_linux_services.sh ops/systemd/myagent-world.service \
+              ops/systemd/myagent-gateway.service; do
+              test -s "$release/backend/$required"
+            done
+            test -d "$project_root/data"
+            test ! -e "$release/backend/data"
+            ln -s "$project_root/data" "$release/backend/data"
+            if test -d "$project_root/snapshots"; then
+              test ! -e "$release/backend/snapshots"
+              ln -s "$project_root/snapshots" "$release/backend/snapshots"
+            fi
+
+            certificate=/etc/letsencrypt/live/hi-veblen.com/fullchain.pem
+            test -s "$certificate"
+            openssl x509 -in "$certificate" -noout -checkend 0 >/dev/null
+            certificate_host_check="$(
+              openssl x509 -in "$certificate" -noout -checkhost lingxi.hi-veblen.com 2>&1
+            )"
+            printf '%s\n' "$certificate_host_check" | \
+              grep -Fqx 'Hostname lingxi.hi-veblen.com does match certificate'
+
+            for current in "$portal_current" "$lingxi_current" "$backend_current"; do
+              if { test -e "$current" || test -L "$current"; } && ! test -L "$current"; then
+                echo "current 路径不是符号链接，拒绝覆盖：$current" >&2
+                exit 1
+              fi
+            done
+
+            needs_legacy=0
+            for current in "$portal_current" "$lingxi_current" "$backend_current"; do
+              if ! test -L "$current" || ! test -d "$current"; then
+                needs_legacy=1
+              fi
+            done
+            if test "$needs_legacy" -eq 1; then
+              legacy_release="$release_root/bootstrap-legacy-${{ github.run_id }}-${{ github.run_attempt }}"
+              mkdir "$legacy_release"
+              mkdir "$legacy_release/portal" "$legacy_release/lingxi" "$legacy_release/backend"
+              test -s "$project_root/ui/frontend/dist/index.html"
+              cp -a "$project_root/ui/frontend/dist/." "$legacy_release/portal/"
+              cp -a "$project_root/ui/frontend/dist/." "$legacy_release/lingxi/"
+              zero_revision=0000000000000000000000000000000000000000
+              printf '%s\n' "$zero_revision" > "$legacy_release/portal/release.txt"
+              printf '%s\n' "$zero_revision" > "$legacy_release/lingxi/release.txt"
+              rsync -a \
+                --exclude '/data/' \
+                --exclude '/snapshots/' \
+                --exclude '/.env' \
+                --exclude '/.release.env' \
+                --exclude '/.venv/' \
+                --exclude '/backend-current' \
+                "$project_root/" "$legacy_release/backend/"
+              test -s "$legacy_release/backend/brain/workspace/world_server.py"
+              test -s "$legacy_release/backend/ui/backend/app.py"
+              printf '%s\n' "$zero_revision" > "$legacy_release/backend/release.txt"
+              printf 'BRAIN_RELEASE_SHA=%s\n' "$zero_revision" > "$legacy_release/backend/.release.env"
+              ln -s "$project_root/data" "$legacy_release/backend/data"
+              if test -d "$project_root/snapshots"; then
+                ln -s "$project_root/snapshots" "$legacy_release/backend/snapshots"
+              fi
+              if ! test -L "$portal_current" || ! test -d "$portal_current"; then
+                ln -sfn "$legacy_release/portal" "${portal_current}.bootstrap"
+                mv -Tf "${portal_current}.bootstrap" "$portal_current"
+              fi
+              if ! test -L "$lingxi_current" || ! test -d "$lingxi_current"; then
+                ln -sfn "$legacy_release/lingxi" "${lingxi_current}.bootstrap"
+                mv -Tf "${lingxi_current}.bootstrap" "$lingxi_current"
+              fi
+              if ! test -L "$backend_current" || ! test -d "$backend_current"; then
+                ln -sfn "$legacy_release/backend" "${backend_current}.bootstrap"
+                mv -Tf "${backend_current}.bootstrap" "$backend_current"
+              fi
+            fi
+
+            previous_portal="$(readlink -f "$portal_current")"
+            previous_lingxi="$(readlink -f "$lingxi_current")"
+            previous_backend="$(readlink -f "$backend_current")"
+
+            rollback_root="$upload_dir/rollback"
+            mkdir -m 0700 "$rollback_root"
+            mkdir "$rollback_root/systemd" "$rollback_root/nginx-available" "$rollback_root/nginx-enabled"
+            for unit in myagent-world.service myagent-gateway.service; do
+              if test -e "/etc/systemd/system/$unit"; then
+                cp -a "/etc/systemd/system/$unit" "$rollback_root/systemd/"
+              fi
+            done
+            for name in hi-veblen.com.conf lingxi.hi-veblen.com.conf; do
+              if test -e "/etc/nginx/sites-available/$name" || test -L "/etc/nginx/sites-available/$name"; then
+                cp -a "/etc/nginx/sites-available/$name" "$rollback_root/nginx-available/"
+              fi
+              if test -e "/etc/nginx/sites-enabled/$name" || test -L "/etc/nginx/sites-enabled/$name"; then
+                cp -a "/etc/nginx/sites-enabled/$name" "$rollback_root/nginx-enabled/"
+              fi
+            done
+
+            restore_link() {
+              target="$1"
+              destination="$2"
+              ln -sfn "$target" "${destination}.rollback"
+              mv -Tf "${destination}.rollback" "$destination"
+            }
+
+            restore_file() {
+              target="$1"
+              backup="$2"
+              rm -f "$target"
+              if test -e "$backup" || test -L "$backup"; then
+                cp -a "$backup" "$target"
+              fi
+            }
+
+            switched=0
+            rollback() {
+              status=$?
+              trap - EXIT
+              if test "$status" -ne 0 && test "$switched" -eq 1; then
+                set +e
+                restore_link "$previous_portal" "$portal_current"
+                restore_link "$previous_lingxi" "$lingxi_current"
+                restore_link "$previous_backend" "$backend_current"
+                for unit in myagent-world.service myagent-gateway.service; do
+                  restore_file "/etc/systemd/system/$unit" "$rollback_root/systemd/$unit"
+                done
+                systemctl daemon-reload
+                systemctl restart myagent-world.service myagent-gateway.service
+                for name in hi-veblen.com.conf lingxi.hi-veblen.com.conf; do
+                  restore_file "/etc/nginx/sites-available/$name" "$rollback_root/nginx-available/$name"
+                  restore_file "/etc/nginx/sites-enabled/$name" "$rollback_root/nginx-enabled/$name"
+                done
+                nginx -t && systemctl reload nginx
+              fi
+              exit "$status"
+            }
+            trap rollback EXIT
+
+            switched=1
+            restore_link "$release/portal" "$portal_current"
+            restore_link "$release/lingxi" "$lingxi_current"
+            restore_link "$release/backend" "$backend_current"
+
+            REVISION="$expected_backend" PROJECT_DIR="$project_root" BACKEND_DIR="$release/backend" \
+              bash "$release/backend/scripts/install_linux_services.sh"
 
             nginx_dump="$(nginx -T 2>&1)"
             for expected in \
@@ -136,25 +385,6 @@ jobs:
             test "$(printf '%s' "$nginx_dump" | grep -Fc 'location ^~ /assets/')" -ge 2
             test "$(printf '%s' "$nginx_dump" | grep -Fc 'location = /release.txt')" -ge 2
 
-            portal_health="$(curl --fail --silent --show-error https://hi-veblen.com/api/health)"
-            printf '%s' "$portal_health" | python3 -c '
-            import json, sys
-            data = json.load(sys.stdin)
-            assert data.get("status") == "ok"
-            '
-
-            api_health="$(curl --fail --silent --show-error https://lingxi.hi-veblen.com/api/health)"
-            printf '%s' "$api_health" | python3 -c '
-            import json, sys
-            data = json.load(sys.stdin)
-            expected = sys.argv[1]
-            assert data.get("production_auth_safe") is True
-            assert data.get("backend_revision") == expected
-            host = data.get("host") or {}
-            assert host.get("ok") is True
-            assert host.get("backend_revision") == expected
-            ' "$expected_lingxi"
-
             invalid_status="$(curl --silent --output /dev/null --write-out '%{http_code}' \
               --request POST --header 'Content-Type: application/json' \
               --data '{"token":"release-preflight-invalid"}' \
@@ -165,39 +395,6 @@ jobs:
               https://lingxi.hi-veblen.com/api/session)"
             test "$invalid_status" = "401"
             test "$default_status" = "401"
-
-            previous_portal=""
-            previous_lingxi=""
-            if test -L "$portal_current"; then previous_portal="$(readlink -f "$portal_current" 2>/dev/null || true)"; fi
-            if test -L "$lingxi_current"; then previous_lingxi="$(readlink -f "$lingxi_current" 2>/dev/null || true)"; fi
-            switched=1
-
-            rollback() {
-              status=$?
-              trap - EXIT
-              if test "$status" -ne 0 && test "$switched" -eq 1; then
-                set +e
-                if test -n "$previous_portal"; then
-                  ln -sfn "$previous_portal" "${portal_current}.rollback"
-                  mv -Tf "${portal_current}.rollback" "$portal_current"
-                else
-                  rm -f "$portal_current"
-                fi
-                if test -n "$previous_lingxi"; then
-                  ln -sfn "$previous_lingxi" "${lingxi_current}.rollback"
-                  mv -Tf "${lingxi_current}.rollback" "$lingxi_current"
-                else
-                  rm -f "$lingxi_current"
-                fi
-              fi
-              exit "$status"
-            }
-            trap rollback EXIT
-
-            ln -sfn "$release/portal" "${portal_current}.next"
-            mv -Tf "${portal_current}.next" "$portal_current"
-            ln -sfn "$release/lingxi" "${lingxi_current}.next"
-            mv -Tf "${lingxi_current}.next" "$lingxi_current"
 
             verify_site_assets() {
               site_url="$1"
@@ -250,5 +447,7 @@ jobs:
 
             switched=0
             trap - EXIT
-            rm -f "$upload_dir/portal-dist.tar.gz"
-            rmdir "$upload_dir"
+            case "$upload_dir" in
+              /opt/hi-veblen/staging/run-[0-9]*-[0-9]*) rm -rf -- "$upload_dir" ;;
+              *) echo "拒绝清理异常暂存路径：$upload_dir" >&2; exit 1 ;;
+            esac
