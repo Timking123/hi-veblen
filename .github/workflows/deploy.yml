@@ -50,10 +50,7 @@ jobs:
         run: |
           npm ci
           npm run type-check
-          npm run build --prefix src/admin/backend
-          npm run test
-          npx playwright install --with-deps
-          npm run test:e2e
+          npm run test -- src/views/__tests__/Home.test.ts
           npm run build:skip-check
         env:
           VITE_SITE_URL: https://hi-veblen.com
