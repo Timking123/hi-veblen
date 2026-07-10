@@ -32,9 +32,9 @@ describe('数字艺术展厅首页', () => {
   })
 
   it('在原有操作组中提供唯一灵犀入口', () => {
-    const links = wrapper.findAll('a[href="/lingxi/"]')
+    const links = wrapper.findAll('a').filter((link) => link.text() === 'ENTER LINGXI')
     expect(links).toHaveLength(1)
-    expect(links[0].text()).toBe('ENTER LINGXI')
+    expect(links[0].attributes('href')).toBe(import.meta.env.VITE_LINGXI_URL || '/lingxi/')
     expect(links[0].classes()).not.toContain('sci-button--primary')
   })
 
