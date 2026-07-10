@@ -139,40 +139,62 @@ jobs:
           test "${#package_sha256}" -eq 64
           printf 'package_sha256=%s\n' "$package_sha256" >> "$GITHUB_OUTPUT"
 
+      - name: 配置受信 SSH
+        env:
+          SERVER_HOST: ${{ secrets.SERVER_HOST }}
+          SERVER_USER: ${{ secrets.SERVER_USER }}
+          SERVER_SSH_KEY: ${{ secrets.SERVER_SSH_KEY }}
+        run: |
+          set -eu
+          case "$SERVER_HOST" in
+            ''|*[!A-Za-z0-9.:-]*) echo "SERVER_HOST 格式无效" >&2; exit 1 ;;
+          esac
+          case "$SERVER_USER" in
+            ''|*[!A-Za-z0-9._-]*) echo "SERVER_USER 格式无效" >&2; exit 1 ;;
+          esac
+          install -d -m 0700 "$HOME/.ssh"
+          printf '%s\n' "$SERVER_SSH_KEY" | tr -d '\r' > "$HOME/.ssh/hi-veblen-deploy"
+          chmod 0600 "$HOME/.ssh/hi-veblen-deploy"
+          printf '%s\n' \
+            'hi-veblen-production ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIM4IhOSWQcIioXavkJYcZ1WbE682kGvQF+rTAgnBRNif' \
+            > "$HOME/.ssh/known_hosts"
+          printf '%s\n' \
+            'Host hi-veblen-production' \
+            "  HostName $SERVER_HOST" \
+            "  User $SERVER_USER" \
+            '  HostKeyAlias hi-veblen-production' \
+            '  IdentityFile ~/.ssh/hi-veblen-deploy' \
+            '  IdentitiesOnly yes' \
+            '  BatchMode yes' \
+            '  StrictHostKeyChecking yes' \
+            '  ConnectTimeout 10' \
+            > "$HOME/.ssh/config"
+          chmod 0600 "$HOME/.ssh/config" "$HOME/.ssh/known_hosts"
+          ssh hi-veblen-production true
+
       - name: 创建私有暂存目录
-        uses: appleboy/ssh-action@v1
-        with:
-          host: ${{ secrets.SERVER_HOST }}
-          username: ${{ secrets.SERVER_USER }}
-          key: ${{ secrets.SERVER_SSH_KEY }}
-          script: |
-            set -eu
-            umask 077
-            staging_root=/opt/hi-veblen/staging
-            upload_dir="$staging_root/run-${{ github.run_id }}-${{ github.run_attempt }}"
-            install -d -m 0700 "$staging_root"
-            if test -e "$upload_dir"; then
-              echo "发布暂存目录已存在，拒绝覆盖：$upload_dir" >&2
-              exit 1
-            fi
-            mkdir -m 0700 "$upload_dir"
+        run: |
+          ssh hi-veblen-production 'bash -se' <<'REMOTE'
+          set -eu
+          umask 077
+          staging_root=/opt/hi-veblen/staging
+          upload_dir="$staging_root/run-${{ github.run_id }}-${{ github.run_attempt }}"
+          install -d -m 0700 "$staging_root"
+          if test -e "$upload_dir"; then
+            echo "发布暂存目录已存在，拒绝覆盖：$upload_dir" >&2
+            exit 1
+          fi
+          mkdir -m 0700 "$upload_dir"
+          REMOTE
 
       - name: 上传发布包
-        uses: appleboy/scp-action@v1
-        with:
-          host: ${{ secrets.SERVER_HOST }}
-          username: ${{ secrets.SERVER_USER }}
-          key: ${{ secrets.SERVER_SSH_KEY }}
-          source: portal-dist.tar.gz
-          target: /opt/hi-veblen/staging/run-${{ github.run_id }}-${{ github.run_attempt }}
+        run: |
+          scp -q portal-dist.tar.gz \
+            hi-veblen-production:/opt/hi-veblen/staging/run-${{ github.run_id }}-${{ github.run_attempt }}/
 
       - name: 原子切换并验证
-        uses: appleboy/ssh-action@v1
-        with:
-          host: ${{ secrets.SERVER_HOST }}
-          username: ${{ secrets.SERVER_USER }}
-          key: ${{ secrets.SERVER_SSH_KEY }}
-          script: |
+        run: |
+            ssh hi-veblen-production 'bash -se' <<'REMOTE'
             set -eu
 
             upload_dir="/opt/hi-veblen/staging/run-${{ github.run_id }}-${{ github.run_attempt }}"
@@ -206,7 +228,9 @@ jobs:
 
             mkdir -p "$release_root"
             mkdir "$release"
-            tar -xzf "$archive" -C "$release"
+            tar --no-same-owner --no-same-permissions -xzf "$archive" -C "$release"
+            chown -R root:root "$release"
+            chmod -R go-w "$release"
             test -s "$release/portal/index.html"
             test -s "$release/lingxi/index.html"
             test -s "$release/release.txt"
@@ -448,3 +472,4 @@ jobs:
               /opt/hi-veblen/staging/run-[0-9]*-[0-9]*) rm -rf -- "$upload_dir" ;;
               *) echo "拒绝清理异常暂存路径：$upload_dir" >&2; exit 1 ;;
             esac
+            REMOTE
