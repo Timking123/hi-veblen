@@ -18,6 +18,7 @@
           <RouterLink to="/gallery" class="sci-button sci-button--primary">ENTER GALLERY</RouterLink>
           <RouterLink to="/projects" class="sci-button">OPEN ARCHIVE</RouterLink>
           <RouterLink to="/os" class="sci-button">BOOT LEGACY OS</RouterLink>
+          <a :href="lingxiUrl" class="sci-button">ENTER LINGXI</a>
         </div>
       </div>
 
@@ -81,6 +82,7 @@ import { computed, onMounted, onUnmounted, ref } from 'vue'
 import { profileData } from '@/data/profile'
 
 const profile = profileData
+const lingxiUrl = import.meta.env.VITE_LINGXI_URL || '/lingxi/'
 const sessionCode = computed(() => Math.floor(1000 + Math.random() * 8999))
 const scrollProgress = ref(0)
 const corridorPanels = ['VISUAL', 'ARCHIVE', 'SIGNAL', 'LEGACY']
@@ -116,3 +118,19 @@ const modules = [
   { index: '99', title: 'Legacy OS', description: '隐藏复古桌面系统，承载小游戏、终端命令与探索彩蛋。', path: '/os' },
 ]
 </script>
+
+<style scoped>
+@media (max-width: 640px) {
+  .signal-page__actions {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .signal-page__actions .sci-button {
+    min-width: 0;
+    padding-inline: 0.6rem;
+    font-size: 0.75rem;
+    letter-spacing: 0;
+  }
+}
+</style>

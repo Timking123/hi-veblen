@@ -84,9 +84,11 @@ export default defineConfig(({ mode }) => {
           // 预缓存的文件类型
           globPatterns: ['**/*.{js,css,html,ico,png,svg,woff,woff2}'],
           // 排除大文件（如头像图片）
-          globIgnores: ['**/images/avatar.png'],
+          globIgnores: ['**/images/avatar.png', 'lingxi/**/*'],
           // 增加文件大小限制到 15MB
           maximumFileSizeToCacheInBytes: 15 * 1024 * 1024,
+          // 门户 SW 不能接管独立产品、API 或 WebSocket 路径。
+          navigateFallbackDenylist: [/^\/lingxi(?:\/|$)/, /^\/api(?:\/|$)/, /^\/ws(?:\/|$)/],
           // 运行时缓存策略
           runtimeCaching: [
             {
@@ -121,7 +123,7 @@ export default defineConfig(({ mode }) => {
             },
             {
               // 缓存图片资源
-              urlPattern: /\.(?:png|jpg|jpeg|svg|gif|webp|avif)$/i,
+              urlPattern: /^(?!.*\/(?:lingxi|api|ws)(?:\/|$)).*\.(?:png|jpg|jpeg|svg|gif|webp|avif)(?:\?.*)?$/i,
               handler: 'CacheFirst',
               options: {
                 cacheName: 'images-cache',
@@ -133,7 +135,7 @@ export default defineConfig(({ mode }) => {
             },
             {
               // 缓存 PDF 文件（简历）
-              urlPattern: /\.pdf$/i,
+              urlPattern: /^(?!.*\/(?:lingxi|api|ws)(?:\/|$)).*\.pdf(?:\?.*)?$/i,
               handler: 'CacheFirst',
               options: {
                 cacheName: 'pdf-cache',
@@ -145,7 +147,7 @@ export default defineConfig(({ mode }) => {
             },
             {
               // 缓存音频文件
-              urlPattern: /\.(?:mp3|wav|ogg)$/i,
+              urlPattern: /^(?!.*\/(?:lingxi|api|ws)(?:\/|$)).*\.(?:mp3|wav|ogg)(?:\?.*)?$/i,
               handler: 'CacheFirst',
               options: {
                 cacheName: 'audio-cache',
