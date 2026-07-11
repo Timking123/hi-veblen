@@ -36,7 +36,7 @@ hi-veblen 把个人履历、项目、影像与交互实验组织成一座可探�
 | 仓库 | 负责范围 | 不负责的内容 |
 | --- | --- | --- |
 | [`hi-veblen`](https://github.com/Timking123/hi-veblen) | 数字展厅、Legacy OS、门户 API、双站发布编排 | Lingxi 的 PersonaSpec、会话与认知核心 |
-| [`Lingxi`](https://github.com/Timking123/Lingxi) | 角色创建、用户会话、宿主与网关、专属对话 | 门户内容与展厅交互 |
+| [`Lingxi`](https://github.com/Timking123/Lingxi)（私有） | 网页应用网关、角色创建事务、用户会话、宿主与认知核心 | 门户内容、展厅交互与发布编排 |
 
 ```mermaid
 flowchart LR
@@ -57,7 +57,7 @@ flowchart LR
   N --> B
 ```
 
-Lingxi 通过 `LINGXI_SHA` 固定到可审计提交。一次发布会生成带校验和与 revision 文件的不可变制品，再同步切换门户、Lingxi 网页端和 Lingxi 后端三个指针。MyWeb API 由独立 PM2 进程维护，双站发布只验证其健康状态，不替换它的运行目录。
+Lingxi 是只向授权协作者开放的独立仓库，发布 workflow 通过只读凭据检出 `LINGXI_SHA` 指向的提交。它的网关承担登录、onboarding、角色创建与绑定、会话适配等网页应用事务，不是单纯的协议转发层。一次发布会生成带校验和与 revision 文件的不可变制品，再协调切换门户、Lingxi 网页端和 Lingxi 后端三个指针；Lingxi 的运行数据不进入 `hi-veblen` 仓库或发布制品。MyWeb API 由独立 PM2 进程维护，双站发布只验证其健康状态，不替换它的运行目录。
 
 ## 技术栈
 
@@ -71,7 +71,7 @@ Lingxi 通过 `LINGXI_SHA` 固定到可审计提交。一次发布会生成带�
 
 ## 本地启动
 
-环境要求：Node.js `>=20.19 || >=22.12`，npm 使用随 Node.js 提供的稳定版本。
+环境要求：Node.js `22.12+`，CI 使用 Node.js 22；npm 使用随 Node.js 提供的稳定版本。
 
 ```bash
 git clone https://github.com/Timking123/hi-veblen.git
@@ -94,12 +94,12 @@ npm run dev
 ```bash
 npm run type-check
 npm run test -- src/views/__tests__/Home.test.ts
-npm run build:skip-check
+npm run build
 npx playwright install chromium
 npx playwright test e2e/art-museum-experience.spec.ts --project=chromium
 ```
 
-当前生产版本使用的 CI 把结果分成四组，只有前三组构成发布证明。Portal `1c42c8e` 的 [CI run `29158269214`](https://github.com/Timking123/hi-veblen/actions/runs/29158269214) 与 Lingxi `60d0b08` 的 [CI run `29158252370`](https://github.com/Timking123/Lingxi/actions/runs/29158252370) 均为 success；Lingxi 的 Web、Python 3.11 与 Python 3.12 三个确定性 job 全部通过。
+当前生产版本使用的 CI 分为四组，只有前三组构成发布证明。Portal `d099480` 的 [CI run `29161853006`](https://github.com/Timking123/hi-veblen/actions/runs/29161853006) 四个 job 均为 success；Lingxi `014bdc1` 的 [CI run `29159820620`](https://github.com/Timking123/Lingxi/actions/runs/29159820620) 中，Web、Python 3.11 与 Python 3.12 三个确定性 job 全部通过。
 
 | 检查组 | 范围 | 是否阻断 |
 | --- | --- | --- |
@@ -112,13 +112,28 @@ npx playwright test e2e/art-museum-experience.spec.ts --project=chromium
 
 当前 legacy 计数、游戏子系统风险和依赖残留见 [已知质量边界](./docs/KNOWN_ISSUES.md)。
 
+## 仓库结构
+
+| 路径 | 内容 |
+| --- | --- |
+| `src/components`、`src/views` | 展厅界面、路由页面与交互组件 |
+| `src/game`、`src/os` | 彩蛋游戏、Legacy OS 与终端体验 |
+| `src/admin` | 独立的管理端前后端 |
+| `e2e` | Portal Chromium 端到端门禁 |
+| `scripts`、`.github/workflows` | 构建辅助、质量门与双站发布事务 |
+| `docs` | 生产运维、设计规范与已知边界 |
+
 ## 发布与回滚
 
-生产发布仅走 [`.github/workflows/deploy.yml`](./.github/workflows/deploy.yml)。该 workflow 固定 Lingxi 提交，要求同一门户 SHA 的三个严格 CI check 已成功，并重跑 Lingxi 确定性总检。切换时先停止 Lingxi mutation，在短维护窗口内协调替换三个版本指针；同 SHA 后端健康后恢复公网，任一步失败都会恢复上一组指针与服务配置。
+生产发布仅走 [`.github/workflows/deploy.yml`](./.github/workflows/deploy.yml)。该 workflow 固定 Lingxi 提交，要求同一门户 SHA 的三个严格 CI check 已成功，并重跑 Lingxi 确定性总检。切换前失败时，当前指针和服务保持不变；进入维护或完成切换后失败时，workflow 会尝试恢复上一组指针与服务配置，并重新验证旧 revision、服务健康和 Nginx 维护守卫。恢复门没有全部通过时，维护与 `PRESERVE` 标记会保留，Lingxi 服务停止并转入人工恢复。
 
-[生产 workflow `29158517614`](https://github.com/Timking123/hi-veblen/actions/runs/29158517614) 的构建与部署 job 均已成功，当前生产为 portal `1c42c8e`、Lingxi frontend/backend/host `60d0b08`。独立 Python 3.12 release venv、新安全头与公网协议检查均已通过；发布前和服务安装后都会要求两个 Lingxi systemd 单元的 `DropInPaths` 为空，发现临时或未纳管的 drop-in 会拒绝发布。
+[生产 workflow `29162079426`](https://github.com/Timking123/hi-veblen/actions/runs/29162079426) 的构建与部署 job 均已成功，当前生产为 portal `d099480`、Lingxi frontend/backend/host `014bdc1`。本次发布清理 1 个无保护的旧 staging 目录，并按“最新 5 份、保护 4 个事务目标”的规则删除 3 份过期 release；独立只读复核确认 staging 为空、release 精确 5 份。独立 Python 3.12 release venv、`pip check`、新安全头与公网协议检查均已通过，两个 Lingxi systemd 单元的 `DropInPaths` 为空。
 
 完整操作边界见 [生产发布与回滚](./docs/PRODUCTION_DEPLOYMENT.md)。仓库不再维护 Docker、Vercel、服务器手工上传等第二套发布路线。
+
+## 使用与许可
+
+`hi-veblen` 是公开源码仓库，但当前没有发布开源许可证。公开可见不代表已经授予复制、修改或再分发许可；开发约定见 [开发规范](./docs/DEVELOPMENT_STANDARDS.md)。Lingxi 仓库及其中的角色、会话与认知实现仍保持私有。
 
 ## 文档与安全
 

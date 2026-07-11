@@ -1,12 +1,12 @@
 # 已知质量边界
 
-本页记录严格发布门之外仍然存在的工程债。它们不会被 `continue-on-error` 包装成全量通过，也不能用来推翻已经独立通过的门户与 Lingxi 发布路径。
+本页记录严格发布门之外仍然存在的工程债。严格门通过不代表这些问题已经解决，legacy 失败也不自动否定对应 revision 已单独通过的受限门禁。
 
 ## 2026-07-11 全量诊断
 
-以下 legacy 计数以 MyWeb `main` HEAD `f766147` 上精确暂存的 93 个任务文件为口径，验证时间为 2026-07-11 21:33~21:49 +08。临时 worktree 只包含 staged index，明确排除了游戏、简历、Contact/Navigation、MCP、本机配置和其他用户脏改。ESLint、根项目全量单测与 Admin backend legacy Jest 均在该快照重跑；Home、Admin frontend、生产构建、凭据失败关闭和 Portal Chromium E2E 也在同一快照验证。
+以下 legacy 计数来自以 MyWeb `f766147` 为基础、精确暂存 93 个任务文件的隔离快照，验证时间为 2026-07-11 21:33~21:49 +08。`f766147` 是这组计数的快照基线，不是当前 `main` HEAD。临时 worktree 只包含 staged index，明确排除了游戏、简历、Contact/Navigation、MCP、本机配置和其他用户脏改。ESLint、根项目全量单测与 Admin backend legacy Jest 均在该快照重跑；Home、Admin frontend、生产构建、凭据失败关闭和 Portal Chromium E2E 也在同一快照验证。
 
-当前生产证据更新为 portal `1c42c8e` 的 [CI run `29158269214`](https://github.com/Timking123/hi-veblen/actions/runs/29158269214)、Lingxi `60d0b08` 的 [CI run `29158252370`](https://github.com/Timking123/Lingxi/actions/runs/29158252370)，以及 [production workflow `29158517614`](https://github.com/Timking123/hi-veblen/actions/runs/29158517614)，三者均为 success。CI 页面上的 `Legacy diagnostics (non-blocking)` success 是非阻断包装的结果：它表示诊断命令已执行并保留结果，不表示下表三个 legacy 检查已经通过。
+当前生产证据为 portal `d099480` 的 [CI run `29161853006`](https://github.com/Timking123/hi-veblen/actions/runs/29161853006)、Lingxi `014bdc1` 的 [CI run `29159820620`](https://github.com/Timking123/Lingxi/actions/runs/29159820620)，以及 [production workflow `29162079426`](https://github.com/Timking123/hi-veblen/actions/runs/29162079426)，三者均为 success。CI 页面上的 `Legacy diagnostics (non-blocking)` success 是非阻断包装的结果：它表示诊断命令已执行并保留结果，不表示下表三个 legacy 检查已经通过。
 
 | 检查 | 结果 | 当前处理 |
 | --- | --- | --- |
@@ -35,6 +35,7 @@
 - Admin backend 仍有 2 个 moderate，来自 ExcelJS 的间接 `uuid`。npm 只提供降级到 ExcelJS 3.4 的破坏性自动修复，本轮没有使用 `--force`；应在替换或升级导出链后重新评估。
 - Admin frontend 构建仍报告 Sass `@import`、循环分包和大 chunk 警告，不影响当前构建退出码，但需要在性能专项中处理。
 - Home 契约测试仍提示 `caniuse-lite` 数据已过期约 6 个月；它不影响当前退出码，但应在独立依赖维护提交中更新并复跑浏览器门禁。
+- GitHub 托管 runner 会把仍以 Node.js 20 为目标的固定 SHA Actions 强制运行在 Node.js 24，并产生弃用警告。当前 CI 使用 Node.js 22 验证项目代码且结果通过；两者属于不同运行层。待相关 Actions 发布原生 Node.js 24 版本后再更新固定 SHA，不启用退回不安全 Node.js 20 的临时开关。
 
 ## MyWeb API 运维缺口
 
@@ -42,4 +43,6 @@
 
 ## 安全维护边界
 
-当前树已经停止跟踪环境文件和数据库运行数据，并补齐递归 ignore。Git 历史净化、凭据轮换以及现有后台会话失效属于独立的受控维护动作；在仓库所有者明确授权并安排同步窗口前，不执行历史强推或生产凭据变更。
+- `myagent-world.service` 与 `myagent-gateway.service` 当前没有配置专用 `User`/`Group`，仍以 root 运行；`systemd-analyze security` 对两个单元的评分均为 `9.0 UNSAFE`。现有 `data`、`snapshots`、缓存、环境文件和 release venv 含 root-owned 路径，专用用户迁移需要独立维护窗口、权限迁移和回滚演练，不能只改 systemd 单元。
+- 后台生产口令尚未轮换，现有后台会话也没有统一失效。口令轮换、会话失效和依赖它们的运维验证需要安排同一受控窗口。
+- 当前树已经停止跟踪环境文件和数据库运行数据，并补齐递归 ignore。Git 历史净化与强制同步仍未执行；在仓库所有者明确授权并安排同步窗口前，不强推历史。

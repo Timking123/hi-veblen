@@ -12,13 +12,13 @@
 | --- | --- | --- |
 | Portal | `hi-veblen` 当前提交 | 数字展厅与 Lingxi 入口 |
 | Lingxi frontend | `Lingxi` 的 `LINGXI_SHA` | 登录、角色创建与专属对话界面 |
-| Lingxi backend | 同一 `LINGXI_SHA` | 宿主、网关、角色与会话 API |
+| Lingxi backend | 同一 `LINGXI_SHA` | 宿主；登录、onboarding、角色创建事务与会话适配网关；角色和会话 API |
 | MyWeb API | 独立 PM2 进程 | 门户内容、联系表单与访问数据 |
 | Nginx | 服务器现行配置 | 双域静态资源与 API 路由 |
 
 门户、Lingxi 网页端和 Lingxi 后端各有一个 `current` 符号链接。发布目录按 Git revision 和 workflow run 标识创建，发布后不在原目录上覆盖文件。每个 Lingxi backend release 使用独立 `.venv`，systemd 通过 `backend-current/.venv/bin/python` 启动，使运行代码与依赖随同一个指针切换。
 
-当前生产 revision 为 portal `1c42c8e`、Lingxi frontend/backend/host `60d0b08`。[Portal CI run `29158269214`](https://github.com/Timking123/hi-veblen/actions/runs/29158269214)、[Lingxi CI run `29158252370`](https://github.com/Timking123/Lingxi/actions/runs/29158252370) 与 [production workflow `29158517614`](https://github.com/Timking123/hi-veblen/actions/runs/29158517614) 均为 success；独立 Python 3.12 release venv、新安全头与公网协议检查已经在生产部署 job 中通过。
+当前生产 revision 为 portal `d099480`、Lingxi frontend/backend/host `014bdc1`。[Portal CI run `29161853006`](https://github.com/Timking123/hi-veblen/actions/runs/29161853006) 的四个 job、[Lingxi CI run `29159820620`](https://github.com/Timking123/Lingxi/actions/runs/29159820620) 的 Web、Python 3.11、Python 3.12 三个 job，以及 [production workflow `29162079426`](https://github.com/Timking123/hi-veblen/actions/runs/29162079426) 的构建和部署 job 均为 success。生产日志记录 staging `removed=1`、release `kept_newest=5 / protected=4 / removed=3`；独立只读复核确认三个 current 同 release、staging 为空、release 精确 5 份，并确认独立 Python 3.12 release venv、`pip check`、新安全头与公网协议检查通过。
 
 ## 发布前条件
 
@@ -27,22 +27,24 @@
 3. `LINGXI_SHA` 是完整提交 SHA，并指向准备发布的 Lingxi revision；该 revision 必须包含精确锁定的 `requirements-ci.txt`。触发前要实际复核文件存在，仍指向不含该文件的旧 revision 时不得运行 workflow。
 4. GitHub `production` Environment 的审批和 secrets 已配置。仓库只保存 secret 名称，不保存值。
 5. `myagent-world.service` 与 `myagent-gateway.service` 的 `DropInPaths` 均为空；任何临时或未纳管的 systemd drop-in 都必须先清理并恢复正式配置。
-6. MyWeb API 健康，运行数据已经按既定策略备份。
+6. `/run/myagent-release-maintenance`、`/run/hi-veblen-release-preserve` 和 staging 内的 `PRESERVE` 均不存在。发现任一标记都表示上次事务仍需人工核验，不得删除后继续发布。
+7. MyWeb API 健康，运行数据已经按既定策略备份。
 
 workflow 使用的敏感项包括跨仓库只读 token、服务器主机、部署账号和 SSH 私钥。所有值只放在 GitHub Actions secrets 中，不写入命令示例、日志、文档或仓库文件。
 
 ## 发布流程
 
 1. 在 `.github/workflows/deploy.yml` 更新 `LINGXI_SHA`，提交并等待 CI。
-2. 从 GitHub Actions 手动触发“发布门户与灵犀网页端”，不要在服务器上手工复制构建产物。deploy job 会在创建暂存目录前读取两个 Lingxi systemd 单元的 `DropInPaths`，非空即终止。
+2. 从 GitHub Actions 手动触发“发布门户与灵犀网页端”，不要在服务器上手工复制构建产物。deploy job 会在创建暂存目录前检查两个 Lingxi systemd 单元的 `DropInPaths`、全局维护标记、全局保护标记和 staging 保护现场，任一检查未通过即终止。
 3. workflow 的 `build` job 使用 Python 3.12 和 Lingxi 的 `requirements-ci.txt` 安装确定性验证依赖，再分别构建门户和 Lingxi，将 portal、lingxi、backend 三部分写入同一发布包；锁文件缺失或为空会直接失败。
 4. 构建阶段写入 `release.txt` 和后端 revision 环境文件，对 Lingxi 提交、静态资源、必要后端文件和归档内容做一致性检查。
 5. workflow 生成 SHA-256 校验文件，并将制品短期保存为本次 run 的 artifact。
 6. `deploy` job 在私有暂存目录接收制品，重新校验摘要，拒绝绝对路径、目录穿越和非普通归档成员。
-7. 服务器创建收紧写权限的发布目录，复核后端文件清单，将持久化 `data` 与 `snapshots` 作为外部目录挂入。
+7. 服务器创建收紧写权限的发布目录，复核后端文件清单，将持久化 `data` 与 `snapshots` 作为外部目录挂入。确认上一版三个指针后，清理无 `PRESERVE` 的旧数字 run staging 目录；回收 release 时保留按修改时间最新 5 份，并额外保护本次 release 与上一版三个指针的目标。
 8. 在停服务前使用服务器现有 `/usr/bin/python3` 3.12 为新 backend release 创建独立 `.venv`，从 `requirements-ci.txt` 安装依赖并执行 `pip check`，再以离线 dry-run 逐项复核环境与锁文件版本；安装不使用持久 pip 缓存，也不安装或升级系统包。
-9. 只有 release venv 完整、属于当前 release、通过 Python 版本和写权限检查后，workflow 才保存上一版三个指针、systemd 单元与 Nginx 配置并停止 Lingxi 网关和宿主，拒绝 mutation 穿越版本边界。
-10. 在短维护窗口内协调切换 portal、lingxi、backend 三个指针，安装 Lingxi 服务并等待同 SHA 健康；校验 Nginx 路由与生产协议后结束维护。全部通过后，本次发布完成。
+9. 只有 release venv 完整、属于当前 release、通过 Python 版本和写权限检查后，workflow 才备份上一版三个指针、systemd 单元与 Nginx 配置。
+10. 第一次修改 Nginx 前，workflow 在本次 staging 写入 `PRESERVE`。新配置通过语法检查、维护守卫检查并成功重载后，workflow 才创建全局维护标记，验证公网 mutation 已返回 `503`，然后停止 Lingxi 网关与宿主。
+11. 在短维护窗口内协调切换 portal、lingxi、backend 三个指针，安装 Lingxi 服务并等待同 SHA 健康；校验 Nginx 路由、生产协议和公网 revision 后移除维护标记与本次 `PRESERVE`，发布完成。
 
 ## 自动验证
 
@@ -56,6 +58,7 @@ workflow 使用的敏感项包括跨仓库只读 token、服务器主机、部�
 - 门户 `/api/health` 返回健康状态。
 - Lingxi `/api/health` 报告生产认证安全、宿主健康且 revision 一致。
 - 新 backend release 使用独立 Python 3.12 venv，归属当前 release、无 group/other 写权限且 `pip check` 通过。
+- staging 回收只删除无保护的旧数字 run 目录；release 回收保留最新 5 份和所有受保护目标，不跟随符号链接，也不触碰持久数据。
 - 发布前及服务安装后，`myagent-world.service` 与 `myagent-gateway.service` 的 `DropInPaths` 均为空。
 - 无效 token 与默认开发 token 均被拒绝并返回 `401`。
 - TLS 证书覆盖 Lingxi 域名，Nginx 双域根目录与 API 代理仍指向预期服务。
@@ -64,7 +67,11 @@ workflow 使用的敏感项包括跨仓库只读 token、服务器主机、部�
 
 ## 回滚
 
-维护切换后任何验证失败都会触发 workflow 的自动回滚。回滚会恢复上一版 portal、lingxi、backend 指针，同时恢复切换前备份的 systemd 和 Nginx 配置，随后重启 Lingxi 服务并重新加载 Nginx。旧 systemd 单元仍可使用保留的 `/opt/myagent/.venv` 共享环境，因此首次采用 release venv 的发布也能回滚到旧版；workflow 不删除共享 venv 或任何历史 release。该流程选择短暂拒绝 mutation，不宣称无停机或跨三个文件系统路径的单指令原子性。
+切换前失败时，当前三个指针和 Lingxi 服务保持不变。Nginx 已发生前置变更、但尚未进入维护时，workflow 会先恢复并重载备份配置；恢复无法通过语法、重载或活动配置核验时，本次 staging 与 release 会保留，并尽力写入 `/run/hi-veblen-release-preserve` 阻止后续发布和清理。
+
+进入维护或完成切换后失败时，workflow 会尝试恢复上一版 portal、lingxi、backend 指针与备份的 systemd/Nginx 配置，再验证旧服务、旧 revision、维护守卫和公网 `503`。全部恢复门通过后才移除维护与 `PRESERVE` 标记；任一恢复门未通过时保留标记、停止 Lingxi 服务并转入人工恢复。旧 systemd 单元仍可使用 `/opt/myagent/.venv` 共享环境，因此首次采用 release venv 的发布也能回滚到旧版。
+
+release 回收不删除共享 venv。每次新 release 建立后，`prune-production-releases.sh` 保留最新 5 份，并额外保护本次 release 和切换前三个 current 指向的 release；受保护目标可能使实际保留数超过 5。该流程使用短维护窗口，不宣称无停机或跨三个文件系统路径的单指令原子性。
 
 已经完成且随后发现业务回归时，优先通过 Git 回退门户提交或将 `LINGXI_SHA` 改回已知正常 revision，再重新运行同一 workflow。不要直接改 `current` 链接，也不要在现行发布目录中热修文件，否则 revision 与实际代码会失去对应关系。
 
@@ -80,9 +87,11 @@ workflow 使用的敏感项包括跨仓库只读 token、服务器主机、部�
 | 阶段 | 处理方式 |
 | --- | --- |
 | 构建或测试失败 | 不生成可部署制品，修复后从新提交重跑 |
+| 检测到维护、全局保护或 staging `PRESERVE` 标记 | 在创建或回收 release 前拒绝发布，保留现场供人工核验 |
 | 检测到 systemd drop-in | 发布前出现则在创建暂存目录前拒绝；服务安装后仍存在则验证失败并自动回滚。恢复正式单元配置后从头重跑 |
 | 制品摘要或归档校验失败 | 拒绝解包，保留当前生产指针 |
 | 新 release venv 创建、安装、锁版本复核或 `pip check` 失败 | 在停服务前终止，当前指针、服务和旧共享 venv 均不变 |
-| 维护切换后验证失败 | workflow 自动恢复上一组指针和服务配置 |
+| Nginx 前置变更失败 | 尝试恢复备份配置；恢复无法核验时保留 staging `PRESERVE` 并尽力写入全局保护标记，当前 Lingxi 服务保持原运行态 |
+| 维护切换后验证失败 | 尝试恢复上一组指针和服务配置；恢复门未全部通过时保留维护现场、停止 Lingxi 服务并转人工恢复 |
 | MyWeb API 不健康 | 不通过发布验收，API 由独立维护流程处理 |
 | revision 不一致 | 视为发布失败，不手工修改 `release.txt` |

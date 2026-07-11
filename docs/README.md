@@ -6,8 +6,8 @@
 
 | 文档 | 内容 | 读者 |
 | --- | --- | --- |
-| [生产发布与回滚](./PRODUCTION_DEPLOYMENT.md) | 双仓构建、不可变制品、维护切换、验证与回滚 | 发布维护者 |
-| [已知质量边界](./KNOWN_ISSUES.md) | Legacy 诊断、游戏风险、依赖残留与关闭条件 | 维护者 |
+| [生产发布与回滚](./PRODUCTION_DEPLOYMENT.md) | 双仓构建、不可变制品、release 保留、现场保护、维护切换与回滚 | 发布维护者 |
+| [已知质量边界](./KNOWN_ISSUES.md) | Legacy 诊断、游戏风险、运行权限、依赖残留与关闭条件 | 维护者 |
 | [安全策略](../SECURITY.md) | 私密漏洞报告、支持范围与凭据处理 | 使用者与安全研究者 |
 | [开发规范](./DEVELOPMENT_STANDARDS.md) | Vue、TypeScript、样式、测试和提交约定 | 开发者 |
 | [视觉系统设计](./next-generation-sci-fi-terminal-portfolio-design.md) | 展厅信息架构、视觉语言、动效与降级策略 | 设计与前端开发者 |
