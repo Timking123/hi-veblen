@@ -280,15 +280,22 @@ jobs:
             hi-veblen-production:/opt/hi-veblen/staging/run-${{ github.run_id }}-${{ github.run_attempt }}/
 
       - name: 维护窗口内协调切换并验证
+        env:
+          EXPECTED_ARCHIVE_SHA: ${{ steps.release.outputs.package_sha256 }}
         run: |
-          ssh hi-veblen-production 'bash -se' <<'REMOTE'
+          ssh hi-veblen-production 'bash -se -- deploy' \
+            "$GITHUB_RUN_ID" "$GITHUB_RUN_ATTEMPT" "$GITHUB_SHA" \
+            "$EXPECTED_ARCHIVE_SHA" <<'REMOTE'
           set -eu
 
-          upload_dir="/opt/hi-veblen/staging/run-${{ github.run_id }}-${{ github.run_attempt }}"
+          run_id="$1"
+          run_attempt="$2"
+          portal_revision="$3"
+          expected_archive_sha="$4"
+          upload_dir="/opt/hi-veblen/staging/run-$run_id-$run_attempt"
           archive="$upload_dir/portal-dist.tar.gz"
-          expected_archive_sha="${{ steps.release.outputs.package_sha256 }}"
           release_root="/opt/hi-veblen/releases"
-          release="$release_root/release-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}"
+          release="$release_root/release-$portal_revision-$run_id-$run_attempt"
           project_root="/opt/myagent"
           portal_current="/opt/hi-veblen/portal-current"
           lingxi_current="/opt/hi-veblen/lingxi-current"
@@ -824,11 +831,15 @@ jobs:
       - name: 清理本次远端暂存与未引用发布
         if: ${{ always() && steps.configure-ssh.outcome == 'success' }}
         run: |
-          ssh hi-veblen-production 'bash -se' <<'REMOTE'
+          ssh hi-veblen-production 'bash -se -- cleanup' \
+            "$GITHUB_RUN_ID" "$GITHUB_RUN_ATTEMPT" "$GITHUB_SHA" <<'REMOTE'
           set -euo pipefail
+          run_id="$1"
+          run_attempt="$2"
+          portal_revision="$3"
           maintenance_marker=/run/myagent-release-maintenance
           preserve_marker=/run/hi-veblen-release-preserve
-          upload_dir="/opt/hi-veblen/staging/run-${{ github.run_id }}-${{ github.run_attempt }}"
+          upload_dir="/opt/hi-veblen/staging/run-$run_id-$run_attempt"
           if test -e "$maintenance_marker" || test -L "$maintenance_marker" || \
             test -e "$preserve_marker" || test -L "$preserve_marker" || \
             test -e "$upload_dir/PRESERVE" || test -L "$upload_dir/PRESERVE"; then
@@ -836,7 +847,7 @@ jobs:
             exit 0
           fi
 
-          release="/opt/hi-veblen/releases/release-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}"
+          release="/opt/hi-veblen/releases/release-$portal_revision-$run_id-$run_attempt"
           referenced=0
           for current in \
             /opt/hi-veblen/portal-current \
