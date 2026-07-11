@@ -8,7 +8,7 @@ concurrency:
   cancel-in-progress: false
 
 env:
-  LINGXI_SHA: 60d0b08ba9ca78ae48ff2decf0639cae85c6faea
+  LINGXI_SHA: 014bdc14326cebcc230fea2d8aca7258153c2a08
 
 jobs:
   build:
@@ -127,6 +127,8 @@ jobs:
           mkdir -p release-package/portal release-package/lingxi release-package/backend
           cp -a dist/. release-package/portal/
           cp -a lingxi-source/ui/frontend/dist/. release-package/lingxi/
+          install -m 0755 scripts/prune-production-releases.sh \
+            release-package/prune-production-releases.sh
           lingxi_sha="$(git -C lingxi-source rev-parse HEAD)"
           test "$lingxi_sha" = "$LINGXI_SHA"
           git -C lingxi-source archive --format=tar "$lingxi_sha" | tar -x -C release-package/backend
@@ -141,6 +143,7 @@ jobs:
           test -s release-package/backend/brain/workspace/world_server.py
           test -s release-package/backend/ui/backend/app.py
           test -s release-package/backend/scripts/install_linux_services.sh
+          test -x release-package/prune-production-releases.sh
           test "$(cat release-package/portal/release.txt)" = "$GITHUB_SHA"
           test "$(cat release-package/lingxi/release.txt)" = "$lingxi_sha"
           test "$(cat release-package/backend/release.txt)" = "$lingxi_sha"
@@ -197,6 +200,7 @@ jobs:
           printf 'package_sha256=%s\n' "$package_sha256" >> "$GITHUB_OUTPUT"
 
       - name: 配置受信 SSH
+        id: configure-ssh
         env:
           SERVER_HOST: ${{ secrets.SERVER_HOST }}
           SERVER_USER: ${{ secrets.SERVER_USER }}
@@ -233,6 +237,19 @@ jobs:
         run: |
           ssh hi-veblen-production 'bash -se' <<'REMOTE'
           set -eu
+          maintenance_marker=/run/myagent-release-maintenance
+          preserve_marker=/run/hi-veblen-release-preserve
+          preserved_staging=""
+          if test -d /opt/hi-veblen/staging; then
+            preserved_staging="$(find /opt/hi-veblen/staging -mindepth 2 -maxdepth 2 \
+              -name PRESERVE -print -quit)"
+          fi
+          if test -e "$maintenance_marker" || test -L "$maintenance_marker" || \
+            test -e "$preserve_marker" || test -L "$preserve_marker" || \
+            test -n "$preserved_staging"; then
+            echo "检测到遗留发布保护现场，拒绝创建新发布。" >&2
+            exit 1
+          fi
           for unit in myagent-world.service myagent-gateway.service; do
             dropins="$(systemctl show "$unit" -p DropInPaths --value)"
             if test -n "$dropins"; then
@@ -277,6 +294,7 @@ jobs:
           lingxi_current="/opt/hi-veblen/lingxi-current"
           backend_current="$project_root/backend-current"
           maintenance_marker=/run/myagent-release-maintenance
+          preserve_marker=/run/hi-veblen-release-preserve
 
           case "$expected_archive_sha" in
             ''|*[!0-9a-f]*) echo "发布包摘要格式无效" >&2; exit 1 ;;
@@ -297,6 +315,17 @@ jobs:
                       raise SystemExit(f"不允许的归档成员类型：{member.name}")
           PY
 
+          preserved_staging=""
+          if test -d /opt/hi-veblen/staging; then
+            preserved_staging="$(find /opt/hi-veblen/staging -mindepth 2 -maxdepth 2 \
+              -name PRESERVE -print -quit)"
+          fi
+          if test -e "$maintenance_marker" || test -L "$maintenance_marker" || \
+            test -e "$preserve_marker" || test -L "$preserve_marker" || \
+            test -n "$preserved_staging"; then
+            echo "检测到遗留发布保护现场，拒绝创建或回收 release。" >&2
+            exit 1
+          fi
           mkdir -p "$release_root"
           mkdir "$release"
           tar --no-same-owner --no-same-permissions -xzf "$archive" -C "$release"
@@ -367,6 +396,12 @@ jobs:
             previous_revision_reliable=1
           fi
 
+          bash "$release/prune-production-releases.sh" \
+            "$release_root" 5 "$release" \
+            "$(dirname -- "$previous_portal")" \
+            "$(dirname -- "$previous_lingxi")" \
+            "$(dirname -- "$previous_backend")"
+
           release_venv="$release/backend/.venv"
           release_python="$release_venv/bin/python"
           test ! -e "$release_venv"
@@ -421,6 +456,15 @@ jobs:
             if test -e "$backup" || test -L "$backup"; then
               cp -a "$backup" "$target"
             fi
+          }
+
+          restore_nginx_backup() {
+            for name in hi-veblen.com.conf lingxi.hi-veblen.com.conf; do
+              restore_file "/etc/nginx/sites-available/$name" \
+                "$rollback_root/nginx-available/$name" || return 1
+              restore_file "/etc/nginx/sites-enabled/$name" \
+                "$rollback_root/nginx-enabled/$name" || return 1
+            done
           }
 
           activate_maintenance() {
@@ -500,9 +544,34 @@ jobs:
           switched=0
           services_stopped=0
           maintenance_active=0
+          nginx_mutated=0
           rollback() {
             status=$?
             trap - EXIT
+            if test "$status" -ne 0 && test "$nginx_mutated" -eq 1 && \
+              test "$switched" -eq 0 && test "$services_stopped" -eq 0 && \
+              test "$maintenance_active" -eq 0; then
+              set +e
+              nginx_restore_safe=1
+              restore_nginx_backup || nginx_restore_safe=0
+              if test "$nginx_restore_safe" -eq 1; then
+                nginx -t || nginx_restore_safe=0
+              fi
+              if test "$nginx_restore_safe" -eq 1; then
+                systemctl reload nginx || nginx_restore_safe=0
+              fi
+              if test "$nginx_restore_safe" -ne 1; then
+                preserve_tmp="${preserve_marker}.new.$$"
+                if ! install -m 0600 /dev/null "$preserve_tmp" || \
+                  ! mv -Tf "$preserve_tmp" "$preserve_marker"; then
+                  rm -f "$preserve_tmp"
+                fi
+                echo "Nginx 前置变更恢复失败；服务仍保持原运行态，请立即人工核验活动配置。" >&2
+              else
+                rm -f "$upload_dir/PRESERVE" || true
+              fi
+              exit "$status"
+            fi
             if test "$status" -ne 0 && \
               { test "$switched" -eq 1 || test "$services_stopped" -eq 1 || \
                 test "$maintenance_active" -eq 1; }; then
@@ -541,10 +610,7 @@ jobs:
               fi
               if test "$rollback_safe" -eq 1 && test "$switched" -eq 1; then
                 if backup_nginx_has_maintenance_guards; then
-                  for name in hi-veblen.com.conf lingxi.hi-veblen.com.conf; do
-                    restore_file "/etc/nginx/sites-available/$name" "$rollback_root/nginx-available/$name" || rollback_safe=0
-                    restore_file "/etc/nginx/sites-enabled/$name" "$rollback_root/nginx-enabled/$name" || rollback_safe=0
-                  done
+                  restore_nginx_backup || rollback_safe=0
                 else
                   echo "旧 Nginx 配置不识别维护标记，保留当前 503 加固配置。" >&2
                 fi
@@ -575,6 +641,9 @@ jobs:
                 rollback_safe=0
               fi
               if test "$rollback_safe" -eq 1; then
+                rm -f "$upload_dir/PRESERVE" || rollback_safe=0
+              fi
+              if test "$rollback_safe" -eq 1; then
                 rm -f "$maintenance_marker" || rollback_safe=0
               fi
               if test "$rollback_safe" -ne 1; then
@@ -588,15 +657,14 @@ jobs:
           }
           trap rollback EXIT
 
-          if test -e "$maintenance_marker" || test -L "$maintenance_marker"; then
-            echo "检测到遗留发布维护标记，拒绝覆盖，请先核验生产状态。" >&2
-            exit 1
-          fi
           primary_conf=/etc/nginx/sites-available/hi-veblen.com.conf
           primary_enabled=/etc/nginx/sites-enabled/hi-veblen.com.conf
           bootstrap_enabled=/etc/nginx/sites-enabled/lingxi.hi-veblen.com.conf
           test -d /etc/nginx/sites-available
           test -d /etc/nginx/sites-enabled
+          test ! -e "$upload_dir/PRESERVE"
+          install -m 0600 /dev/null "$upload_dir/PRESERVE"
+          nginx_mutated=1
           install -m 0644 "$release/backend/ops/nginx/hi-veblen.com.http.conf" "$primary_conf"
           ln -sfn "$primary_conf" "$primary_enabled"
           rm -f "$bootstrap_enabled"
@@ -746,6 +814,50 @@ jobs:
           maintenance_active=0
           switched=0
           trap - EXIT
+          rm -f "$upload_dir/PRESERVE"
+          case "$upload_dir" in
+            /opt/hi-veblen/staging/run-[0-9]*-[0-9]*) rm -rf -- "$upload_dir" ;;
+            *) echo "拒绝清理异常暂存路径：$upload_dir" >&2; exit 1 ;;
+          esac
+          REMOTE
+
+      - name: 清理本次远端暂存与未引用发布
+        if: ${{ always() && steps.configure-ssh.outcome == 'success' }}
+        run: |
+          ssh hi-veblen-production 'bash -se' <<'REMOTE'
+          set -euo pipefail
+          maintenance_marker=/run/myagent-release-maintenance
+          preserve_marker=/run/hi-veblen-release-preserve
+          upload_dir="/opt/hi-veblen/staging/run-${{ github.run_id }}-${{ github.run_attempt }}"
+          if test -e "$maintenance_marker" || test -L "$maintenance_marker" || \
+            test -e "$preserve_marker" || test -L "$preserve_marker" || \
+            test -e "$upload_dir/PRESERVE" || test -L "$upload_dir/PRESERVE"; then
+            echo "发布保护标记仍存在，保留本次 release 与回滚现场。"
+            exit 0
+          fi
+
+          release="/opt/hi-veblen/releases/release-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}"
+          referenced=0
+          for current in \
+            /opt/hi-veblen/portal-current \
+            /opt/hi-veblen/lingxi-current \
+            /opt/myagent/backend-current; do
+            if test -L "$current"; then
+              target="$(readlink -f -- "$current" 2>/dev/null || true)"
+              if test -n "$target" && test "$(dirname -- "$target")" = "$release"; then
+                referenced=1
+              fi
+            fi
+          done
+
+          if test -d "$release" && test "$referenced" -eq 0; then
+            case "$release" in
+              /opt/hi-veblen/releases/release-[0-9a-f]*-[0-9]*-[0-9]*)
+                rm -rf --one-file-system -- "$release"
+                ;;
+              *) echo "拒绝清理异常发布路径：$release" >&2; exit 1 ;;
+            esac
+          fi
           case "$upload_dir" in
             /opt/hi-veblen/staging/run-[0-9]*-[0-9]*) rm -rf -- "$upload_dir" ;;
             *) echo "拒绝清理异常暂存路径：$upload_dir" >&2; exit 1 ;;

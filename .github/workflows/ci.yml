@@ -27,6 +27,9 @@ jobs:
 
           workflow = Path(".github/workflows/deploy.yml").read_text(encoding="utf-8")
           rollback = workflow[workflow.index("          rollback() {"):workflow.index("          trap rollback EXIT")]
+          assert 'test "$nginx_mutated" -eq 1' in rollback
+          assert rollback.index("preserve_marker") < rollback.index('exit "$status"')
+          assert rollback.index("restore_nginx_backup") < rollback.index("activate_maintenance")
           assert rollback.index("activate_maintenance") < rollback.index("restore_link")
           rollback_remove = rollback.index('rm -f "$maintenance_marker"')
           assert rollback.index("systemctl is-active --quiet myagent-world.service") < rollback_remove
@@ -37,13 +40,15 @@ jobs:
           assert rollback.rindex("stop_services_for_manual_recovery") > rollback_remove
           assert "backup_nginx_has_maintenance_guards" in rollback
           assert rollback.index("nginx_has_maintenance_guards") < rollback.index("systemctl restart myagent-world.service")
-          assert rollback.index("previous_backend_healthy") < rollback.index("systemctl reload nginx")
-          assert rollback.index("systemctl reload nginx") < rollback.index("maintenance_public_blocked")
+          assert rollback.index("previous_backend_healthy") < rollback.rindex("systemctl reload nginx")
+          assert rollback.rindex("systemctl reload nginx") < rollback.index("maintenance_public_blocked")
           assert rollback.rindex("maintenance_public_blocked") < rollback_remove
           assert rollback.count("maintenance_public_blocked") >= 2
           prelude_start = workflow.index("          primary_conf=/etc/nginx/sites-available/hi-veblen.com.conf", workflow.index("          trap rollback EXIT"))
           services_stop = workflow.index("          services_stopped=1", prelude_start)
           maintenance_prelude = workflow[prelude_start:services_stop]
+          assert maintenance_prelude.index('install -m 0600 /dev/null "$upload_dir/PRESERVE"') < maintenance_prelude.index("nginx_mutated=1")
+          assert maintenance_prelude.index("nginx_mutated=1") < maintenance_prelude.index("install -m 0644")
           assert maintenance_prelude.index("systemctl reload nginx") < maintenance_prelude.index("activate_maintenance")
           assert maintenance_prelude.index("activate_maintenance") < maintenance_prelude.index("maintenance_public_blocked")
           assert "nginx_has_maintenance_guards" in maintenance_prelude
@@ -54,11 +59,49 @@ jobs:
           assert "RELEASE_TRANSACTION=1" in workflow
           assert "拒绝未纳管的 systemd 覆盖" in workflow
           assert workflow.count("-p DropInPaths --value") >= 3
+          prune_call = workflow.index('          bash "$release/prune-production-releases.sh"')
+          assert workflow.index('          previous_backend="$(readlink -f "$backend_current")"') < prune_call
+          assert prune_call < workflow.index('          release_venv="$release/backend/.venv"')
+          main_remote = workflow[workflow.index('          upload_dir="/opt/hi-veblen/staging/run-', workflow.index("      - name: 维护窗口内协调切换并验证")):prune_call]
+          assert main_remote.index('test -e "$maintenance_marker"') < main_remote.index('mkdir -p "$release_root"')
           preflight = workflow[workflow.index("      - name: 拒绝未纳管的 systemd 覆盖"):workflow.index("      - name: 创建私有暂存目录")]
           assert "myagent-world.service myagent-gateway.service" in preflight
           assert "test -n \"$dropins\"" in preflight
+          assert 'test -e "$maintenance_marker"' in preflight
+          assert 'test -e "$preserve_marker"' in preflight and "preserved_staging" in preflight
+          cleanup = workflow[workflow.index("      - name: 清理本次远端暂存与未引用发布"):]
+          assert "if:" in cleanup and "always()" in cleanup and "configure-ssh.outcome" in cleanup
+          assert "ssh hi-veblen-production" in cleanup
+          assert cleanup.index('test -e "$maintenance_marker"') < cleanup.index('rm -rf --one-file-system -- "$release"')
+          assert cleanup.index('test -e "$preserve_marker"') < cleanup.index('rm -rf --one-file-system -- "$release"')
+          assert 'test -L "$upload_dir/PRESERVE"' in cleanup
+          assert 'test "$(dirname -- "$target")" = "$release"' in cleanup
           print("production transaction ordering OK")
           PY
+
+      - name: Test release retention guard
+        shell: bash
+        run: |
+          set -euo pipefail
+          bash -n scripts/prune-production-releases.sh
+          tmp="$(mktemp -d)"
+          trap 'rm -rf -- "$tmp"' EXIT
+          root="$tmp/releases"
+          mkdir -p "$root"
+          for n in 1 2 3 4 5 6 7; do
+            mkdir -p "$root/release-$n"
+            touch -d "@$n" "$root/release-$n"
+          done
+          mkdir -p "$root/release-unsafe name"
+          bash scripts/prune-production-releases.sh \
+            "$root" 3 "$root/release-7" "$root/release-2"
+          for n in 2 5 6 7; do test -d "$root/release-$n"; done
+          for n in 1 3 4; do test ! -e "$root/release-$n"; done
+          test -d "$root/release-unsafe name"
+          if bash scripts/prune-production-releases.sh "$tmp/not-releases" 3 "$root/release-7"; then
+            echo "异常 release 根目录未被拒绝" >&2
+            exit 1
+          fi
 
       - name: Setup Node.js
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
