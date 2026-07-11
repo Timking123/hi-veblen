@@ -129,6 +129,8 @@ jobs:
           cp -a lingxi-source/ui/frontend/dist/. release-package/lingxi/
           install -m 0755 scripts/prune-production-releases.sh \
             release-package/prune-production-releases.sh
+          install -m 0755 scripts/prune-production-staging.sh \
+            release-package/prune-production-staging.sh
           lingxi_sha="$(git -C lingxi-source rev-parse HEAD)"
           test "$lingxi_sha" = "$LINGXI_SHA"
           git -C lingxi-source archive --format=tar "$lingxi_sha" | tar -x -C release-package/backend
@@ -144,6 +146,7 @@ jobs:
           test -s release-package/backend/ui/backend/app.py
           test -s release-package/backend/scripts/install_linux_services.sh
           test -x release-package/prune-production-releases.sh
+          test -x release-package/prune-production-staging.sh
           test "$(cat release-package/portal/release.txt)" = "$GITHUB_SHA"
           test "$(cat release-package/lingxi/release.txt)" = "$lingxi_sha"
           test "$(cat release-package/backend/release.txt)" = "$lingxi_sha"
@@ -283,7 +286,7 @@ jobs:
         env:
           EXPECTED_ARCHIVE_SHA: ${{ steps.release.outputs.package_sha256 }}
         run: |
-          ssh hi-veblen-production 'bash -se -- deploy' \
+          ssh hi-veblen-production 'bash -se --' \
             "$GITHUB_RUN_ID" "$GITHUB_RUN_ATTEMPT" "$GITHUB_SHA" \
             "$EXPECTED_ARCHIVE_SHA" <<'REMOTE'
           set -eu
@@ -292,6 +295,12 @@ jobs:
           run_attempt="$2"
           portal_revision="$3"
           expected_archive_sha="$4"
+          case "$run_id" in
+            ''|*[!0-9]*) echo "GitHub run id 格式无效：$run_id" >&2; exit 1 ;;
+          esac
+          case "$run_attempt" in
+            ''|*[!0-9]*) echo "GitHub run attempt 格式无效：$run_attempt" >&2; exit 1 ;;
+          esac
           upload_dir="/opt/hi-veblen/staging/run-$run_id-$run_attempt"
           archive="$upload_dir/portal-dist.tar.gz"
           release_root="/opt/hi-veblen/releases"
@@ -403,6 +412,8 @@ jobs:
             previous_revision_reliable=1
           fi
 
+          bash "$release/prune-production-staging.sh" \
+            /opt/hi-veblen/staging "$upload_dir"
           bash "$release/prune-production-releases.sh" \
             "$release_root" 5 "$release" \
             "$(dirname -- "$previous_portal")" \
@@ -831,12 +842,18 @@ jobs:
       - name: 清理本次远端暂存与未引用发布
         if: ${{ always() && steps.configure-ssh.outcome == 'success' }}
         run: |
-          ssh hi-veblen-production 'bash -se -- cleanup' \
+          ssh hi-veblen-production 'bash -se --' \
             "$GITHUB_RUN_ID" "$GITHUB_RUN_ATTEMPT" "$GITHUB_SHA" <<'REMOTE'
           set -euo pipefail
           run_id="$1"
           run_attempt="$2"
           portal_revision="$3"
+          case "$run_id" in
+            ''|*[!0-9]*) echo "GitHub run id 格式无效：$run_id" >&2; exit 1 ;;
+          esac
+          case "$run_attempt" in
+            ''|*[!0-9]*) echo "GitHub run attempt 格式无效：$run_attempt" >&2; exit 1 ;;
+          esac
           maintenance_marker=/run/myagent-release-maintenance
           preserve_marker=/run/hi-veblen-release-preserve
           upload_dir="/opt/hi-veblen/staging/run-$run_id-$run_attempt"

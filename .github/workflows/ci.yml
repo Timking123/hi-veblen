@@ -68,6 +68,19 @@ jobs:
           deploy_step_end = workflow.index("      - name: 清理本次远端暂存与未引用发布")
           deploy_run = workflow[workflow.index("        run: |", deploy_step_start):deploy_step_end]
           assert "$" + "{{" not in deploy_run
+          deploy_invocation = (
+              "          ssh hi-veblen-production 'bash -se --' \\\n"
+              '            "$GITHUB_RUN_ID" "$GITHUB_RUN_ATTEMPT" "$GITHUB_SHA" \\\n'
+              '            "$EXPECTED_ARCHIVE_SHA" <<\'REMOTE\''
+          )
+          assert deploy_invocation in deploy_run
+          assert (
+              '          run_id="$1"\n'
+              '          run_attempt="$2"\n'
+              '          portal_revision="$3"\n'
+              '          expected_archive_sha="$4"'
+          ) in deploy_run
+          assert "bash -se -- deploy" not in deploy_run
           preflight = workflow[workflow.index("      - name: 拒绝未纳管的 systemd 覆盖"):workflow.index("      - name: 创建私有暂存目录")]
           assert "myagent-world.service myagent-gateway.service" in preflight
           assert "test -n \"$dropins\"" in preflight
@@ -75,13 +88,36 @@ jobs:
           assert 'test -e "$preserve_marker"' in preflight and "preserved_staging" in preflight
           cleanup = workflow[workflow.index("      - name: 清理本次远端暂存与未引用发布"):]
           assert "if:" in cleanup and "always()" in cleanup and "configure-ssh.outcome" in cleanup
-          assert "ssh hi-veblen-production" in cleanup
+          cleanup_invocation = (
+              "          ssh hi-veblen-production 'bash -se --' \\\n"
+              '            "$GITHUB_RUN_ID" "$GITHUB_RUN_ATTEMPT" "$GITHUB_SHA" <<\'REMOTE\''
+          )
+          assert cleanup_invocation in cleanup
+          assert (
+              '          run_id="$1"\n'
+              '          run_attempt="$2"\n'
+              '          portal_revision="$3"'
+          ) in cleanup
+          assert "bash -se -- cleanup" not in cleanup
           assert cleanup.index('test -e "$maintenance_marker"') < cleanup.index('rm -rf --one-file-system -- "$release"')
           assert cleanup.index('test -e "$preserve_marker"') < cleanup.index('rm -rf --one-file-system -- "$release"')
           assert 'test -L "$upload_dir/PRESERVE"' in cleanup
           assert 'test "$(dirname -- "$target")" = "$release"' in cleanup
+          staging_prune = main_remote.index('          bash "$release/prune-production-staging.sh"')
+          assert main_remote.index('test -e "$maintenance_marker"') < staging_prune
           print("production transaction ordering OK")
           PY
+
+      - name: Test remote argument mapping
+        shell: bash
+        run: |
+          set -euo pipefail
+          mapped="$(printf '%s' 'printf "%s|%s|%s|%s" "$1" "$2" "$3" "$4"' | \
+            "$BASH" -se -- 29160903633 1 \
+              aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa \
+              bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb)"
+          test "$mapped" = \
+            "29160903633|1|aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa|bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
 
       - name: Test release retention guard
         shell: bash
@@ -106,6 +142,32 @@ jobs:
             echo "异常 release 根目录未被拒绝" >&2
             exit 1
           fi
+
+      - name: Test staging retention guard
+        shell: bash
+        run: |
+          set -euo pipefail
+          bash -n scripts/prune-production-staging.sh
+          tmp="$(mktemp -d)"
+          trap 'rm -rf -- "$tmp"' EXIT
+          root="$tmp/staging"
+          outside="$tmp/outside"
+          mkdir -p "$root/run-9-1" "$root/run-8-1" "$root/run-invalid-1" "$outside"
+          ln -s "$outside" "$root/run-7-1"
+          bash scripts/prune-production-staging.sh "$root" "$root/run-9-1"
+          test -d "$root/run-9-1"
+          test ! -e "$root/run-8-1"
+          test -d "$root/run-invalid-1"
+          test -L "$root/run-7-1"
+          test -d "$outside"
+          mkdir -p "$root/run-6-1" "$root/run-5-1"
+          touch "$root/run-6-1/PRESERVE"
+          if bash scripts/prune-production-staging.sh "$root" "$root/run-9-1"; then
+            echo "staging 保护标记未阻止回收" >&2
+            exit 1
+          fi
+          test -d "$root/run-6-1"
+          test -d "$root/run-5-1"
 
       - name: Setup Node.js
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
