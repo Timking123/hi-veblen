@@ -99,7 +99,7 @@ npx playwright install chromium
 npx playwright test e2e/art-museum-experience.spec.ts --project=chromium
 ```
 
-下一次生产发布使用的 CI 把结果分成四组，只有前三组构成发布证明。本轮提交的远端 CI 成功前，下表只是待生效的门禁定义，不能反推最近一次生产发布已经经过这些检查。
+当前生产版本使用的 CI 把结果分成四组，只有前三组构成发布证明。Portal `1c42c8e` 的 [CI run `29158269214`](https://github.com/Timking123/hi-veblen/actions/runs/29158269214) 与 Lingxi `60d0b08` 的 [CI run `29158252370`](https://github.com/Timking123/Lingxi/actions/runs/29158252370) 均为 success；Lingxi 的 Web、Python 3.11 与 Python 3.12 三个确定性 job 全部通过。
 
 | 检查组 | 范围 | 是否阻断 |
 | --- | --- | --- |
@@ -108,15 +108,15 @@ npx playwright test e2e/art-museum-experience.spec.ts --project=chromium
 | `Portal E2E` | Chromium 门户体验冒烟 | 是 |
 | `Legacy diagnostics (non-blocking)` | 旧全量 lint、unit 与 backend tests | 否，只保留完整诊断 |
 
-`npm run test` 和 `npm run lint` 覆盖历史代码面。遗留诊断失败会被完整展示，不能用来宣称全量回归通过。
+`Legacy diagnostics (non-blocking)` 显示 success 只表示非阻断包装已完整执行并保留诊断结果，不表示其中的 legacy 命令通过。`npm run test` 和 `npm run lint` 覆盖历史代码面；遗留失败仍会被完整展示，不能用来宣称全量回归通过。
 
 当前 legacy 计数、游戏子系统风险和依赖残留见 [已知质量边界](./docs/KNOWN_ISSUES.md)。
 
 ## 发布与回滚
 
-下一次生产发布仅走 [`.github/workflows/deploy.yml`](./.github/workflows/deploy.yml)。该 workflow 固定 Lingxi 提交，要求同一门户 SHA 的三个严格 CI check 已成功，并重跑 Lingxi 确定性总检。切换时先停止 Lingxi mutation，在短维护窗口内协调替换三个版本指针；同 SHA 后端健康后恢复公网，任一步失败都会恢复上一组指针与服务配置。
+生产发布仅走 [`.github/workflows/deploy.yml`](./.github/workflows/deploy.yml)。该 workflow 固定 Lingxi 提交，要求同一门户 SHA 的三个严格 CI check 已成功，并重跑 Lingxi 确定性总检。切换时先停止 Lingxi mutation，在短维护窗口内协调替换三个版本指针；同 SHA 后端健康后恢复公网，任一步失败都会恢复上一组指针与服务配置。
 
-当前生产仍为 portal `f766147`、Lingxi frontend/backend `eaa79c5`。严格 CI、独立 Python 3.12 release venv 和新增安全头要等下一次 workflow 成功并完成公网复验后才算上线。
+[生产 workflow `29158517614`](https://github.com/Timking123/hi-veblen/actions/runs/29158517614) 的构建与部署 job 均已成功，当前生产为 portal `1c42c8e`、Lingxi frontend/backend/host `60d0b08`。独立 Python 3.12 release venv、新安全头与公网协议检查均已通过；发布前和服务安装后都会要求两个 Lingxi systemd 单元的 `DropInPaths` 为空，发现临时或未纳管的 drop-in 会拒绝发布。
 
 完整操作边界见 [生产发布与回滚](./docs/PRODUCTION_DEPLOYMENT.md)。仓库不再维护 Docker、Vercel、服务器手工上传等第二套发布路线。
 

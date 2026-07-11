@@ -4,7 +4,9 @@
 
 ## 2026-07-11 全量诊断
 
-本节以 MyWeb `main` HEAD `f766147` 上精确暂存的 93 个任务文件为口径，验证时间为 2026-07-11 21:33~21:49 +08。临时 worktree 只包含 staged index，明确排除了游戏、简历、Contact/Navigation、MCP、本机配置和其他用户脏改。ESLint、根项目全量单测与 Admin backend legacy Jest 均在该快照重跑；Home、Admin frontend、生产构建、凭据失败关闭和 Portal Chromium E2E 也在同一快照验证。发布锁固定 Lingxi `0d9050fb0b1edbaef1ee2f5837fceb27372e8c70`，其 CI run `29154348861` 的 Web、Python 3.11 与 Python 3.12 三个 job 均为 success。
+以下 legacy 计数以 MyWeb `main` HEAD `f766147` 上精确暂存的 93 个任务文件为口径，验证时间为 2026-07-11 21:33~21:49 +08。临时 worktree 只包含 staged index，明确排除了游戏、简历、Contact/Navigation、MCP、本机配置和其他用户脏改。ESLint、根项目全量单测与 Admin backend legacy Jest 均在该快照重跑；Home、Admin frontend、生产构建、凭据失败关闭和 Portal Chromium E2E 也在同一快照验证。
+
+当前生产证据更新为 portal `1c42c8e` 的 [CI run `29158269214`](https://github.com/Timking123/hi-veblen/actions/runs/29158269214)、Lingxi `60d0b08` 的 [CI run `29158252370`](https://github.com/Timking123/Lingxi/actions/runs/29158252370)，以及 [production workflow `29158517614`](https://github.com/Timking123/hi-veblen/actions/runs/29158517614)，三者均为 success。CI 页面上的 `Legacy diagnostics (non-blocking)` success 是非阻断包装的结果：它表示诊断命令已执行并保留结果，不表示下表三个 legacy 检查已经通过。
 
 | 检查 | 结果 | 当前处理 |
 | --- | --- | --- |
