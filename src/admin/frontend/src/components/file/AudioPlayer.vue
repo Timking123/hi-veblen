@@ -106,7 +106,9 @@ function toggleMute() {
 /**
  * 处理进度条变化
  */
-function handleProgressChange(value: number) {
+function handleProgressChange(value: number | number[]) {
+  if (Array.isArray(value)) return
+
   const audio = audioRef.value
   if (!audio || duration.value === 0) return
   
@@ -118,7 +120,9 @@ function handleProgressChange(value: number) {
 /**
  * 处理音量变化
  */
-function handleVolumeChange(value: number) {
+function handleVolumeChange(value: number | number[]) {
+  if (Array.isArray(value)) return
+
   const audio = audioRef.value
   if (!audio) return
   
@@ -183,7 +187,7 @@ function handleTimeUpdate() {
 /**
  * 音频错误
  */
-function handleError(e: Event) {
+function handleError() {
   hasError.value = true
   isLoading.value = false
   emit('error', new Error('音频加载失败'))

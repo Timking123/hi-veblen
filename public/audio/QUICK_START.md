@@ -93,9 +93,9 @@ ffmpeg -i input.wav -ac 1 -b:a 128k -af "silenceremove=1:0:-50dB,loudnorm" outpu
 
 ## 📚 详细文档
 
-- [完整指南](../../AUDIO_RESOURCES_GUIDE.md)
-- [测试清单](../../AUDIO_TESTING_CHECKLIST.md)
-- [总结文档](../../AUDIO_RESOURCES_SUMMARY.md)
+- [音频目录说明](./README.md)
+- [音乐资源说明](./music/README.md)
+- [音效资源说明](./sfx/README.md)
 
 ## ❓ 常见问题
 

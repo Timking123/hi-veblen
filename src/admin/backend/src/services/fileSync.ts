@@ -83,7 +83,9 @@ export class FileSyncService {
         WHERE is_active = 1
       `)
 
-      if (result.length === 0 || !result[0].values || result[0].values.length === 0) {
+      const firstResult = result[0]
+      const firstRow = firstResult?.values?.[0]
+      if (!firstRow) {
         logger.warn('没有激活的简历版本')
         return {
           success: false,
@@ -91,8 +93,16 @@ export class FileSyncService {
         }
       }
 
-      const [version, filename, filePath] = result[0].values[0]
-      const sourcePath = path.join(ADMIN_FILE_ROOT, filePath as string)
+      const [version, filename, filePath] = firstRow
+      if (typeof filePath !== 'string' || !filePath) {
+        logger.error('激活简历的文件路径无效', { version, filePath })
+        return {
+          success: false,
+          error: '激活简历的文件路径无效'
+        }
+      }
+
+      const sourcePath = path.join(ADMIN_FILE_ROOT, filePath)
       const targetPath = path.join(PUBLIC_ROOT, 'resume.pdf')
       const tempPath = path.join(PUBLIC_ROOT, `.resume.pdf.tmp.${Date.now()}`)
 

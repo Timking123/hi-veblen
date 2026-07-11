@@ -72,8 +72,8 @@ const partialEnemyTypeArb = fc.record({
  * 生成可能不完整的敌人配置
  */
 const partialEnemiesConfigArb = fc.record({
-  eliteMultiplier: fc.option(fc.float({ min: 1, max: 5 }), { nil: undefined }),
-  bossMultiplier: fc.option(fc.float({ min: 1, max: 10 }), { nil: undefined }),
+  eliteMultiplier: fc.option(fc.float({ min: 1, max: 5, noNaN: true }), { nil: undefined }),
+  bossMultiplier: fc.option(fc.float({ min: 1, max: 10, noNaN: true }), { nil: undefined }),
   types: fc.option(
     fc.dictionary(
       fc.constantFrom('white', 'green', 'blue', 'purple', 'yellow', 'orange', 'red'),
@@ -87,8 +87,8 @@ const partialEnemiesConfigArb = fc.record({
  * 生成可能不完整的音频配置
  */
 const partialAudioConfigArb = fc.record({
-  musicVolume: fc.option(fc.float({ min: 0, max: 1 }), { nil: undefined }),
-  effectVolume: fc.option(fc.float({ min: 0, max: 1 }), { nil: undefined }),
+  musicVolume: fc.option(fc.float({ min: 0, max: 1, noNaN: true }), { nil: undefined }),
+  effectVolume: fc.option(fc.float({ min: 0, max: 1, noNaN: true }), { nil: undefined }),
   maxConcurrentSounds: fc.option(fc.integer({ min: 1, max: 30 }), { nil: undefined })
 }, { requiredKeys: [] })
 
@@ -98,7 +98,7 @@ const partialAudioConfigArb = fc.record({
 const partialPerformanceConfigArb = fc.record({
   targetFPS: fc.option(fc.integer({ min: 30, max: 120 }), { nil: undefined }),
   maxMemoryMB: fc.option(fc.integer({ min: 50, max: 500 }), { nil: undefined }),
-  cacheCleanupThreshold: fc.option(fc.float({ min: 0.5, max: 1 }), { nil: undefined })
+  cacheCleanupThreshold: fc.option(fc.float({ min: 0.5, max: 1, noNaN: true }), { nil: undefined })
 }, { requiredKeys: [] })
 
 /**

@@ -5,7 +5,8 @@
   "main": "dist/app.js",
   "scripts": {
     "dev": "nodemon",
-    "build": "tsc",
+    "prebuild": "node -e \"require('node:fs').rmSync('dist', { recursive: true, force: true })\"",
+    "build": "tsc -p tsconfig.build.json",
     "start": "node dist/app.js",
     "start:prod": "pm2 start ecosystem.config.js --env production",
     "stop": "pm2 stop admin-backend",
@@ -18,7 +19,7 @@
     "test": "jest",
     "test:watch": "jest --watch",
     "test:coverage": "jest --coverage",
-    "db:init": "ts-node src/database/init.ts",
+    "db:init": "node --env-file=.env -r ts-node/register src/database/init.ts",
     "check:consistency": "ts-node src/scripts/checkConsistency.ts",
     "sync:files": "ts-node src/scripts/syncFiles.ts",
     "fix:encoding": "ts-node src/scripts/fixEncoding.ts",
@@ -71,6 +72,6 @@
     "typescript": "^5.3.3"
   },
   "engines": {
-    "node": ">=20.0.0"
+    "node": ">=20.6.0"
   }
 }

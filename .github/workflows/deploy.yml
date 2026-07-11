@@ -8,18 +8,50 @@ concurrency:
   cancel-in-progress: false
 
 env:
-  LINGXI_SHA: eaa79c5d429d66584a9469a993c366be508b514b
+  LINGXI_SHA: 0d9050fb0b1edbaef1ee2f5837fceb27372e8c70
 
 jobs:
   build:
     name: 构建双站发布包
     runs-on: ubuntu-latest
+    timeout-minutes: 40
     permissions:
       contents: read
+      checks: read
 
     steps:
+      - name: 校验 main 同提交严格 CI
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          test "$GITHUB_REF" = "refs/heads/main"
+          python3 - <<'PY'
+          import json
+          import os
+          import urllib.request
+
+          repository = os.environ["GITHUB_REPOSITORY"]
+          revision = os.environ["GITHUB_SHA"]
+          request = urllib.request.Request(
+              f"https://api.github.com/repos/{repository}/commits/{revision}/check-runs?per_page=100",
+              headers={
+                  "Authorization": f"Bearer {os.environ['GITHUB_TOKEN']}",
+                  "Accept": "application/vnd.github+json",
+                  "X-GitHub-Api-Version": "2022-11-28",
+              },
+          )
+          with urllib.request.urlopen(request, timeout=30) as response:
+              runs = json.load(response).get("check_runs", [])
+          conclusions = {run.get("name"): run.get("conclusion") for run in runs}
+          required = ("Release gate", "Admin quality", "Portal E2E")
+          failed = {name: conclusions.get(name) for name in required if conclusions.get(name) != "success"}
+          if failed:
+              raise SystemExit(f"同提交严格 CI 未全部成功：{failed}")
+          print("同提交严格 CI 已通过")
+          PY
+
       - name: 检出门户代码
-        uses: actions/checkout@v4
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
           persist-credentials: false
 
@@ -29,7 +61,7 @@ jobs:
         run: test -n "$LINGXI_REPO_TOKEN"
 
       - name: 检出灵犀代码
-        uses: actions/checkout@v4
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
           repository: Timking123/Lingxi
           ref: ${{ env.LINGXI_SHA }}
@@ -38,13 +70,30 @@ jobs:
           persist-credentials: false
 
       - name: 设置 Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
-          node-version: '20'
+          node-version: '22'
           cache: npm
           cache-dependency-path: |
             package-lock.json
             lingxi-source/ui/frontend/package-lock.json
+
+      - name: 设置 Python
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: lingxi-source/requirements-ci.txt
+
+      - name: 验证 Lingxi 确定性状态
+        working-directory: lingxi-source
+        run: |
+          test -s requirements-ci.txt
+          python -m pip install -r requirements-ci.txt
+          python scripts/verify_state.py
+        env:
+          PYTHONUTF8: '1'
+          HF_HUB_DISABLE_TELEMETRY: '1'
 
       - name: 构建门户
         run: |
@@ -55,6 +104,13 @@ jobs:
         env:
           VITE_SITE_URL: https://hi-veblen.com
           VITE_API_BASE_URL: /api
+          VITE_LINGXI_URL: https://lingxi.hi-veblen.com/
+
+      - name: 验证门户生产制品
+        run: |
+          npx playwright install --with-deps chromium
+          npx playwright test e2e/art-museum-experience.spec.ts --project=chromium
+        env:
           VITE_LINGXI_URL: https://lingxi.hi-veblen.com/
 
       - name: 构建灵犀网页端
@@ -107,7 +163,7 @@ jobs:
           sha256sum portal-dist.tar.gz > portal-dist.tar.gz.sha256
 
       - name: 保存发布制品
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: production-release-${{ github.sha }}
           path: |
@@ -120,6 +176,7 @@ jobs:
     name: 部署双站发布包
     needs: build
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     environment:
       name: production
     permissions:
@@ -127,7 +184,7 @@ jobs:
 
     steps:
       - name: 下载发布制品
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
           name: production-release-${{ github.sha }}
 
@@ -192,284 +249,490 @@ jobs:
           scp -q portal-dist.tar.gz \
             hi-veblen-production:/opt/hi-veblen/staging/run-${{ github.run_id }}-${{ github.run_attempt }}/
 
-      - name: 原子切换并验证
+      - name: 维护窗口内协调切换并验证
         run: |
-            ssh hi-veblen-production 'bash -se' <<'REMOTE'
-            set -eu
+          ssh hi-veblen-production 'bash -se' <<'REMOTE'
+          set -eu
 
-            upload_dir="/opt/hi-veblen/staging/run-${{ github.run_id }}-${{ github.run_attempt }}"
-            archive="$upload_dir/portal-dist.tar.gz"
-            expected_archive_sha="${{ steps.release.outputs.package_sha256 }}"
-            release_root="/opt/hi-veblen/releases"
-            release="$release_root/release-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}"
-            project_root="/opt/myagent"
-            portal_current="/opt/hi-veblen/portal-current"
-            lingxi_current="/opt/hi-veblen/lingxi-current"
-            backend_current="$project_root/backend-current"
+          upload_dir="/opt/hi-veblen/staging/run-${{ github.run_id }}-${{ github.run_attempt }}"
+          archive="$upload_dir/portal-dist.tar.gz"
+          expected_archive_sha="${{ steps.release.outputs.package_sha256 }}"
+          release_root="/opt/hi-veblen/releases"
+          release="$release_root/release-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}"
+          project_root="/opt/myagent"
+          portal_current="/opt/hi-veblen/portal-current"
+          lingxi_current="/opt/hi-veblen/lingxi-current"
+          backend_current="$project_root/backend-current"
+          maintenance_marker=/run/myagent-release-maintenance
 
-            case "$expected_archive_sha" in
-              ''|*[!0-9a-f]*) echo "发布包摘要格式无效" >&2; exit 1 ;;
-            esac
-            test "${#expected_archive_sha}" -eq 64
-            test "$(sha256sum "$archive" | cut -d ' ' -f 1)" = "$expected_archive_sha"
-            python3 - "$archive" <<'PY'
-            import sys
-            import tarfile
-            from pathlib import PurePosixPath
+          case "$expected_archive_sha" in
+            ''|*[!0-9a-f]*) echo "发布包摘要格式无效" >&2; exit 1 ;;
+          esac
+          test "${#expected_archive_sha}" -eq 64
+          test "$(sha256sum "$archive" | cut -d ' ' -f 1)" = "$expected_archive_sha"
+          python3 - "$archive" <<'PY'
+          import sys
+          import tarfile
+          from pathlib import PurePosixPath
 
-            with tarfile.open(sys.argv[1], "r:gz") as archive_file:
-                for member in archive_file.getmembers():
-                    path = PurePosixPath(member.name)
-                    if path.is_absolute() or ".." in path.parts:
-                        raise SystemExit(f"不安全的归档路径：{member.name}")
-                    if not (member.isfile() or member.isdir()):
-                        raise SystemExit(f"不允许的归档成员类型：{member.name}")
-            PY
+          with tarfile.open(sys.argv[1], "r:gz") as archive_file:
+              for member in archive_file.getmembers():
+                  path = PurePosixPath(member.name)
+                  if path.is_absolute() or ".." in path.parts:
+                      raise SystemExit(f"不安全的归档路径：{member.name}")
+                  if not (member.isfile() or member.isdir()):
+                      raise SystemExit(f"不允许的归档成员类型：{member.name}")
+          PY
 
-            mkdir -p "$release_root"
-            mkdir "$release"
-            tar --no-same-owner --no-same-permissions -xzf "$archive" -C "$release"
-            chown -R root:root "$release"
-            chmod -R go-w "$release"
-            test -s "$release/portal/index.html"
-            test -s "$release/lingxi/index.html"
-            test -s "$release/release.txt"
+          mkdir -p "$release_root"
+          mkdir "$release"
+          tar --no-same-owner --no-same-permissions -xzf "$archive" -C "$release"
+          chown -R root:root "$release"
+          chmod -R go-w "$release"
+          test -s "$release/portal/index.html"
+          test -s "$release/lingxi/index.html"
+          test -s "$release/release.txt"
 
-            expected_portal="$(sed -n 's/^portal=//p' "$release/release.txt")"
-            expected_lingxi="$(sed -n 's/^lingxi=//p' "$release/release.txt")"
-            expected_backend="$(sed -n 's/^backend=//p' "$release/release.txt")"
-            test -n "$expected_portal"
-            test -n "$expected_lingxi"
-            test "$expected_backend" = "$expected_lingxi"
-            test "$(cat "$release/portal/release.txt")" = "$expected_portal"
-            test "$(cat "$release/lingxi/release.txt")" = "$expected_lingxi"
-            test "$(cat "$release/backend/release.txt")" = "$expected_backend"
-            test "$(cat "$release/backend/.release.env")" = "BRAIN_RELEASE_SHA=$expected_backend"
-            test -s "$release/backend-files.sha256"
-            (
-              cd "$release/backend"
-              sha256sum --check "$release/backend-files.sha256"
-            )
+          expected_portal="$(sed -n 's/^portal=//p' "$release/release.txt")"
+          expected_lingxi="$(sed -n 's/^lingxi=//p' "$release/release.txt")"
+          expected_backend="$(sed -n 's/^backend=//p' "$release/release.txt")"
+          test -n "$expected_portal"
+          test -n "$expected_lingxi"
+          test "$expected_backend" = "$expected_lingxi"
+          test "$(cat "$release/portal/release.txt")" = "$expected_portal"
+          test "$(cat "$release/lingxi/release.txt")" = "$expected_lingxi"
+          test "$(cat "$release/backend/release.txt")" = "$expected_backend"
+          test "$(cat "$release/backend/.release.env")" = "BRAIN_RELEASE_SHA=$expected_backend"
+          test -s "$release/backend-files.sha256"
+          (
+            cd "$release/backend"
+            sha256sum --check "$release/backend-files.sha256"
+          )
 
-            for required in brain/workspace/world_server.py ui/backend/app.py \
-              scripts/install_linux_services.sh ops/systemd/myagent-world.service \
-              ops/systemd/myagent-gateway.service; do
-              test -s "$release/backend/$required"
-            done
-            test -d "$project_root/data"
-            test ! -e "$release/backend/data"
-            ln -s "$project_root/data" "$release/backend/data"
-            if test -d "$project_root/snapshots"; then
-              test ! -e "$release/backend/snapshots"
-              ln -s "$project_root/snapshots" "$release/backend/snapshots"
+          for required in requirements-ci.txt brain/workspace/world_server.py ui/backend/app.py \
+            scripts/install_linux_services.sh ops/systemd/myagent-world.service \
+            ops/systemd/myagent-gateway.service ops/nginx/hi-veblen.com.http.conf; do
+            test -s "$release/backend/$required"
+          done
+          test -d "$project_root/data"
+          test ! -e "$release/backend/data"
+          ln -s "$project_root/data" "$release/backend/data"
+          if test -d "$project_root/snapshots"; then
+            test ! -e "$release/backend/snapshots"
+            ln -s "$project_root/snapshots" "$release/backend/snapshots"
+          fi
+
+          certificate=/etc/letsencrypt/live/hi-veblen.com/fullchain.pem
+          test -s "$certificate"
+          openssl x509 -in "$certificate" -noout -checkend 0 >/dev/null
+          certificate_host_check="$(
+            openssl x509 -in "$certificate" -noout -checkhost lingxi.hi-veblen.com 2>&1
+          )"
+          printf '%s\n' "$certificate_host_check" | \
+            grep -Fqx 'Hostname lingxi.hi-veblen.com does match certificate'
+
+          for current in "$portal_current" "$lingxi_current" "$backend_current"; do
+            if { test -e "$current" || test -L "$current"; } && ! test -L "$current"; then
+              echo "current 路径不是符号链接，拒绝覆盖：$current" >&2
+              exit 1
             fi
+          done
 
-            certificate=/etc/letsencrypt/live/hi-veblen.com/fullchain.pem
-            test -s "$certificate"
-            openssl x509 -in "$certificate" -noout -checkend 0 >/dev/null
-            certificate_host_check="$(
-              openssl x509 -in "$certificate" -noout -checkhost lingxi.hi-veblen.com 2>&1
-            )"
-            printf '%s\n' "$certificate_host_check" | \
-              grep -Fqx 'Hostname lingxi.hi-veblen.com does match certificate'
-
-            for current in "$portal_current" "$lingxi_current" "$backend_current"; do
-              if { test -e "$current" || test -L "$current"; } && ! test -L "$current"; then
-                echo "current 路径不是符号链接，拒绝覆盖：$current" >&2
-                exit 1
-              fi
-            done
-
-            needs_legacy=0
-            for current in "$portal_current" "$lingxi_current" "$backend_current"; do
-              if ! test -L "$current" || ! test -d "$current"; then
-                needs_legacy=1
-              fi
-            done
-            if test "$needs_legacy" -eq 1; then
-              legacy_release="$release_root/bootstrap-legacy-${{ github.run_id }}-${{ github.run_attempt }}"
-              mkdir "$legacy_release"
-              mkdir "$legacy_release/portal" "$legacy_release/lingxi" "$legacy_release/backend"
-              test -s "$project_root/ui/frontend/dist/index.html"
-              cp -a "$project_root/ui/frontend/dist/." "$legacy_release/portal/"
-              cp -a "$project_root/ui/frontend/dist/." "$legacy_release/lingxi/"
-              zero_revision=0000000000000000000000000000000000000000
-              printf '%s\n' "$zero_revision" > "$legacy_release/portal/release.txt"
-              printf '%s\n' "$zero_revision" > "$legacy_release/lingxi/release.txt"
-              rsync -a \
-                --exclude '/data/' \
-                --exclude '/snapshots/' \
-                --exclude '/.env' \
-                --exclude '/.release.env' \
-                --exclude '/.venv/' \
-                --exclude '/backend-current' \
-                "$project_root/" "$legacy_release/backend/"
-              test -s "$legacy_release/backend/brain/workspace/world_server.py"
-              test -s "$legacy_release/backend/ui/backend/app.py"
-              printf '%s\n' "$zero_revision" > "$legacy_release/backend/release.txt"
-              printf 'BRAIN_RELEASE_SHA=%s\n' "$zero_revision" > "$legacy_release/backend/.release.env"
-              ln -s "$project_root/data" "$legacy_release/backend/data"
-              if test -d "$project_root/snapshots"; then
-                ln -s "$project_root/snapshots" "$legacy_release/backend/snapshots"
-              fi
-              if ! test -L "$portal_current" || ! test -d "$portal_current"; then
-                ln -sfn "$legacy_release/portal" "${portal_current}.bootstrap"
-                mv -Tf "${portal_current}.bootstrap" "$portal_current"
-              fi
-              if ! test -L "$lingxi_current" || ! test -d "$lingxi_current"; then
-                ln -sfn "$legacy_release/lingxi" "${lingxi_current}.bootstrap"
-                mv -Tf "${lingxi_current}.bootstrap" "$lingxi_current"
-              fi
-              if ! test -L "$backend_current" || ! test -d "$backend_current"; then
-                ln -sfn "$legacy_release/backend" "${backend_current}.bootstrap"
-                mv -Tf "${backend_current}.bootstrap" "$backend_current"
-              fi
+          for current in "$portal_current" "$lingxi_current" "$backend_current"; do
+            if ! test -L "$current" || ! test -d "$current"; then
+              echo "current 指针缺失或目标无效，拒绝自动复制运行目录：$current" >&2
+              exit 1
             fi
+          done
 
-            previous_portal="$(readlink -f "$portal_current")"
-            previous_lingxi="$(readlink -f "$lingxi_current")"
-            previous_backend="$(readlink -f "$backend_current")"
+          previous_portal="$(readlink -f "$portal_current")"
+          previous_lingxi="$(readlink -f "$lingxi_current")"
+          previous_backend="$(readlink -f "$backend_current")"
+          previous_backend_revision="$(cat "$previous_backend/release.txt" 2>/dev/null || true)"
+          previous_revision_reliable=0
+          if [[ "$previous_backend_revision" =~ ^[0-9a-f]{40}$ ]]; then
+            previous_revision_reliable=1
+          fi
 
-            rollback_root="$upload_dir/rollback"
-            mkdir -m 0700 "$rollback_root"
-            mkdir "$rollback_root/systemd" "$rollback_root/nginx-available" "$rollback_root/nginx-enabled"
-            for unit in myagent-world.service myagent-gateway.service; do
-              if test -e "/etc/systemd/system/$unit"; then
-                cp -a "/etc/systemd/system/$unit" "$rollback_root/systemd/"
+          release_venv="$release/backend/.venv"
+          release_python="$release_venv/bin/python"
+          test ! -e "$release_venv"
+          test -x /usr/bin/python3
+          test "$(/usr/bin/python3 -c \
+            'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")')" = "3.12"
+          umask 022
+          /usr/bin/python3 -m venv "$release_venv"
+          "$release_python" -m pip install --disable-pip-version-check --no-input \
+            --no-cache-dir -r "$release/backend/requirements-ci.txt"
+          "$release_python" -m pip check
+          "$release_python" -m pip install --disable-pip-version-check --no-input \
+            --dry-run --no-index --no-deps -r "$release/backend/requirements-ci.txt"
+          test "$("$release_python" -c \
+            'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")')" = "3.12"
+          "$release_python" -c \
+            'import pathlib,sys; raise SystemExit(pathlib.Path(sys.prefix).resolve() != pathlib.Path(sys.argv[1]).resolve())' \
+            "$release_venv"
+          chown -R root:root "$release_venv"
+          chmod -R go-w "$release_venv"
+          test -z "$(find "$release_venv" ! -type l -perm /022 -print -quit)"
+          umask 077
+
+          rollback_root="$upload_dir/rollback"
+          mkdir -m 0700 "$rollback_root"
+          mkdir "$rollback_root/systemd" "$rollback_root/nginx-available" "$rollback_root/nginx-enabled"
+          for unit in myagent-world.service myagent-gateway.service; do
+            if test -e "/etc/systemd/system/$unit"; then
+              cp -a "/etc/systemd/system/$unit" "$rollback_root/systemd/"
+            fi
+          done
+          for name in hi-veblen.com.conf lingxi.hi-veblen.com.conf; do
+            if test -e "/etc/nginx/sites-available/$name" || test -L "/etc/nginx/sites-available/$name"; then
+              cp -a "/etc/nginx/sites-available/$name" "$rollback_root/nginx-available/"
+            fi
+            if test -e "/etc/nginx/sites-enabled/$name" || test -L "/etc/nginx/sites-enabled/$name"; then
+              cp -a "/etc/nginx/sites-enabled/$name" "$rollback_root/nginx-enabled/"
+            fi
+          done
+
+          restore_link() {
+            target="$1"
+            destination="$2"
+            ln -sfn "$target" "${destination}.rollback"
+            mv -Tf "${destination}.rollback" "$destination"
+          }
+
+          restore_file() {
+            target="$1"
+            backup="$2"
+            rm -f "$target"
+            if test -e "$backup" || test -L "$backup"; then
+              cp -a "$backup" "$target"
+            fi
+          }
+
+          activate_maintenance() {
+            marker_tmp="${maintenance_marker}.new.$$"
+            rm -f "$marker_tmp"
+            if ! install -m 0644 /dev/null "$marker_tmp"; then
+              rm -f "$marker_tmp"
+              return 1
+            fi
+            if ! mv -Tf "$marker_tmp" "$maintenance_marker"; then
+              rm -f "$marker_tmp"
+              return 1
+            fi
+          }
+
+          previous_backend_healthy() {
+            for _attempt in {1..30}; do
+              if rollback_health="$(curl --connect-timeout 2 --max-time 5 \
+                --fail --silent --show-error http://127.0.0.1:8000/api/health 2>/dev/null)" && \
+                printf '%s' "$rollback_health" | python3 -c '
+          import json, sys
+          data = json.load(sys.stdin)
+          expected = sys.argv[1] if sys.argv[2] == "1" else ""
+          assert data.get("production_auth_safe") is True
+          assert (data.get("host") or {}).get("ok") is True
+          if expected:
+              assert data.get("backend_revision") == expected
+              assert (data.get("host") or {}).get("backend_revision") == expected
+          ' "$previous_backend_revision" "$previous_revision_reliable"; then
+                return 0
               fi
+              sleep 1
             done
-            for name in hi-veblen.com.conf lingxi.hi-veblen.com.conf; do
-              if test -e "/etc/nginx/sites-available/$name" || test -L "/etc/nginx/sites-available/$name"; then
-                cp -a "/etc/nginx/sites-available/$name" "$rollback_root/nginx-available/"
-              fi
-              if test -e "/etc/nginx/sites-enabled/$name" || test -L "/etc/nginx/sites-enabled/$name"; then
-                cp -a "/etc/nginx/sites-enabled/$name" "$rollback_root/nginx-enabled/"
-              fi
-            done
+            return 1
+          }
 
-            restore_link() {
-              target="$1"
-              destination="$2"
-              ln -sfn "$target" "${destination}.rollback"
-              mv -Tf "${destination}.rollback" "$destination"
-            }
+          nginx_has_maintenance_guards() {
+            guard='if (-f /run/myagent-release-maintenance) { return 503; }'
+            active_nginx="$(nginx -T 2>&1)" || return 1
+            guard_count="$(printf '%s\n' "$active_nginx" | grep -Fc "$guard" || true)"
+            test "$guard_count" -ge 3
+          }
 
-            restore_file() {
-              target="$1"
-              backup="$2"
-              rm -f "$target"
-              if test -e "$backup" || test -L "$backup"; then
-                cp -a "$backup" "$target"
-              fi
-            }
+          backup_nginx_has_maintenance_guards() {
+            guard='if (-f /run/myagent-release-maintenance) { return 503; }'
+            backup_primary="$rollback_root/nginx-available/hi-veblen.com.conf"
+            test -f "$backup_primary" || return 1
+            guard_count="$(grep -Fc "$guard" "$backup_primary" || true)"
+            test "$guard_count" -ge 3
+          }
 
-            switched=0
-            rollback() {
-              status=$?
-              trap - EXIT
-              if test "$status" -ne 0 && test "$switched" -eq 1; then
-                set +e
-                restore_link "$previous_portal" "$portal_current"
-                restore_link "$previous_lingxi" "$lingxi_current"
-                restore_link "$previous_backend" "$backend_current"
-                for unit in myagent-world.service myagent-gateway.service; do
-                  restore_file "/etc/systemd/system/$unit" "$rollback_root/systemd/$unit"
-                done
-                systemctl daemon-reload
-                systemctl restart myagent-world.service myagent-gateway.service
-                for name in hi-veblen.com.conf lingxi.hi-veblen.com.conf; do
-                  restore_file "/etc/nginx/sites-available/$name" "$rollback_root/nginx-available/$name"
-                  restore_file "/etc/nginx/sites-enabled/$name" "$rollback_root/nginx-enabled/$name"
-                done
-                nginx -t && systemctl reload nginx
-              fi
-              exit "$status"
-            }
-            trap rollback EXIT
-
-            switched=1
-            restore_link "$release/portal" "$portal_current"
-            restore_link "$release/lingxi" "$lingxi_current"
-            restore_link "$release/backend" "$backend_current"
-
-            REVISION="$expected_backend" PROJECT_DIR="$project_root" BACKEND_DIR="$release/backend" \
-              bash "$release/backend/scripts/install_linux_services.sh"
-
-            nginx_dump="$(nginx -T 2>&1)"
-            for expected in \
-              'root /opt/hi-veblen/portal-current;' \
-              'root /opt/hi-veblen/lingxi-current;' \
-              'proxy_pass http://127.0.0.1:3001;' \
-              'proxy_pass http://127.0.0.1:8000;'; do
-              printf '%s' "$nginx_dump" | grep -Fq "$expected"
-            done
-            test "$(printf '%s' "$nginx_dump" | grep -Fc 'location ^~ /assets/')" -ge 2
-            test "$(printf '%s' "$nginx_dump" | grep -Fc 'location = /release.txt')" -ge 2
-
-            invalid_status="$(curl --silent --output /dev/null --write-out '%{http_code}' \
+          maintenance_public_blocked() {
+            invalid_status="$(curl --connect-timeout 10 --max-time 30 \
+              --silent --output /dev/null --write-out '%{http_code}' \
               --request POST --header 'Content-Type: application/json' \
               --data '{"token":"release-preflight-invalid"}' \
               https://lingxi.hi-veblen.com/api/session)"
-            default_status="$(curl --silent --output /dev/null --write-out '%{http_code}' \
+            default_status="$(curl --connect-timeout 10 --max-time 30 \
+              --silent --output /dev/null --write-out '%{http_code}' \
               --request POST --header 'Content-Type: application/json' \
               --data '{"token":"local-dev-token"}' \
               https://lingxi.hi-veblen.com/api/session)"
-            test "$invalid_status" = "401"
-            test "$default_status" = "401"
+            ws_status="$(curl --connect-timeout 10 --max-time 30 \
+              --silent --output /dev/null --write-out '%{http_code}' \
+              https://lingxi.hi-veblen.com/ws/release-maintenance-probe)"
+            test "$invalid_status" = "503"
+            test "$default_status" = "503"
+            test "$ws_status" = "503"
+          }
 
-            verify_site_assets() {
-              site_url="$1"
-              site_html="$2"
-              site_root="$3"
-              missing_id="$4"
-              site_assets="$(printf '%s' "$site_html" | grep -oE '/assets/[^" ]+\.(js|css)' | sort -u)"
-              test -n "$site_assets"
-              for asset in $site_assets; do
-                test -s "$site_root/${asset#/}"
-                headers="$(curl --fail --silent --show-error --head "$site_url$asset")"
-                case "$asset" in
-                  *.js) printf '%s' "$headers" | grep -qiE '^content-type: *(application|text)/(javascript|x-javascript)' ;;
-                  *.css) printf '%s' "$headers" | grep -qiE '^content-type: *text/css' ;;
-                esac
-              done
-              missing_status="$(curl --silent --output /dev/null --write-out '%{http_code}' \
-                "$site_url/assets/release-missing-$missing_id.js")"
-              test "$missing_status" = "404"
-            }
+          stop_services_for_manual_recovery() {
+            systemctl stop myagent-gateway.service myagent-world.service || true
+            ! systemctl is-active --quiet myagent-gateway.service && \
+              ! systemctl is-active --quiet myagent-world.service
+          }
 
-            portal_html="$(curl --fail --silent --show-error https://hi-veblen.com/)"
-            printf '%s' "$portal_html" | grep -q 'id="app"'
-            grep -R -q 'https://lingxi.hi-veblen.com/' "$release/portal/assets"
-            verify_site_assets "https://hi-veblen.com" "$portal_html" "$release/portal" "$expected_portal"
-
-            lingxi_html="$(curl --fail --silent --show-error https://lingxi.hi-veblen.com/)"
-            printf '%s' "$lingxi_html" | grep -q 'id="root"'
-            verify_site_assets "https://lingxi.hi-veblen.com" "$lingxi_html" "$release/lingxi" "$expected_lingxi"
-
-            test "$(curl --fail --silent --show-error https://hi-veblen.com/release.txt)" = "$expected_portal"
-            test "$(curl --fail --silent --show-error https://lingxi.hi-veblen.com/release.txt)" = "$expected_lingxi"
-
-            portal_health="$(curl --fail --silent --show-error https://hi-veblen.com/api/health)"
-            printf '%s' "$portal_health" | python3 -c '
-            import json, sys
-            assert json.load(sys.stdin).get("status") == "ok"
-            '
-
-            api_health="$(curl --fail --silent --show-error https://lingxi.hi-veblen.com/api/health)"
-            printf '%s' "$api_health" | python3 -c '
-            import json, sys
-            data = json.load(sys.stdin)
-            expected = sys.argv[1]
-            assert data.get("production_auth_safe") is True
-            assert data.get("backend_revision") == expected
-            assert (data.get("host") or {}).get("ok") is True
-            assert (data.get("host") or {}).get("backend_revision") == expected
-            ' "$expected_lingxi"
-
-            switched=0
+          switched=0
+          services_stopped=0
+          maintenance_active=0
+          rollback() {
+            status=$?
             trap - EXIT
-            case "$upload_dir" in
-              /opt/hi-veblen/staging/run-[0-9]*-[0-9]*) rm -rf -- "$upload_dir" ;;
-              *) echo "拒绝清理异常暂存路径：$upload_dir" >&2; exit 1 ;;
-            esac
-            REMOTE
+            if test "$status" -ne 0 && \
+              { test "$switched" -eq 1 || test "$services_stopped" -eq 1 || \
+                test "$maintenance_active" -eq 1; }; then
+              set +e
+              if ! activate_maintenance; then
+                echo "无法重建发布维护标记，停止服务并保留现场供人工恢复。" >&2
+                if ! stop_services_for_manual_recovery; then
+                  echo "无法确认 world/gateway 已停止，必须立即人工隔离流量。" >&2
+                fi
+                exit "$status"
+              fi
+              maintenance_active=1
+              rollback_safe=1
+              if test "$switched" -eq 1; then
+                restore_link "$previous_portal" "$portal_current" || rollback_safe=0
+                restore_link "$previous_lingxi" "$lingxi_current" || rollback_safe=0
+                restore_link "$previous_backend" "$backend_current" || rollback_safe=0
+                for unit in myagent-world.service myagent-gateway.service; do
+                  restore_file "/etc/systemd/system/$unit" "$rollback_root/systemd/$unit" || rollback_safe=0
+                done
+              fi
+              if test "$rollback_safe" -eq 1 && ! nginx_has_maintenance_guards; then
+                rollback_safe=0
+              fi
+              if test "$rollback_safe" -eq 1 && \
+                { test "$switched" -eq 1 || test "$services_stopped" -eq 1; }; then
+                systemctl daemon-reload || rollback_safe=0
+                systemctl restart myagent-world.service myagent-gateway.service || rollback_safe=0
+              fi
+              if test "$rollback_safe" -eq 1; then
+                systemctl is-active --quiet myagent-world.service || rollback_safe=0
+                systemctl is-active --quiet myagent-gateway.service || rollback_safe=0
+              fi
+              if test "$rollback_safe" -eq 1 && ! previous_backend_healthy; then
+                rollback_safe=0
+              fi
+              if test "$rollback_safe" -eq 1 && test "$switched" -eq 1; then
+                if backup_nginx_has_maintenance_guards; then
+                  for name in hi-veblen.com.conf lingxi.hi-veblen.com.conf; do
+                    restore_file "/etc/nginx/sites-available/$name" "$rollback_root/nginx-available/$name" || rollback_safe=0
+                    restore_file "/etc/nginx/sites-enabled/$name" "$rollback_root/nginx-enabled/$name" || rollback_safe=0
+                  done
+                else
+                  echo "旧 Nginx 配置不识别维护标记，保留当前 503 加固配置。" >&2
+                fi
+              fi
+              if test "$rollback_safe" -eq 1; then
+                nginx -t || rollback_safe=0
+              fi
+              if test "$rollback_safe" -eq 1 && ! nginx_has_maintenance_guards; then
+                rollback_safe=0
+              fi
+              if test "$rollback_safe" -eq 1; then
+                systemctl reload nginx || rollback_safe=0
+              fi
+              if test "$rollback_safe" -eq 1 && ! nginx_has_maintenance_guards; then
+                rollback_safe=0
+              fi
+              if test "$rollback_safe" -eq 1 && ! maintenance_public_blocked; then
+                rollback_safe=0
+              fi
+              if test "$rollback_safe" -eq 1; then
+                systemctl is-active --quiet myagent-world.service || rollback_safe=0
+                systemctl is-active --quiet myagent-gateway.service || rollback_safe=0
+              fi
+              if test "$rollback_safe" -eq 1 && ! previous_backend_healthy; then
+                rollback_safe=0
+              fi
+              if test "$rollback_safe" -eq 1 && ! maintenance_public_blocked; then
+                rollback_safe=0
+              fi
+              if test "$rollback_safe" -eq 1; then
+                rm -f "$maintenance_marker" || rollback_safe=0
+              fi
+              if test "$rollback_safe" -ne 1; then
+                echo "自动回滚未通过旧服务、Nginx 与 revision 健康门；维护标记保留，请人工恢复。" >&2
+                if ! stop_services_for_manual_recovery; then
+                  echo "无法确认 world/gateway 已停止，必须立即人工隔离流量。" >&2
+                fi
+              fi
+            fi
+            exit "$status"
+          }
+          trap rollback EXIT
+
+          if test -e "$maintenance_marker" || test -L "$maintenance_marker"; then
+            echo "检测到遗留发布维护标记，拒绝覆盖，请先核验生产状态。" >&2
+            exit 1
+          fi
+          primary_conf=/etc/nginx/sites-available/hi-veblen.com.conf
+          primary_enabled=/etc/nginx/sites-enabled/hi-veblen.com.conf
+          bootstrap_enabled=/etc/nginx/sites-enabled/lingxi.hi-veblen.com.conf
+          test -d /etc/nginx/sites-available
+          test -d /etc/nginx/sites-enabled
+          install -m 0644 "$release/backend/ops/nginx/hi-veblen.com.http.conf" "$primary_conf"
+          ln -sfn "$primary_conf" "$primary_enabled"
+          rm -f "$bootstrap_enabled"
+          nginx -t
+          nginx_has_maintenance_guards
+          systemctl reload nginx
+          nginx_has_maintenance_guards
+
+          activate_maintenance
+          maintenance_active=1
+          maintenance_public_blocked
+
+          services_stopped=1
+          systemctl stop myagent-gateway.service myagent-world.service
+          ! systemctl is-active --quiet myagent-gateway.service
+          ! systemctl is-active --quiet myagent-world.service
+
+          switched=1
+          restore_link "$release/portal" "$portal_current"
+          restore_link "$release/lingxi" "$lingxi_current"
+          restore_link "$release/backend" "$backend_current"
+
+          RELEASE_TRANSACTION=1 REVISION="$expected_backend" PROJECT_DIR="$project_root" \
+            BACKEND_DIR="$release/backend" \
+            bash "$release/backend/scripts/install_linux_services.sh"
+          services_stopped=0
+          systemctl is-active --quiet myagent-world.service
+          systemctl is-active --quiet myagent-gateway.service
+
+          nginx_dump="$(nginx -T 2>&1)"
+          for expected in \
+            'root /opt/hi-veblen/portal-current;' \
+            'root /opt/hi-veblen/lingxi-current;' \
+            'proxy_pass http://127.0.0.1:3001;' \
+            'proxy_pass http://127.0.0.1:8000;'; do
+            printf '%s' "$nginx_dump" | grep -Fq "$expected"
+          done
+          test "$(printf '%s' "$nginx_dump" | grep -Fc 'location ^~ /assets/')" -ge 2
+          test "$(printf '%s' "$nginx_dump" | grep -Fc 'location = /release.txt')" -ge 2
+
+          maintenance_public_blocked
+
+          verify_site_assets() {
+            site_url="$1"
+            site_html="$2"
+            site_root="$3"
+            missing_id="$4"
+            site_assets="$(printf '%s' "$site_html" | grep -oE '/assets/[^" ]+\.(js|css)' | sort -u)"
+            test -n "$site_assets"
+            for asset in $site_assets; do
+              test -s "$site_root/${asset#/}"
+              headers="$(curl --connect-timeout 10 --max-time 30 \
+                --fail --silent --show-error --head "$site_url$asset")"
+              case "$asset" in
+                *.js) printf '%s' "$headers" | grep -qiE '^content-type: *(application|text)/(javascript|x-javascript)' ;;
+                *.css) printf '%s' "$headers" | grep -qiE '^content-type: *text/css' ;;
+              esac
+            done
+            missing_status="$(curl --connect-timeout 10 --max-time 30 \
+              --silent --output /dev/null --write-out '%{http_code}' \
+              "$site_url/assets/release-missing-$missing_id.js")"
+            test "$missing_status" = "404"
+          }
+
+          verify_security_headers() {
+            site_url="$1"
+            require_lingxi_csp="$2"
+            response_headers="$(curl --connect-timeout 10 --max-time 30 \
+              --fail --silent --show-error --head "$site_url/")"
+            clean_headers="$(printf '%s\n' "$response_headers" | tr -d '\r')"
+            lower_headers="$(printf '%s\n' "$clean_headers" | tr '[:upper:]' '[:lower:]')"
+            x_frame_options="$(printf '%s\n' "$lower_headers" | sed -n \
+              's/^x-frame-options:[[:space:]]*//p')"
+            test -n "$x_frame_options"
+            test -z "$(printf '%s\n' "$x_frame_options" | grep -vx 'deny')"
+
+            server_header="$(printf '%s\n' "$lower_headers" | sed -n \
+              's/^server:[[:space:]]*//p')"
+            if printf '%s\n' "$server_header" | grep -Eq '[0-9]+([.][0-9]+)+'; then
+              echo "Server 响应头泄露版本：$site_url" >&2
+              return 1
+            fi
+
+            if test "$require_lingxi_csp" = "1"; then
+              content_security_policy="$(printf '%s\n' "$lower_headers" | sed -n \
+                's/^content-security-policy:[[:space:]]*//p')"
+              printf '%s\n' "$content_security_policy" | grep -Eq \
+                "(^|;)[[:space:]]*frame-ancestors[[:space:]]+'none'([[:space:]]*;|[[:space:]]*$)"
+              printf '%s\n' "$content_security_policy" | grep -Eq \
+                "(^|;)[[:space:]]*script-src[[:space:]]+'self'([[:space:]]|;|$)"
+            fi
+          }
+
+          portal_html="$(curl --connect-timeout 10 --max-time 30 \
+            --fail --silent --show-error https://hi-veblen.com/)"
+          printf '%s' "$portal_html" | grep -q 'id="app"'
+          grep -R -q 'https://lingxi.hi-veblen.com/' "$release/portal/assets"
+          verify_site_assets "https://hi-veblen.com" "$portal_html" "$release/portal" "$expected_portal"
+          verify_security_headers "https://hi-veblen.com" 0
+
+          lingxi_html="$(curl --connect-timeout 10 --max-time 30 \
+            --fail --silent --show-error https://lingxi.hi-veblen.com/)"
+          printf '%s' "$lingxi_html" | grep -q 'id="root"'
+          verify_site_assets "https://lingxi.hi-veblen.com" "$lingxi_html" "$release/lingxi" "$expected_lingxi"
+          verify_security_headers "https://lingxi.hi-veblen.com" 1
+
+          test "$(curl --connect-timeout 10 --max-time 30 --fail --silent --show-error \
+            https://hi-veblen.com/release.txt)" = "$expected_portal"
+          test "$(curl --connect-timeout 10 --max-time 30 --fail --silent --show-error \
+            https://lingxi.hi-veblen.com/release.txt)" = "$expected_lingxi"
+
+          portal_health="$(curl --connect-timeout 10 --max-time 30 \
+            --fail --silent --show-error https://hi-veblen.com/api/health)"
+          printf '%s' "$portal_health" | python3 -c '
+          import json, sys
+          assert json.load(sys.stdin).get("status") == "ok"
+          '
+
+          invalid_status="$(curl --connect-timeout 10 --max-time 30 \
+            --silent --output /dev/null --write-out '%{http_code}' \
+            --request POST --header 'Content-Type: application/json' \
+            --data '{"token":"release-preflight-invalid"}' \
+            http://127.0.0.1:8000/api/session)"
+          default_status="$(curl --connect-timeout 10 --max-time 30 \
+            --silent --output /dev/null --write-out '%{http_code}' \
+            --request POST --header 'Content-Type: application/json' \
+            --data '{"token":"local-dev-token"}' \
+            http://127.0.0.1:8000/api/session)"
+          test "$invalid_status" = "401"
+          test "$default_status" = "401"
+
+          api_health="$(curl --connect-timeout 10 --max-time 30 \
+            --fail --silent --show-error http://127.0.0.1:8000/api/health)"
+          printf '%s' "$api_health" | python3 -c '
+          import json, sys
+          data = json.load(sys.stdin)
+          expected = sys.argv[1]
+          assert data.get("production_auth_safe") is True
+          assert data.get("backend_revision") == expected
+          assert (data.get("host") or {}).get("ok") is True
+          assert (data.get("host") or {}).get("backend_revision") == expected
+          ' "$expected_lingxi"
+
+          rm -f "$maintenance_marker"
+          maintenance_active=0
+          switched=0
+          trap - EXIT
+          case "$upload_dir" in
+            /opt/hi-veblen/staging/run-[0-9]*-[0-9]*) rm -rf -- "$upload_dir" ;;
+            *) echo "拒绝清理异常暂存路径：$upload_dir" >&2; exit 1 ;;
+          esac
+          REMOTE

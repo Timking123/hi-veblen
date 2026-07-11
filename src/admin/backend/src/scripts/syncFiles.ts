@@ -9,7 +9,6 @@
  */
 
 import { fileSyncService } from '../services/fileSync'
-import { getDatabase } from '../database/init'
 import { createLogger } from '../utils/logger'
 import * as fs from 'fs'
 import * as path from 'path'

@@ -8,7 +8,7 @@
  * 需求: 6.1.3 - 提供重置排行榜功能（需二次确认）
  * 需求: 14.1 - 时间显示使用北京时间
  */
-import { ref, onMounted, computed } from 'vue'
+import { ref, onMounted } from 'vue'
 import {
   ElTable,
   ElTableColumn,
@@ -16,7 +16,6 @@ import {
   ElMessage,
   ElMessageBox,
   ElIcon,
-  ElEmpty,
   ElTag,
   ElCard,
   ElStatistic,
@@ -27,7 +26,6 @@ import {
   Delete,
   Refresh,
   Trophy,
-  Timer,
   User,
   TrendCharts
 } from '@element-plus/icons-vue'

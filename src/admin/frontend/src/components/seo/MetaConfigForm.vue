@@ -57,6 +57,14 @@ const keywordInputs = reactive<Record<string, string>>({})
 // 表单引用
 const formRefs = ref<Record<string, FormInstance>>({})
 
+function setFormRef(page: PageIdentifier, value: unknown) {
+  if (typeof value === 'object' && value !== null && 'validate' in value) {
+    formRefs.value[page] = value as FormInstance
+  } else {
+    delete formRefs.value[page]
+  }
+}
+
 // 表单验证规则
 const rules = reactive<FormRules>({
   title: [
@@ -251,7 +259,7 @@ onMounted(() => {
         
         <el-form
           v-if="metaByPage[page]"
-          :ref="(el: FormInstance) => { if (el) formRefs[page] = el }"
+          :ref="el => setFormRef(page, el)"
           :model="metaByPage[page]"
           :rules="rules"
           label-width="120px"

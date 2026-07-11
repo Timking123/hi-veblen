@@ -31,7 +31,6 @@ import {
   uploadResume,
   setActiveResume,
   getResumeForDownload,
-  incrementResumeDownloadCount,
   // 图片处理
   uploadImage,
   uploadAvatar,
@@ -466,7 +465,7 @@ export async function downloadResumeHandler(req: Request, res: Response): Promis
     const range = req.headers.range
     if (range) {
       const parts = range.replace(/bytes=/, '').split('-')
-      const start = parseInt(parts[0], 10)
+      const start = parseInt(parts[0] ?? '', 10)
       const end = parts[1] ? parseInt(parts[1], 10) : fileData.size - 1
       const chunkSize = (end - start) + 1
       
@@ -646,7 +645,7 @@ export async function uploadAvatarHandler(req: Request, res: Response): Promise<
  * 
  * 需求: 5.3.1, 5.3.2
  */
-export function uploadAudioHandler(req: Request, res: Response): void {
+export async function uploadAudioHandler(req: Request, res: Response): Promise<void> {
   try {
     // 检查是否有上传的文件
     if (!req.file) {

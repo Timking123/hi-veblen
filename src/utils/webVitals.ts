@@ -18,21 +18,30 @@ const emitMetric = (metric: WebVitalMetric) => {
   }
 }
 
+const reportObserverError = (metricName: string, error: unknown) => {
+  if (import.meta.env.DEV) {
+    console.debug(`[WebVital] ${metricName} observer is unavailable.`, error)
+  }
+}
+
 export const initWebVitals = () => {
   if (typeof PerformanceObserver === 'undefined') return
 
   try {
-    const lcpObserver = new PerformanceObserver((entryList) => {
+    const lcpObserver = new PerformanceObserver(entryList => {
       const entries = entryList.getEntries()
       const last = entries[entries.length - 1]
-      if (last) emitMetric({ name: 'LCP', value: last.startTime, rating: rate('LCP', last.startTime) })
+      if (last)
+        emitMetric({ name: 'LCP', value: last.startTime, rating: rate('LCP', last.startTime) })
     })
     lcpObserver.observe({ type: 'largest-contentful-paint', buffered: true })
-  } catch {}
+  } catch (error) {
+    reportObserverError('LCP', error)
+  }
 
   try {
     let cls = 0
-    const clsObserver = new PerformanceObserver((entryList) => {
+    const clsObserver = new PerformanceObserver(entryList => {
       for (const entry of entryList.getEntries()) {
         const layoutShift = entry as PerformanceEntry & { value?: number; hadRecentInput?: boolean }
         if (!layoutShift.hadRecentInput) cls += layoutShift.value || 0
@@ -40,10 +49,12 @@ export const initWebVitals = () => {
       emitMetric({ name: 'CLS', value: cls, rating: rate('CLS', cls) })
     })
     clsObserver.observe({ type: 'layout-shift', buffered: true })
-  } catch {}
+  } catch (error) {
+    reportObserverError('CLS', error)
+  }
 
   try {
-    const fidObserver = new PerformanceObserver((entryList) => {
+    const fidObserver = new PerformanceObserver(entryList => {
       const first = entryList.getEntries()[0] as PerformanceEventTiming | undefined
       if (first) {
         const value = first.processingStart - first.startTime
@@ -51,5 +62,7 @@ export const initWebVitals = () => {
       }
     })
     fidObserver.observe({ type: 'first-input', buffered: true })
-  } catch {}
+  } catch (error) {
+    reportObserverError('FID', error)
+  }
 }

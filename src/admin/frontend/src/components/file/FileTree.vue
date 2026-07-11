@@ -6,8 +6,9 @@
  * 需求: 5.4.1 - 以树形结构展示文件目录
  * 需求: 5.4.4 - 显示文件大小和修改时间
  */
-import { ref, computed, watch } from 'vue'
+import { ref, watch } from 'vue'
 import { ElTree, ElIcon, ElDropdown, ElDropdownMenu, ElDropdownItem } from 'element-plus'
+import type { TreeOptionProps } from 'element-plus'
 import {
   Folder,
   Document,
@@ -60,10 +61,10 @@ const treeRef = ref<InstanceType<typeof ElTree>>()
 const expandedKeys = ref<string[]>([])
 
 // 树节点配置
-const treeProps = {
+const treeProps: TreeOptionProps = {
   children: 'children',
   label: 'name',
-  isLeaf: (data: FileInfo) => data.type === 'file'
+  isLeaf: data => data.type === 'file'
 }
 
 /**
@@ -239,7 +240,7 @@ watch(() => props.data, (newData) => {
       @node-expand="handleNodeExpand"
       @node-collapse="handleNodeCollapse"
     >
-      <template #default="{ node, data: nodeData }">
+      <template #default="{ data: nodeData }">
         <div class="tree-node">
           <!-- 图标和名称 -->
           <div class="node-content">

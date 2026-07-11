@@ -10,9 +10,13 @@ dist
 dist-ssr
 
 # Environment files
-.env
-.env.local
-.env.*.local
+.env*
+!.env.example
+**/.env*
+!**/.env.example
+
+# Backend runtime databases
+src/admin/backend/data/**/*.db*
 
 # IDE
 .vscode

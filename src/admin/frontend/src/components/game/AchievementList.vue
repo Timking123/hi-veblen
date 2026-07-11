@@ -7,7 +7,7 @@
  * 需求: 6.2.2 - 提供成就 CRUD 操作
  * 需求: 6.2.3 - 提供成就条件配置（类型、目标值）
  */
-import { ref, reactive, onMounted, computed } from 'vue'
+import { ref, reactive, onMounted } from 'vue'
 import {
   ElTable,
   ElTableColumn,
@@ -22,16 +22,14 @@ import {
   ElInputNumber,
   ElSelect,
   ElOption,
-  ElTag,
-  ElEmpty
+  ElTag
 } from 'element-plus'
 import {
   Plus,
   Edit,
   Delete,
   Refresh,
-  Trophy,
-  Medal
+  Trophy
 } from '@element-plus/icons-vue'
 import type { FormInstance, FormRules } from 'element-plus'
 import {
@@ -122,16 +120,14 @@ function getConditionTypeLabel(type: AchievementConditionType): string {
 /**
  * 获取条件类型标签颜色
  */
-function getConditionTypeColor(type: AchievementConditionType): string {
-  const colorMap: Record<string, string> = {
-    score: '',
+function getConditionTypeColor(type: AchievementConditionType) {
+  const colorMap: Partial<Record<AchievementConditionType, 'success' | 'info' | 'danger' | 'warning'>> = {
     stage: 'success',
     time: 'info',
     kills: 'danger',
-    combo: 'warning',
-    noDamage: ''
+    combo: 'warning'
   }
-  return colorMap[type] || ''
+  return colorMap[type]
 }
 
 /**

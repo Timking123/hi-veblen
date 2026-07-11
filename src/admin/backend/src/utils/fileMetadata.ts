@@ -419,8 +419,8 @@ export function logMetadataChange(
   operatorId?: number,
   operatorName?: string
 ): void {
-  const changeDescription = Object.keys(changes)
-    .map(key => `${key}: ${changes[key].before} → ${changes[key].after}`)
+  const changeDescription = Object.entries(changes)
+    .map(([key, change]) => `${key}: ${change.before} → ${change.after}`)
     .join(', ')
 
   logger.info('文件元数据变更', {

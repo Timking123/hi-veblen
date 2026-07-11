@@ -63,6 +63,8 @@ module.exports = {
       
       // Node.js 参数
       node_args: [
+        // 由 Node 原生加载 root-only 生产环境文件；缺失时启动失败。
+        '--env-file=.env',
         // 限制堆内存大小为 400MB（留出余量给其他内存使用）
         '--max-old-space-size=400',
         // 启用垃圾回收优化
@@ -76,33 +78,5 @@ module.exports = {
       wait_ready: true,
       listen_timeout: 10000
     }
-  ],
-  
-  // 部署配置（可选，用于远程部署）
-  deploy: {
-    production: {
-      // 远程服务器用户
-      user: 'deploy',
-      
-      // 远程服务器地址
-      host: ['your-server-ip'],
-      
-      // 部署分支
-      ref: 'origin/main',
-      
-      // Git 仓库地址
-      repo: 'git@github.com:your-username/your-repo.git',
-      
-      // 远程部署路径
-      path: '/var/www/admin-backend',
-      
-      // 部署后执行的命令
-      'post-deploy': 'npm install && npm run build && pm2 reload ecosystem.config.js --env production',
-      
-      // 环境变量
-      env: {
-        NODE_ENV: 'production'
-      }
-    }
-  }
+  ]
 };

@@ -239,7 +239,7 @@ init_database() {
     if [ ! -f "$DEPLOY_BACKEND_DIR/data/admin.db" ]; then
         log_info "初始化数据库..."
         cd "$DEPLOY_BACKEND_DIR"
-        sudo -u $SUDO_USER node dist/database/init.js
+        sudo -u $SUDO_USER node --env-file=.env dist/database/init.js
         cd -
         log_success "数据库初始化完成"
     else

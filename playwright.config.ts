@@ -1,5 +1,7 @@
 import { defineConfig, devices } from '@playwright/test'
 
+process.env.NO_PROXY = ['127.0.0.1', 'localhost', process.env.NO_PROXY].filter(Boolean).join(',')
+
 /**
  * Playwright configuration for end-to-end testing
  * Tests cross-browser compatibility and user flows
@@ -12,7 +14,7 @@ export default defineConfig({
   workers: process.env.CI ? 1 : undefined,
   reporter: 'html',
   use: {
-    baseURL: 'http://localhost:5173',
+    baseURL: 'http://127.0.0.1:4173',
     trace: 'on-first-retry',
     screenshot: 'only-on-failure',
   },
@@ -20,7 +22,7 @@ export default defineConfig({
   projects: [
     {
       name: 'chromium',
-      use: { 
+      use: {
         ...devices['Desktop Chrome'],
         // Uncomment to use system Chrome if Playwright browsers fail to install
         // channel: 'chrome',
@@ -28,7 +30,7 @@ export default defineConfig({
     },
     {
       name: 'firefox',
-      use: { 
+      use: {
         ...devices['Desktop Firefox'],
         // Uncomment to use system Firefox if Playwright browsers fail to install
         // channel: 'firefox',
@@ -36,7 +38,7 @@ export default defineConfig({
     },
     {
       name: 'webkit',
-      use: { 
+      use: {
         ...devices['Desktop Safari'],
         // Note: WebKit is not available as system browser on Windows
       },
@@ -44,7 +46,7 @@ export default defineConfig({
     // Mobile viewports
     {
       name: 'Mobile Chrome',
-      use: { 
+      use: {
         ...devices['Pixel 5'],
         // Uncomment to use system Chrome if Playwright browsers fail to install
         // channel: 'chrome',
@@ -52,7 +54,7 @@ export default defineConfig({
     },
     {
       name: 'Mobile Safari',
-      use: { 
+      use: {
         ...devices['iPhone 12'],
         // Note: Mobile Safari requires WebKit which is not available on Windows
       },
@@ -60,9 +62,12 @@ export default defineConfig({
   ],
 
   webServer: {
-    command: 'npm run dev',
-    url: 'http://localhost:5173',
-    reuseExistingServer: !process.env.CI,
+    command: 'npm run preview -- --host 127.0.0.1 --port 4173 --strictPort',
+    url: 'http://127.0.0.1:4173',
+    env: {
+      VITE_LINGXI_URL: 'https://lingxi.hi-veblen.com/',
+    },
+    reuseExistingServer: false,
     timeout: 120000,
   },
 })

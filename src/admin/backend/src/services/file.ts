@@ -1120,7 +1120,7 @@ function cleanupOldResumeVersions(): void {
  */
 export async function uploadResume(fileBuffer: Buffer, filename: string): Promise<ResumeUploadResult> {
   // 导入文件编码处理器和文件同步服务
-  const { validateFilename, normalizeFilename } = await import('../utils/fileEncoding')
+  const { validateFilename } = await import('../utils/fileEncoding')
   const { fileSyncService } = await import('./fileSync')
   
   // 验证文件名编码
@@ -1327,7 +1327,13 @@ export async function setActiveResume(version: number): Promise<ResumeOperationR
       }
     }
     
-    const filename = checkResult[0].values[0][1] as string
+    const filename = checkResult[0]?.values?.[0]?.[1]
+    if (typeof filename !== 'string' || !filename) {
+      return {
+        success: false,
+        error: `版本 ${version} 的文件名无效`
+      }
+    }
     
     // 开始事务
     db.run('BEGIN TRANSACTION')

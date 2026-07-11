@@ -13,15 +13,10 @@ dist-ssr
 *.local
 
 # Environment variables
-.env
-.env.local
-.env.*.local
-.env.development
-.env.production
-src/.env.development
-src/.env.production
-src/admin/frontend/.env.development
-src/admin/frontend/.env.production
+.env*
+!.env.example
+**/.env*
+!**/.env.example
 
 # Editor directories and files
 .vscode/*
@@ -47,6 +42,9 @@ public/audio/**/*.ogg
 
 # Backend build output
 src/admin/backend/dist/
+
+# Backend runtime databases
+src/admin/backend/data/**/*.db*
 
 # Admin uploaded files (runtime data)
 src/admin/file/

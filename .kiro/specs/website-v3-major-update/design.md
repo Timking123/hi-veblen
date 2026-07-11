@@ -2073,10 +2073,10 @@ describe('性能测试', () => {
 ### A. 相关文档
 
 - [需求文档](./requirements.md)
-- [项目概述](../../PROJECT_OVERVIEW.md)
+- [当前项目入口](../../../README.md)
 - [游戏文档](../../../docs/GAME_DOCUMENTATION.md)
 - [开发标准](../../../docs/DEVELOPMENT_STANDARDS.md)
-- [维护指南](../../../docs/MAINTENANCE_GUIDE.md)
+- [生产发布与回滚](../../../docs/PRODUCTION_DEPLOYMENT.md)
 
 ### B. 技术参考
 

@@ -140,11 +140,11 @@ function fixMessageEncoding(): Fix[] {
   const db = getDatabase()
   
   try {
-    const result = db.exec('SELECT id, nickname, file_path FROM messages')
+    const result = db.exec('SELECT id, nickname FROM messages')
     
     if (result.length > 0 && result[0]?.values) {
       for (const row of result[0].values) {
-        const [id, nickname, filePath] = row as [number, string, string | null]
+        const [id, nickname] = row as [number, string]
         
         // 检查昵称是否为有效 UTF-8
         if (!isValidUtf8(nickname)) {

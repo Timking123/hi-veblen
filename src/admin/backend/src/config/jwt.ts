@@ -23,11 +23,7 @@ export interface JWTConfig {
   algorithm: 'HS256' | 'HS384' | 'HS512'
 }
 
-/**
- * 默认 JWT 密钥
- * 警告：生产环境必须通过环境变量设置自定义密钥！
- */
-const DEFAULT_JWT_SECRET = process.env.JWT_SECRET || ''
+const TEST_JWT_SECRET = 'test-only-jwt-secret'
 
 /**
  * Token 过期时间：24 小时（秒）
@@ -37,19 +33,21 @@ const TOKEN_EXPIRES_IN_SECONDS = 24 * 60 * 60 // 86400 秒
 
 /**
  * 获取 JWT 密钥
- * 优先从环境变量读取，否则使用默认值
+ * 测试环境可使用专用回退值，其他环境必须显式提供高熵密钥
  *
  * @returns JWT 密钥字符串
  */
 export function getJWTSecret(): string {
-  const secret = process.env.JWT_SECRET
+  const secret = process.env.JWT_SECRET?.trim()
 
-  if (!secret) {
-    // 开发环境使用默认密钥，但输出警告
-    if (process.env.NODE_ENV === 'production') {
-      console.warn('[JWT] 警告：生产环境未设置 JWT_SECRET 环境变量，使用默认密钥不安全！')
-    }
-    return DEFAULT_JWT_SECRET
+  if (process.env.NODE_ENV === 'test') {
+    return secret || TEST_JWT_SECRET
+  }
+  if (!secret || /^(replace-with|请替换)/i.test(secret)) {
+    throw new Error('[JWT] 非测试环境必须显式设置 JWT_SECRET')
+  }
+  if (secret.length < 32 || new Set(secret).size < 10) {
+    throw new Error('[JWT] JWT_SECRET 必须是至少 32 字符的独立高熵随机值')
   }
 
   return secret

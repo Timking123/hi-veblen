@@ -551,13 +551,24 @@ function getDefaultGameConfig(): string {
   })
 }
 
-/**
- * 默认管理员账户配置
- * 需求: 1.1 - 提供用户登录认证功能，支持用户名密码登录
- */
-const DEFAULT_ADMIN = {
-  username: process.env.ADMIN_USERNAME || 'admin',
-  password: process.env.ADMIN_PASSWORD || '',
+export function getInitialAdminCredentials(): { username: string; password: string } {
+  const username = process.env.ADMIN_USERNAME?.trim() || ''
+  const password = process.env.ADMIN_PASSWORD?.trim() || ''
+  if (process.env.NODE_ENV === 'test') {
+    return {
+      username: username || 'admin',
+      password: password || 'test-only-admin-password',
+    }
+  }
+
+  const isPlaceholder = (value: string): boolean => /^(replace-with|请替换)/i.test(value)
+  if (!username || isPlaceholder(username)) {
+    throw new Error('首次初始化管理员前必须设置非占位的 ADMIN_USERNAME')
+  }
+  if (!password || isPlaceholder(password) || password.length < 16 || new Set(password).size < 10) {
+    throw new Error('首次初始化管理员前必须设置至少 16 字符的高熵 ADMIN_PASSWORD')
+  }
+  return { username, password }
 }
 
 /**
@@ -587,17 +598,18 @@ function initializeSingletonTables(database: SqlJsDatabase, silent?: boolean): v
   const usersResult = database.exec('SELECT COUNT(*) as count FROM users')
   const usersCount = getCount(usersResult)
   if (usersCount === 0) {
+    const initialAdmin = getInitialAdminCredentials()
     // 使用 bcryptjs 加密默认密码
-    const passwordHash = hashPasswordSync(DEFAULT_ADMIN.password)
+    const passwordHash = hashPasswordSync(initialAdmin.password)
     database.run(
       `
       INSERT INTO users (username, password_hash)
       VALUES (?, ?)
     `,
-      [DEFAULT_ADMIN.username, passwordHash]
+      [initialAdmin.username, passwordHash]
     )
     if (!silent) {
-      console.log(`✓ 默认管理员账户已创建 (用户名: ${DEFAULT_ADMIN.username})`)
+      console.log(`✓ 默认管理员账户已创建 (用户名: ${initialAdmin.username})`)
     }
   }
 

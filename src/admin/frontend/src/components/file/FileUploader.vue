@@ -5,7 +5,7 @@
  * 
  * 需求: 5.4.2 - 提供文件上传功能
  */
-import { ref, computed } from 'vue'
+import { ref } from 'vue'
 import { ElUpload, ElButton, ElIcon, ElProgress, ElMessage } from 'element-plus'
 import { Upload, Document, Close, Check } from '@element-plus/icons-vue'
 import type { UploadFile, UploadRawFile } from 'element-plus'
@@ -53,9 +53,6 @@ const uploadRef = ref<InstanceType<typeof ElUpload>>()
 // 文件列表
 const fileList = ref<UploadFile[]>([])
 
-// 是否正在上传
-const uploading = ref(false)
-
 /**
  * 格式化文件大小
  */
@@ -86,7 +83,7 @@ function beforeUpload(rawFile: UploadRawFile): boolean {
 /**
  * 处理文件变化
  */
-function handleChange(file: UploadFile, files: UploadFile[]) {
+function handleChange(_file: UploadFile, files: UploadFile[]) {
   fileList.value = files
 }
 
