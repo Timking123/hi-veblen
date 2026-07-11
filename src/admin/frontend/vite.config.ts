@@ -155,6 +155,8 @@ export default defineConfig(({ mode }) => {
     
     // CSS 配置
     css: {
+      // Admin 样式独立构建，不继承仓库根目录的门户 Tailwind/PostCSS 配置。
+      postcss: { plugins: [] },
       preprocessorOptions: {
         scss: {
           // 全局 SCSS 变量（如果需要）
