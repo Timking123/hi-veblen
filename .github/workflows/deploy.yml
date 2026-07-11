@@ -8,7 +8,7 @@ concurrency:
   cancel-in-progress: false
 
 env:
-  LINGXI_SHA: 0d9050fb0b1edbaef1ee2f5837fceb27372e8c70
+  LINGXI_SHA: cc33a182f275fd3677ba0a2dab7b432dbb5f1768
 
 jobs:
   build:
@@ -228,6 +228,19 @@ jobs:
             > "$HOME/.ssh/config"
           chmod 0600 "$HOME/.ssh/config" "$HOME/.ssh/known_hosts"
           ssh hi-veblen-production true
+
+      - name: 拒绝未纳管的 systemd 覆盖
+        run: |
+          ssh hi-veblen-production 'bash -se' <<'REMOTE'
+          set -eu
+          for unit in myagent-world.service myagent-gateway.service; do
+            dropins="$(systemctl show "$unit" -p DropInPaths --value)"
+            if test -n "$dropins"; then
+              echo "检测到未纳管的 systemd drop-in，拒绝发布：$unit" >&2
+              exit 1
+            fi
+          done
+          REMOTE
 
       - name: 创建私有暂存目录
         run: |
@@ -612,6 +625,8 @@ jobs:
           services_stopped=0
           systemctl is-active --quiet myagent-world.service
           systemctl is-active --quiet myagent-gateway.service
+          test -z "$(systemctl show myagent-world.service -p DropInPaths --value)"
+          test -z "$(systemctl show myagent-gateway.service -p DropInPaths --value)"
 
           nginx_dump="$(nginx -T 2>&1)"
           for expected in \

@@ -52,6 +52,11 @@ jobs:
           assert workflow.rindex("http://127.0.0.1:8000/api/health") < final_remove
           assert "curl " not in workflow[final_remove:workflow.index("          trap - EXIT", final_remove)]
           assert "RELEASE_TRANSACTION=1" in workflow
+          assert "拒绝未纳管的 systemd 覆盖" in workflow
+          assert workflow.count("-p DropInPaths --value") >= 3
+          preflight = workflow[workflow.index("      - name: 拒绝未纳管的 systemd 覆盖"):workflow.index("      - name: 创建私有暂存目录")]
+          assert "myagent-world.service myagent-gateway.service" in preflight
+          assert "test -n \"$dropins\"" in preflight
           print("production transaction ordering OK")
           PY
 
