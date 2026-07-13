@@ -8,6 +8,16 @@ fi
 
 staging_root="$1"
 current_upload="$2"
+maintenance_marker="${MYAGENT_MAINTENANCE_MARKER:-/run/myagent-release-maintenance}"
+preserve_marker="${HI_VEBLEN_PRESERVE_MARKER:-/run/hi-veblen-release-preserve}"
+
+assert_no_global_protection() {
+  if test -e "$maintenance_marker" || test -L "$maintenance_marker" || \
+    test -e "$preserve_marker" || test -L "$preserve_marker"; then
+    echo "检测到全局发布保护标记，拒绝回收 staging。" >&2
+    exit 1
+  fi
+}
 
 staging_root="$(readlink -f -- "$staging_root")"
 case "$staging_root" in
@@ -26,7 +36,8 @@ if [[ ! "$current_name" =~ ^run-[0-9]+-[0-9]+$ ]]; then
 fi
 
 preserved="$(find "$staging_root" -mindepth 2 -maxdepth 2 \
-  -name PRESERVE -print -quit)"
+  -name PRESERVE ! -path "$current_upload/PRESERVE" -print -quit)"
+assert_no_global_protection
 if test -n "$preserved"; then
   echo "检测到 staging 发布保护现场，拒绝回收: $preserved" >&2
   exit 1
@@ -48,6 +59,7 @@ while IFS= read -r -d '' candidate; do
     echo "检测到 staging 发布保护现场，拒绝回收: $candidate/PRESERVE" >&2
     exit 1
   fi
+  assert_no_global_protection
   rm -rf --one-file-system -- "$candidate"
   removed=$((removed + 1))
 done < "$candidates"

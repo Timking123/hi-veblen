@@ -9,6 +9,16 @@ fi
 release_root="$1"
 keep_count="$2"
 shift 2
+maintenance_marker="${MYAGENT_MAINTENANCE_MARKER:-/run/myagent-release-maintenance}"
+preserve_marker="${HI_VEBLEN_PRESERVE_MARKER:-/run/hi-veblen-release-preserve}"
+
+assert_no_global_protection() {
+  if test -e "$maintenance_marker" || test -L "$maintenance_marker" || \
+    test -e "$preserve_marker" || test -L "$preserve_marker"; then
+    echo "检测到全局发布保护标记，拒绝回收 release。" >&2
+    exit 1
+  fi
+}
 
 if [[ ! "$keep_count" =~ ^[1-9][0-9]*$ ]]; then
   echo "保留数量必须是正整数: $keep_count" >&2
@@ -65,6 +75,11 @@ for entry in "${releases[@]}"; do
   fi
 
   if (( keep == 0 )); then
+    if test -e "$candidate/PRESERVE" || test -L "$candidate/PRESERVE"; then
+      echo "检测到 release 发布保护现场，拒绝回收: $candidate/PRESERVE" >&2
+      exit 1
+    fi
+    assert_no_global_protection
     rm -rf --one-file-system -- "$candidate"
     removed=$((removed + 1))
   fi

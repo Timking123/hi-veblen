@@ -24,8 +24,43 @@ jobs:
         run: |
           python3 - <<'PY'
           from pathlib import Path
+          import re
 
           workflow = Path(".github/workflows/deploy.yml").read_text(encoding="utf-8")
+          deploy_header = workflow[
+              workflow.index("  deploy:"):
+              workflow.index("    steps:", workflow.index("  deploy:"))
+          ]
+          deploy_timeout = re.search(r"^    timeout-minutes: ([0-9]+)$", deploy_header, re.MULTILINE)
+          assert deploy_timeout is not None
+          # continuity 最长 1800 秒，自动回滚最长 300 秒，另留 15 分钟给安装与验收。
+          assert int(deploy_timeout.group(1)) * 60 >= 1800 + 300 + 15 * 60
+          nginx_guard = (
+              "          python3 scripts/validate_release_nginx.py \\\n"
+              "            release-package/backend/ops/nginx/hi-veblen.com.http.conf"
+          )
+          nginx_guard_start = workflow.index(nginx_guard)
+          assert workflow.index('git -C lingxi-source archive --format=tar') < nginx_guard_start
+          assert nginx_guard_start < workflow.index('tar -C release-package -czf portal-dist.tar.gz')
+          health_validator_install = (
+              "          install -m 0755 scripts/validate_release_health.py \\\n"
+              "            release-package/validate_release_health.py"
+          )
+          assert workflow.index(health_validator_install) < workflow.index('tar -C release-package -czf portal-dist.tar.gz')
+          assert 'test -x release-package/validate_release_health.py' in workflow
+          auth_probe_token = workflow.index("Authorization: Bearer nginx-forwarding-probe")
+          auth_probe = workflow[workflow.rfind('          portal_auth_probe="', 0, auth_probe_token):workflow.index('          invalid_status="', auth_probe_token)]
+          assert "https://hi-veblen.com/api/auth/profile" in auth_probe
+          assert 'status == "401"' in auth_probe
+          assert 'data.get("code") == 401' in auth_probe
+          assert 'get("reason") == "token_malformed"' in auth_probe
+          assert workflow.count("release_lock=/run/hi-veblen-release.lock") >= 4
+          assert workflow.count('exec 9>"$release_lock"') >= 4
+          assert workflow.count("flock -n 9") >= 4
+          assert workflow.count("lease_dir=/run/hi-veblen-release-lease") >= 4
+          assert workflow.count('lease_owner="$run_id-$run_attempt"') >= 4
+          assert 'mkdir -m 0700 "$lease_dir"' in workflow
+          assert 'rmdir "$lease_dir"' in workflow
           rollback = workflow[workflow.index("          rollback() {"):workflow.index("          trap rollback EXIT")]
           assert 'test "$nginx_mutated" -eq 1' in rollback
           assert rollback.index("preserve_marker") < rollback.index('exit "$status"')
@@ -39,6 +74,16 @@ jobs:
           assert rollback.index("systemctl reload nginx") < rollback_remove
           assert rollback.rindex("stop_services_for_manual_recovery") > rollback_remove
           assert "backup_nginx_has_maintenance_guards" in rollback
+          previous_health = workflow[
+              workflow.index("          previous_backend_healthy() {"):
+              workflow.index("          nginx_has_maintenance_guards() {")
+          ]
+          assert 'rollback_deadline=$((SECONDS + 300))' in previous_health
+          assert '"$release/validate_release_health.py" rollback' in previous_health
+          assert '"$previous_backend_revision"' in previous_health
+          assert '"$release/validate_release_health.py" current' not in previous_health
+          assert 'previous_revision_reliable' not in workflow
+          assert '旧后端 release revision 不是完整提交 SHA' in workflow
           assert rollback.index("nginx_has_maintenance_guards") < rollback.index("systemctl restart myagent-world.service")
           assert rollback.index("previous_backend_healthy") < rollback.rindex("systemctl reload nginx")
           assert rollback.rindex("systemctl reload nginx") < rollback.index("maintenance_public_blocked")
@@ -47,7 +92,7 @@ jobs:
           prelude_start = workflow.index("          primary_conf=/etc/nginx/sites-available/hi-veblen.com.conf", workflow.index("          trap rollback EXIT"))
           services_stop = workflow.index("          services_stopped=1", prelude_start)
           maintenance_prelude = workflow[prelude_start:services_stop]
-          assert maintenance_prelude.index('install -m 0600 /dev/null "$upload_dir/PRESERVE"') < maintenance_prelude.index("nginx_mutated=1")
+          assert maintenance_prelude.index('test -f "$upload_dir/PRESERVE"') < maintenance_prelude.index("nginx_mutated=1")
           assert maintenance_prelude.index("nginx_mutated=1") < maintenance_prelude.index("install -m 0644")
           assert maintenance_prelude.index("systemctl reload nginx") < maintenance_prelude.index("activate_maintenance")
           assert maintenance_prelude.index("activate_maintenance") < maintenance_prelude.index("maintenance_public_blocked")
@@ -55,6 +100,10 @@ jobs:
           final_remove = workflow.rindex('          rm -f "$maintenance_marker"')
           assert workflow.rindex("http://127.0.0.1:8000/api/session") < final_remove
           assert workflow.rindex("http://127.0.0.1:8000/api/health") < final_remove
+          final_health = workflow[workflow.rindex('          api_health="'):final_remove]
+          assert '"$release/validate_release_health.py" current "$expected_lingxi"' in final_health
+          assert '"$release/validate_release_health.py" rollback' not in final_health
+          assert '"$expected_lingxi"' in final_health
           assert "curl " not in workflow[final_remove:workflow.index("          trap - EXIT", final_remove)]
           assert "RELEASE_TRANSACTION=1" in workflow
           assert "拒绝未纳管的 systemd 覆盖" in workflow
@@ -86,6 +135,17 @@ jobs:
           assert "test -n \"$dropins\"" in preflight
           assert 'test -e "$maintenance_marker"' in preflight
           assert 'test -e "$preserve_marker"' in preflight and "preserved_staging" in preflight
+          assert 'mkdir -m 0700 "$lease_dir"' in preflight
+          assert 'printf \'%s\\n\' "$lease_owner" > "$lease_dir/owner"' in preflight
+          staging = workflow[workflow.index("      - name: 创建私有暂存目录"):workflow.index("      - name: 上传发布包")]
+          assert 'test "$(cat "$lease_dir/owner" 2>/dev/null || true)" = "$lease_owner"' in staging
+          assert 'install -m 0600 /dev/null "$upload_dir/PRESERVE"' in staging
+          assert '${{' not in staging
+          assert '! -path "$upload_dir/PRESERVE"' in main_remote
+          assert '发布生命周期租约不属于本次运行' in main_remote
+          success_tail = workflow[final_remove:deploy_step_end]
+          assert success_tail.index('install -m 0600 /dev/null "$upload_dir/DEPLOYED"') < success_tail.index("trap - EXIT")
+          assert 'rm -rf -- "$upload_dir"' not in success_tail
           cleanup = workflow[workflow.index("      - name: 清理本次远端暂存与未引用发布"):]
           assert "if:" in cleanup and "always()" in cleanup and "configure-ssh.outcome" in cleanup
           cleanup_invocation = (
@@ -101,12 +161,26 @@ jobs:
           assert "bash -se -- cleanup" not in cleanup
           assert cleanup.index('test -e "$maintenance_marker"') < cleanup.index('rm -rf --one-file-system -- "$release"')
           assert cleanup.index('test -e "$preserve_marker"') < cleanup.index('rm -rf --one-file-system -- "$release"')
-          assert 'test -L "$upload_dir/PRESERVE"' in cleanup
+          assert cleanup.index("assert_no_global_protection") < cleanup.index('rm -rf --one-file-system -- "$release"')
+          upload_delete = cleanup.index('rm -rf -- "$upload_dir"')
+          assert cleanup.rfind("assert_no_global_protection", 0, upload_delete) >= 0
+          assert cleanup.index("assert_no_global_protection", upload_delete) < cleanup.index('rm -f "$lease_dir/owner"')
+          assert cleanup.index('rm -f "$upload_dir/PRESERVE"') < cleanup.index('rm -rf --one-file-system -- "$release"')
+          assert 'test "$deployed" -eq 0' in cleanup
+          assert cleanup.index('test "$deployed" -eq 0') < cleanup.index('rm -rf --one-file-system -- "$release"')
+          assert cleanup.index('rm -rf -- "$upload_dir"') < cleanup.index('rm -f "$lease_dir/owner"')
+          assert cleanup.index('rm -f "$lease_dir/owner"') < cleanup.index('rmdir "$lease_dir"')
           assert 'test "$(dirname -- "$target")" = "$release"' in cleanup
           staging_prune = main_remote.index('          bash "$release/prune-production-staging.sh"')
           assert main_remote.index('test -e "$maintenance_marker"') < staging_prune
           print("production transaction ordering OK")
           PY
+
+      - name: Test release Nginx auth contract
+        run: python3 scripts/validate_release_nginx.py --self-test
+
+      - name: Test release health contracts
+        run: python3 -B scripts/validate_release_health.py --self-test
 
       - name: Test remote argument mapping
         shell: bash
@@ -142,6 +216,15 @@ jobs:
             echo "异常 release 根目录未被拒绝" >&2
             exit 1
           fi
+          mkdir -p "$root/release-0"
+          global_marker="$tmp/release-preserve"
+          touch "$global_marker"
+          if MYAGENT_MAINTENANCE_MARKER="$global_marker" \
+            bash scripts/prune-production-releases.sh "$root" 3 "$root/release-7"; then
+            echo "全局保护标记未阻止 release 回收" >&2
+            exit 1
+          fi
+          test -d "$root/release-0"
 
       - name: Test staging retention guard
         shell: bash
@@ -153,6 +236,7 @@ jobs:
           root="$tmp/staging"
           outside="$tmp/outside"
           mkdir -p "$root/run-9-1" "$root/run-8-1" "$root/run-invalid-1" "$outside"
+          touch "$root/run-9-1/PRESERVE"
           ln -s "$outside" "$root/run-7-1"
           bash scripts/prune-production-staging.sh "$root" "$root/run-9-1"
           test -d "$root/run-9-1"
@@ -167,6 +251,15 @@ jobs:
             exit 1
           fi
           test -d "$root/run-6-1"
+          test -d "$root/run-5-1"
+          rm -f "$root/run-6-1/PRESERVE"
+          global_marker="$tmp/staging-preserve"
+          touch "$global_marker"
+          if HI_VEBLEN_PRESERVE_MARKER="$global_marker" \
+            bash scripts/prune-production-staging.sh "$root" "$root/run-9-1"; then
+            echo "全局保护标记未阻止 staging 回收" >&2
+            exit 1
+          fi
           test -d "$root/run-5-1"
 
       - name: Setup Node.js

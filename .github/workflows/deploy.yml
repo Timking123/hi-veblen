@@ -8,7 +8,7 @@ concurrency:
   cancel-in-progress: false
 
 env:
-  LINGXI_SHA: 52296ed47d8019e3f2743cbcca592f82942a9ed1
+  LINGXI_SHA: 4147e520131c9a883e50d0b075808a099d8e0b0a
 
 jobs:
   build:
@@ -131,6 +131,8 @@ jobs:
             release-package/prune-production-releases.sh
           install -m 0755 scripts/prune-production-staging.sh \
             release-package/prune-production-staging.sh
+          install -m 0755 scripts/validate_release_health.py \
+            release-package/validate_release_health.py
           lingxi_sha="$(git -C lingxi-source rev-parse HEAD)"
           test "$lingxi_sha" = "$LINGXI_SHA"
           git -C lingxi-source archive --format=tar "$lingxi_sha" | tar -x -C release-package/backend
@@ -145,8 +147,11 @@ jobs:
           test -s release-package/backend/brain/workspace/world_server.py
           test -s release-package/backend/ui/backend/app.py
           test -s release-package/backend/scripts/install_linux_services.sh
+          python3 scripts/validate_release_nginx.py \
+            release-package/backend/ops/nginx/hi-veblen.com.http.conf
           test -x release-package/prune-production-releases.sh
           test -x release-package/prune-production-staging.sh
+          test -x release-package/validate_release_health.py
           test "$(cat release-package/portal/release.txt)" = "$GITHUB_SHA"
           test "$(cat release-package/lingxi/release.txt)" = "$lingxi_sha"
           test "$(cat release-package/backend/release.txt)" = "$lingxi_sha"
@@ -182,7 +187,7 @@ jobs:
     name: 部署双站发布包
     needs: build
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 60
     environment:
       name: production
     permissions:
@@ -238,8 +243,26 @@ jobs:
 
       - name: 拒绝未纳管的 systemd 覆盖
         run: |
-          ssh hi-veblen-production 'bash -se' <<'REMOTE'
+          ssh hi-veblen-production 'bash -se --' \
+            "$GITHUB_RUN_ID" "$GITHUB_RUN_ATTEMPT" <<'REMOTE'
           set -eu
+          run_id="$1"
+          run_attempt="$2"
+          case "$run_id" in
+            ''|*[!0-9]*) echo "GitHub run id 格式无效：$run_id" >&2; exit 1 ;;
+          esac
+          case "$run_attempt" in
+            ''|*[!0-9]*) echo "GitHub run attempt 格式无效：$run_attempt" >&2; exit 1 ;;
+          esac
+          release_lock=/run/hi-veblen-release.lock
+          lease_dir=/run/hi-veblen-release-lease
+          lease_owner="$run_id-$run_attempt"
+          command -v flock >/dev/null
+          exec 9>"$release_lock"
+          if ! flock -n 9; then
+            echo "另一个服务器发布事务仍在运行，拒绝 preflight。" >&2
+            exit 1
+          fi
           maintenance_marker=/run/myagent-release-maintenance
           preserve_marker=/run/hi-veblen-release-preserve
           preserved_staging=""
@@ -260,21 +283,61 @@ jobs:
               exit 1
             fi
           done
+          if ! mkdir -m 0700 "$lease_dir"; then
+            current_owner="$(cat "$lease_dir/owner" 2>/dev/null || true)"
+            echo "服务器发布生命周期已被占用：${current_owner:-unknown}" >&2
+            exit 1
+          fi
+          printf '%s\n' "$lease_owner" > "$lease_dir/owner"
+          chmod 0600 "$lease_dir/owner"
           REMOTE
 
       - name: 创建私有暂存目录
         run: |
-          ssh hi-veblen-production 'bash -se' <<'REMOTE'
+          ssh hi-veblen-production 'bash -se --' \
+            "$GITHUB_RUN_ID" "$GITHUB_RUN_ATTEMPT" <<'REMOTE'
           set -eu
+          run_id="$1"
+          run_attempt="$2"
+          case "$run_id" in
+            ''|*[!0-9]*) echo "GitHub run id 格式无效：$run_id" >&2; exit 1 ;;
+          esac
+          case "$run_attempt" in
+            ''|*[!0-9]*) echo "GitHub run attempt 格式无效：$run_attempt" >&2; exit 1 ;;
+          esac
+          release_lock=/run/hi-veblen-release.lock
+          lease_dir=/run/hi-veblen-release-lease
+          lease_owner="$run_id-$run_attempt"
+          command -v flock >/dev/null
+          exec 9>"$release_lock"
+          if ! flock -n 9; then
+            echo "另一个服务器发布事务仍在运行，拒绝创建暂存目录。" >&2
+            exit 1
+          fi
+          test "$(cat "$lease_dir/owner" 2>/dev/null || true)" = "$lease_owner"
+          maintenance_marker=/run/myagent-release-maintenance
+          preserve_marker=/run/hi-veblen-release-preserve
+          preserved_staging=""
+          if test -d /opt/hi-veblen/staging; then
+            preserved_staging="$(find /opt/hi-veblen/staging -mindepth 2 -maxdepth 2 \
+              -name PRESERVE -print -quit)"
+          fi
+          if test -e "$maintenance_marker" || test -L "$maintenance_marker" || \
+            test -e "$preserve_marker" || test -L "$preserve_marker" || \
+            test -n "$preserved_staging"; then
+            echo "检测到发布保护现场，拒绝创建暂存目录。" >&2
+            exit 1
+          fi
           umask 077
           staging_root=/opt/hi-veblen/staging
-          upload_dir="$staging_root/run-${{ github.run_id }}-${{ github.run_attempt }}"
+          upload_dir="$staging_root/run-$run_id-$run_attempt"
           install -d -m 0700 "$staging_root"
           if test -e "$upload_dir"; then
             echo "发布暂存目录已存在，拒绝覆盖：$upload_dir" >&2
             exit 1
           fi
           mkdir -m 0700 "$upload_dir"
+          install -m 0600 /dev/null "$upload_dir/PRESERVE"
           REMOTE
 
       - name: 上传发布包
@@ -290,6 +353,14 @@ jobs:
             "$GITHUB_RUN_ID" "$GITHUB_RUN_ATTEMPT" "$GITHUB_SHA" \
             "$EXPECTED_ARCHIVE_SHA" <<'REMOTE'
           set -eu
+
+          release_lock=/run/hi-veblen-release.lock
+          command -v flock >/dev/null
+          exec 9>"$release_lock"
+          if ! flock -n 9; then
+            echo "另一个服务器发布事务仍在运行，拒绝进入主事务。" >&2
+            exit 1
+          fi
 
           run_id="$1"
           run_attempt="$2"
@@ -311,6 +382,23 @@ jobs:
           backend_current="$project_root/backend-current"
           maintenance_marker=/run/myagent-release-maintenance
           preserve_marker=/run/hi-veblen-release-preserve
+          lease_dir=/run/hi-veblen-release-lease
+          lease_owner="$run_id-$run_attempt"
+
+          if test "$(cat "$lease_dir/owner" 2>/dev/null || true)" != "$lease_owner"; then
+            echo "发布生命周期租约不属于本次运行，拒绝进入主事务。" >&2
+            exit 1
+          fi
+          test -f "$upload_dir/PRESERVE"
+          test ! -L "$upload_dir/PRESERVE"
+
+          assert_no_global_protection() {
+            if test -e "$maintenance_marker" || test -L "$maintenance_marker" || \
+              test -e "$preserve_marker" || test -L "$preserve_marker"; then
+              echo "检测到全局发布保护标记，拒绝回收发布现场。" >&2
+              return 1
+            fi
+          }
 
           case "$expected_archive_sha" in
             ''|*[!0-9a-f]*) echo "发布包摘要格式无效" >&2; exit 1 ;;
@@ -334,7 +422,7 @@ jobs:
           preserved_staging=""
           if test -d /opt/hi-veblen/staging; then
             preserved_staging="$(find /opt/hi-veblen/staging -mindepth 2 -maxdepth 2 \
-              -name PRESERVE -print -quit)"
+              -name PRESERVE ! -path "$upload_dir/PRESERVE" -print -quit)"
           fi
           if test -e "$maintenance_marker" || test -L "$maintenance_marker" || \
             test -e "$preserve_marker" || test -L "$preserve_marker" || \
@@ -407,9 +495,9 @@ jobs:
           previous_lingxi="$(readlink -f "$lingxi_current")"
           previous_backend="$(readlink -f "$backend_current")"
           previous_backend_revision="$(cat "$previous_backend/release.txt" 2>/dev/null || true)"
-          previous_revision_reliable=0
-          if [[ "$previous_backend_revision" =~ ^[0-9a-f]{40}$ ]]; then
-            previous_revision_reliable=1
+          if [[ ! "$previous_backend_revision" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "旧后端 release revision 不是完整提交 SHA，拒绝进入可变更阶段。" >&2
+            exit 1
           fi
 
           bash "$release/prune-production-staging.sh" \
@@ -499,22 +587,26 @@ jobs:
           }
 
           previous_backend_healthy() {
-            for _attempt in {1..30}; do
-              if rollback_health="$(curl --connect-timeout 2 --max-time 5 \
+            rollback_deadline=$((SECONDS + 300))
+            while (( SECONDS < rollback_deadline )); do
+              rollback_curl_timeout=$((rollback_deadline - SECONDS))
+              if (( rollback_curl_timeout > 5 )); then
+                rollback_curl_timeout=5
+              fi
+              if (( rollback_curl_timeout < 1 )); then
+                break
+              fi
+              if rollback_health="$(curl --connect-timeout 2 \
+                --max-time "$rollback_curl_timeout" \
                 --fail --silent --show-error http://127.0.0.1:8000/api/health 2>/dev/null)" && \
-                printf '%s' "$rollback_health" | python3 -c '
-          import json, sys
-          data = json.load(sys.stdin)
-          expected = sys.argv[1] if sys.argv[2] == "1" else ""
-          assert data.get("production_auth_safe") is True
-          assert (data.get("host") or {}).get("ok") is True
-          if expected:
-              assert data.get("backend_revision") == expected
-              assert (data.get("host") or {}).get("backend_revision") == expected
-          ' "$previous_backend_revision" "$previous_revision_reliable"; then
+                printf '%s' "$rollback_health" | python3 \
+                  "$release/validate_release_health.py" rollback \
+                  "$previous_backend_revision"; then
                 return 0
               fi
-              sleep 1
+              if (( SECONDS < rollback_deadline )); then
+                sleep 1
+              fi
             done
             return 1
           }
@@ -680,8 +772,8 @@ jobs:
           bootstrap_enabled=/etc/nginx/sites-enabled/lingxi.hi-veblen.com.conf
           test -d /etc/nginx/sites-available
           test -d /etc/nginx/sites-enabled
-          test ! -e "$upload_dir/PRESERVE"
-          install -m 0600 /dev/null "$upload_dir/PRESERVE"
+          test -f "$upload_dir/PRESERVE"
+          test ! -L "$upload_dir/PRESERVE"
           nginx_mutated=1
           install -m 0644 "$release/backend/ops/nginx/hi-veblen.com.http.conf" "$primary_conf"
           ln -sfn "$primary_conf" "$primary_enabled"
@@ -803,6 +895,19 @@ jobs:
           assert json.load(sys.stdin).get("status") == "ok"
           '
 
+          portal_auth_probe="$(curl --connect-timeout 10 --max-time 30 \
+            --silent --show-error --write-out '\n%{http_code}' \
+            --header 'Authorization: Bearer nginx-forwarding-probe' \
+            https://hi-veblen.com/api/auth/profile)"
+          printf '%s' "$portal_auth_probe" | python3 -c '
+          import json, sys
+          body, separator, status = sys.stdin.read().rpartition("\n")
+          assert separator and status == "401"
+          data = json.loads(body)
+          assert data.get("code") == 401
+          assert (data.get("details") or {}).get("reason") == "token_malformed"
+          '
+
           invalid_status="$(curl --connect-timeout 10 --max-time 30 \
             --silent --output /dev/null --write-out '%{http_code}' \
             --request POST --header 'Content-Type: application/json' \
@@ -818,25 +923,16 @@ jobs:
 
           api_health="$(curl --connect-timeout 10 --max-time 30 \
             --fail --silent --show-error http://127.0.0.1:8000/api/health)"
-          printf '%s' "$api_health" | python3 -c '
-          import json, sys
-          data = json.load(sys.stdin)
-          expected = sys.argv[1]
-          assert data.get("production_auth_safe") is True
-          assert data.get("backend_revision") == expected
-          assert (data.get("host") or {}).get("ok") is True
-          assert (data.get("host") or {}).get("backend_revision") == expected
-          ' "$expected_lingxi"
+          printf '%s' "$api_health" | python3 \
+            "$release/validate_release_health.py" current "$expected_lingxi"
 
           rm -f "$maintenance_marker"
           maintenance_active=0
           switched=0
+          install -m 0600 /dev/null "$upload_dir/DEPLOYED"
           trap - EXIT
           rm -f "$upload_dir/PRESERVE"
-          case "$upload_dir" in
-            /opt/hi-veblen/staging/run-[0-9]*-[0-9]*) rm -rf -- "$upload_dir" ;;
-            *) echo "拒绝清理异常暂存路径：$upload_dir" >&2; exit 1 ;;
-          esac
+          assert_no_global_protection
           REMOTE
 
       - name: 清理本次远端暂存与未引用发布
@@ -845,6 +941,13 @@ jobs:
           ssh hi-veblen-production 'bash -se --' \
             "$GITHUB_RUN_ID" "$GITHUB_RUN_ATTEMPT" "$GITHUB_SHA" <<'REMOTE'
           set -euo pipefail
+          release_lock=/run/hi-veblen-release.lock
+          command -v flock >/dev/null
+          exec 9>"$release_lock"
+          if ! flock -n 9; then
+            echo "另一个服务器发布事务仍在运行，保留本次清理现场。" >&2
+            exit 1
+          fi
           run_id="$1"
           run_attempt="$2"
           portal_revision="$3"
@@ -854,15 +957,39 @@ jobs:
           case "$run_attempt" in
             ''|*[!0-9]*) echo "GitHub run attempt 格式无效：$run_attempt" >&2; exit 1 ;;
           esac
+          lease_dir=/run/hi-veblen-release-lease
+          lease_owner="$run_id-$run_attempt"
+          current_owner="$(cat "$lease_dir/owner" 2>/dev/null || true)"
+          if test "$current_owner" != "$lease_owner"; then
+            echo "本次运行不持有发布生命周期租约，跳过远端清理。"
+            exit 0
+          fi
           maintenance_marker=/run/myagent-release-maintenance
           preserve_marker=/run/hi-veblen-release-preserve
           upload_dir="/opt/hi-veblen/staging/run-$run_id-$run_attempt"
+          assert_no_global_protection() {
+            if test -e "$maintenance_marker" || test -L "$maintenance_marker" || \
+              test -e "$preserve_marker" || test -L "$preserve_marker"; then
+              echo "发布保护标记仍存在，拒绝删除本次清理现场。" >&2
+              return 1
+            fi
+          }
           if test -e "$maintenance_marker" || test -L "$maintenance_marker" || \
-            test -e "$preserve_marker" || test -L "$preserve_marker" || \
-            test -e "$upload_dir/PRESERVE" || test -L "$upload_dir/PRESERVE"; then
+            test -e "$preserve_marker" || test -L "$preserve_marker"; then
             echo "发布保护标记仍存在，保留本次 release 与回滚现场。"
             exit 0
           fi
+
+          deployed=0
+          if test -L "$upload_dir/DEPLOYED"; then
+            echo "DEPLOYED 标记不能是符号链接。" >&2
+            exit 1
+          fi
+          if test -f "$upload_dir/DEPLOYED"; then
+            deployed=1
+          fi
+          rm -f "$upload_dir/PRESERVE"
+          assert_no_global_protection
 
           release="/opt/hi-veblen/releases/release-$portal_revision-$run_id-$run_attempt"
           referenced=0
@@ -878,7 +1005,8 @@ jobs:
             fi
           done
 
-          if test -d "$release" && test "$referenced" -eq 0; then
+          if test -d "$release" && test "$referenced" -eq 0 && test "$deployed" -eq 0; then
+            assert_no_global_protection
             case "$release" in
               /opt/hi-veblen/releases/release-[0-9a-f]*-[0-9]*-[0-9]*)
                 rm -rf --one-file-system -- "$release"
@@ -886,8 +1014,13 @@ jobs:
               *) echo "拒绝清理异常发布路径：$release" >&2; exit 1 ;;
             esac
           fi
+          assert_no_global_protection
           case "$upload_dir" in
             /opt/hi-veblen/staging/run-[0-9]*-[0-9]*) rm -rf -- "$upload_dir" ;;
             *) echo "拒绝清理异常暂存路径：$upload_dir" >&2; exit 1 ;;
           esac
+          assert_no_global_protection
+          test "$(cat "$lease_dir/owner" 2>/dev/null || true)" = "$lease_owner"
+          rm -f "$lease_dir/owner"
+          rmdir "$lease_dir"
           REMOTE

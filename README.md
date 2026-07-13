@@ -25,7 +25,9 @@ hi-veblen 把个人履历、项目、影像与交互实验组织成一座可探�
 | 入口 | 内容 |
 | --- | --- |
 | `/` | Signal Landing，展厅总控与导航 |
-| `/about`、`/skills`、`/projects` | 身份档案、能力矩阵与作品归档 |
+| `/about`、`/education`、`/experience` | 身份档案、教育背景与职业经历 |
+| `/skills` | 能力矩阵 |
+| `/projects`、`/projects/:id` | 作品归档与项目详情 |
 | `/gallery` | 影像与数字艺术画廊 |
 | `/os` | Legacy OS、终端交互与隐藏游戏 |
 | `/contact` | 通讯控制台 |
@@ -43,7 +45,7 @@ flowchart LR
   P["hi-veblen<br/>门户与发布编排"]
   L["Lingxi<br/>固定提交构建"]
   A["不可变发布包<br/>portal / lingxi / backend"]
-  S["短维护窗口内协调切换"]
+  S["生命周期租约内协调切换"]
   N["Nginx 双域入口"]
   W["数字展厅"]
   X["Lingxi 网页端与 API"]
@@ -64,7 +66,7 @@ Lingxi 是只向授权协作者开放的独立仓库，发布 workflow 通过只
 | 层 | 选择 |
 | --- | --- |
 | 门户 | Vue 3.5、TypeScript 5.9、Vue Router 4.6、Pinia 3 |
-| 构建与样式 | Vite 7、Tailwind CSS 4、PostCSS |
+| 构建与样式 | Rolldown Vite 7、Tailwind CSS 4、PostCSS |
 | 动效 | Canvas、CSS、系统级路由转场与音频控制 |
 | 门户 API | Express、TypeScript、SQLite、PM2 |
 | 验证 | Vitest、Playwright、GitHub Actions |
@@ -99,7 +101,7 @@ npx playwright install chromium
 npx playwright test e2e/art-museum-experience.spec.ts --project=chromium
 ```
 
-当前生产版本使用的 CI 分为四组，只有前三组构成发布证明。Portal `d099480` 的 [CI run `29161853006`](https://github.com/Timking123/hi-veblen/actions/runs/29161853006) 四个 job 均为 success；Lingxi `014bdc1` 的 [CI run `29159820620`](https://github.com/Timking123/Lingxi/actions/runs/29159820620) 中，Web、Python 3.11 与 Python 3.12 三个确定性 job 全部通过。
+截至 2026-07-12，已归档的生产验收记录包含四组 CI，只有前三组构成发布证明。Portal `d099480` 的 [CI run `29161853006`](https://github.com/Timking123/hi-veblen/actions/runs/29161853006) 四个 job 均为 success；Lingxi `014bdc1` 的 [CI run `29159820620`](https://github.com/Timking123/Lingxi/actions/runs/29159820620) 中，Web、Python 3.11 与 Python 3.12 三个确定性 job 全部通过。
 
 | 检查组 | 范围 | 是否阻断 |
 | --- | --- | --- |
@@ -125,9 +127,11 @@ npx playwright test e2e/art-museum-experience.spec.ts --project=chromium
 
 ## 发布与回滚
 
-生产发布仅走 [`.github/workflows/deploy.yml`](./.github/workflows/deploy.yml)。该 workflow 固定 Lingxi 提交，要求同一门户 SHA 的三个严格 CI check 已成功，并重跑 Lingxi 确定性总检。切换前失败时，当前指针和服务保持不变；进入维护或完成切换后失败时，workflow 会尝试恢复上一组指针与服务配置，并重新验证旧 revision、服务健康和 Nginx 维护守卫。恢复门没有全部通过时，维护与 `PRESERVE` 标记会保留，Lingxi 服务停止并转入人工恢复。
+生产发布仅走 [`.github/workflows/deploy.yml`](./.github/workflows/deploy.yml)。该 workflow 固定 Lingxi 提交，要求同一门户 SHA 的三个严格 CI check 已成功，并重跑 Lingxi 确定性总检。远端执行同时使用单 SSH 会话 `flock` 和跨 workflow 步骤的原子 lifecycle lease；只有持有 `run_id-run_attempt` 所有权的事务可以上传、切换或清理自己的 staging。当前上传从创建起携带 `PRESERVE`，完成切换的 release 写入 `DEPLOYED`，任何递归清理前都会重新检查全局恢复标记和引用关系。
 
-[生产 workflow `29162079426`](https://github.com/Timking123/hi-veblen/actions/runs/29162079426) 的构建与部署 job 均已成功，当前生产为 portal `d099480`、Lingxi frontend/backend/host `014bdc1`。本次发布清理 1 个无保护的旧 staging 目录，并按“最新 5 份、保护 4 个事务目标”的规则删除 3 份过期 release；独立只读复核确认 staging 为空、release 精确 5 份。独立 Python 3.12 release venv、`pip check`、新安全头与公网协议检查均已通过，两个 Lingxi systemd 单元的 `DropInPaths` 为空。
+切换前失败时，当前指针和服务保持不变；进入维护或完成切换后失败时，workflow 会尝试恢复上一组指针与服务配置，并重新验证旧 revision、服务健康和 Nginx 维护守卫。旧 workflow 的迟到 cleanup 无权删除新事务目录；未被指针引用但已写入 `DEPLOYED` 的 release 交给后续保留策略处理。恢复门没有全部通过时，维护与 `PRESERVE` 标记会保留，Lingxi 服务停止并转入人工恢复。
+
+截至 2026-07-12，[生产 workflow `29162079426`](https://github.com/Timking123/hi-veblen/actions/runs/29162079426) 的构建与部署 job 均已成功，该次验收确认生产版本为 portal `d099480`、Lingxi frontend/backend/host `014bdc1`。本次发布清理 1 个无保护的旧 staging 目录，并按“最新 5 份、保护 4 个事务目标”的规则删除 3 份过期 release；独立只读复核确认 staging 为空、release 精确 5 份。独立 Python 3.12 release venv、`pip check`、新安全头与公网协议检查均已通过，两个 Lingxi systemd 单元的 `DropInPaths` 为空。
 
 完整操作边界见 [生产发布与回滚](./docs/PRODUCTION_DEPLOYMENT.md)。仓库不再维护 Docker、Vercel、服务器手工上传等第二套发布路线。
 
