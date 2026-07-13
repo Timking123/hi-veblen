@@ -140,7 +140,7 @@ jobs:
           staging = workflow[workflow.index("      - name: 创建私有暂存目录"):workflow.index("      - name: 上传发布包")]
           assert 'test "$(cat "$lease_dir/owner" 2>/dev/null || true)" = "$lease_owner"' in staging
           assert 'install -m 0600 /dev/null "$upload_dir/PRESERVE"' in staging
-          assert '${{' not in staging
+          assert "$" + "{{" not in staging
           assert '! -path "$upload_dir/PRESERVE"' in main_remote
           assert '发布生命周期租约不属于本次运行' in main_remote
           success_tail = workflow[final_remove:deploy_step_end]
