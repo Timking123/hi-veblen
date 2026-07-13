@@ -18,14 +18,14 @@
 
 门户、Lingxi 网页端和 Lingxi 后端各有一个 `current` 符号链接。发布目录按 Git revision 和 workflow run 标识创建，发布后不在原目录上覆盖文件。每个 Lingxi backend release 使用独立 `.venv`，systemd 通过 `backend-current/.venv/bin/python` 启动，使运行代码与依赖随同一个指针切换。
 
-当前生产 revision 为 portal `d099480`、Lingxi frontend/backend/host `014bdc1`。[Portal CI run `29161853006`](https://github.com/Timking123/hi-veblen/actions/runs/29161853006) 的四个 job、[Lingxi CI run `29159820620`](https://github.com/Timking123/Lingxi/actions/runs/29159820620) 的 Web、Python 3.11、Python 3.12 三个 job，以及 [production workflow `29162079426`](https://github.com/Timking123/hi-veblen/actions/runs/29162079426) 的构建和部署 job 均为 success。生产日志记录 staging `removed=1`、release `kept_newest=5 / protected=4 / removed=3`；独立只读复核确认三个 current 同 release、staging 为空、release 精确 5 份，并确认独立 Python 3.12 release venv、`pip check`、新安全头与公网协议检查通过。
+截至 2026-07-13，当前生产 revision 为 portal `afec408`、Lingxi frontend/backend/host `7ed6529`。[Portal CI run `29248710951`](https://github.com/Timking123/hi-veblen/actions/runs/29248710951) 的四个 job、[Lingxi CI run `29248524452`](https://github.com/Timking123/Lingxi/actions/runs/29248524452) 的 Web、Python 3.11、Python 3.12 三个 job，以及 [production workflow `29249202454`](https://github.com/Timking123/hi-veblen/actions/runs/29249202454) 的构建和部署 job 均为 success。发布日志记录 staging `removed=0`、release `kept_newest=5 / protected=4 / removed=1`；公网只读复核确认两站 `release.txt` 与预期 revision 一致，Lingxi 健康接口的 `ok`、`ready`、`continuity_ok` 和 `production_auth_safe` 均为 `true`。独立 Python 3.12 release venv、`pip check`、安全头与公网协议检查均已通过，两个 Lingxi systemd 单元的 `DropInPaths` 为空。本次只读复核没有使用生产用户凭据，不能替代登录态角色创建、历史分页或刷新恢复验收。
 
 ## 发布前条件
 
 1. `hi-veblen` 的三个阻断检查组全部通过：`Release gate`、`Admin quality` 和 `Portal E2E`。
 2. 待发布的 Lingxi 提交已经完成其仓库要求的测试与浏览器验收。
 3. `LINGXI_SHA` 是完整提交 SHA，并指向准备发布的 Lingxi revision；该 revision 必须包含精确锁定的 `requirements-ci.txt`。触发前要实际复核文件存在，仍指向不含该文件的旧 revision 时不得运行 workflow。
-4. GitHub `production` Environment 的审批和 secrets 已配置。仓库只保存 secret 名称，不保存值。
+4. GitHub `production` Environment 必须存在。当前没有 required reviewer，发布由具备仓库写权限的人手动触发 `workflow_dispatch`；`LINGXI_REPO_TOKEN`、`SERVER_HOST`、`SERVER_USER`、`SERVER_SSH_KEY` 当前均为 repository-level Actions secrets。若后续启用生产审批，服务器三项 secret 可迁入 Environment，build job 使用的 `LINGXI_REPO_TOKEN` 仍需保留可见作用域。仓库只保存 secret 名称，不保存值。
 5. `myagent-world.service` 与 `myagent-gateway.service` 的 `DropInPaths` 均为空；任何临时或未纳管的 systemd drop-in 都必须先清理并恢复正式配置。
 6. `/run/myagent-release-maintenance`、`/run/hi-veblen-release-preserve`、`/run/hi-veblen-release-lease` 和 staging 内的 `PRESERVE` 均不存在。发现任一标记或生命周期租约都表示上次事务仍需人工核验，不得删除后继续发布。
 7. MyWeb API 健康，运行数据已经按既定策略备份。

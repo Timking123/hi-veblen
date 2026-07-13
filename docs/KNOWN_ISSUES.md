@@ -6,7 +6,7 @@
 
 以下 legacy 计数来自以 MyWeb `f766147` 为基础、精确暂存 93 个任务文件的隔离快照，验证时间为 2026-07-11 21:33~21:49 +08。`f766147` 是这组计数的快照基线，不是当前 `main` HEAD。临时 worktree 只包含 staged index，明确排除了游戏、简历、Contact/Navigation、MCP、本机配置和其他用户脏改。ESLint、根项目全量单测与 Admin backend legacy Jest 均在该快照重跑；Home、Admin frontend、生产构建、凭据失败关闭和 Portal Chromium E2E 也在同一快照验证。
 
-当前生产证据为 portal `d099480` 的 [CI run `29161853006`](https://github.com/Timking123/hi-veblen/actions/runs/29161853006)、Lingxi `014bdc1` 的 [CI run `29159820620`](https://github.com/Timking123/Lingxi/actions/runs/29159820620)，以及 [production workflow `29162079426`](https://github.com/Timking123/hi-veblen/actions/runs/29162079426)，三者均为 success。CI 页面上的 `Legacy diagnostics (non-blocking)` success 是非阻断包装的结果：它表示诊断命令已执行并保留结果，不表示下表三个 legacy 检查已经通过。
+这组 2026-07-11 快照当时的生产证据为 portal `d099480` 的 [CI run `29161853006`](https://github.com/Timking123/hi-veblen/actions/runs/29161853006)、Lingxi `014bdc1` 的 [CI run `29159820620`](https://github.com/Timking123/Lingxi/actions/runs/29159820620)，以及 [production workflow `29162079426`](https://github.com/Timking123/hi-veblen/actions/runs/29162079426)，三者均为 success。当前生产已推进到 portal `afec408`、Lingxi `7ed6529`，对应 [Portal CI run `29248710951`](https://github.com/Timking123/hi-veblen/actions/runs/29248710951)、[Lingxi CI run `29248524452`](https://github.com/Timking123/Lingxi/actions/runs/29248524452) 和 [production workflow `29249202454`](https://github.com/Timking123/hi-veblen/actions/runs/29249202454)。revision 的推进不改变下表 legacy 计数的历史快照口径。CI 页面上的 `Legacy diagnostics (non-blocking)` success 是非阻断包装的结果：它表示诊断命令已执行并保留结果，不表示下表三个 legacy 检查已经通过。
 
 | 检查 | 结果 | 当前处理 |
 | --- | --- | --- |
