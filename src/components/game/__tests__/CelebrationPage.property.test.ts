@@ -1,6 +1,6 @@
 /**
  * 庆祝页面音效属性测试
- * 
+ *
  * 测试庆祝页面交互元素的音效播放
  */
 
@@ -10,23 +10,19 @@ import { createPinia, setActivePinia } from 'pinia'
 import CelebrationPage from '../CelebrationPage.vue'
 import { useEasterEggStore } from '@/stores/easterEgg'
 import { GamePhase } from '@/game/types'
-import { SoundEffect } from '@/game/AudioSystem'
+import { AudioSystem, SoundEffect } from '@/game/AudioSystem'
 
 // 创建 mock 音频系统实例
 const mockPlaySoundEffect = vi.fn()
-const mockInitialize = vi.fn().mockResolvedValue(undefined)
-const mockResumeAudioContext = vi.fn().mockResolvedValue(undefined)
 const mockCleanup = vi.fn()
 
 // Mock AudioSystem 类
 vi.mock('@/game/AudioSystem', () => {
   return {
-    AudioSystem: vi.fn().mockImplementation(function() {
+    AudioSystem: vi.fn().mockImplementation(function () {
       return {
-        initialize: mockInitialize,
-        resumeAudioContext: mockResumeAudioContext,
         playSoundEffect: mockPlaySoundEffect,
-        cleanup: mockCleanup
+        cleanup: mockCleanup,
       }
     }),
     SoundEffect: {
@@ -34,9 +30,31 @@ vi.mock('@/game/AudioSystem', () => {
       BANNER_SHAKE: 'BANNER_SHAKE',
       CAKE_LIGHT: 'CAKE_LIGHT',
       CARPET_ROLL: 'CARPET_ROLL',
-      FIREWORK_LAUNCH: 'FIREWORK_LAUNCH'
-    }
+      FIREWORK_LAUNCH: 'FIREWORK_LAUNCH',
+    },
   }
+})
+
+describe('庆祝页音频激活边界', () => {
+  it('非庆祝阶段不应创建音频系统', async () => {
+    vi.clearAllMocks()
+    const pinia = createPinia()
+    setActivePinia(pinia)
+    const easterEggStore = useEasterEggStore()
+    easterEggStore.phase = GamePhase.IDLE
+
+    const wrapper = mount(CelebrationPage, {
+      global: {
+        plugins: [pinia],
+      },
+    })
+
+    await wrapper.vm.$nextTick()
+    await new Promise(resolve => setTimeout(resolve, 0))
+
+    expect(AudioSystem).not.toHaveBeenCalled()
+    wrapper.unmount()
+  })
 })
 
 describe('属性 32: 庆祝页面交互音效', () => {
@@ -53,18 +71,18 @@ describe('属性 32: 庆祝页面交互音效', () => {
 
     // 获取 store
     easterEggStore = useEasterEggStore()
-    
+
     // 设置为庆祝阶段
     easterEggStore.phase = GamePhase.CELEBRATION
 
     // 挂载组件
     wrapper = mount(CelebrationPage, {
       global: {
-        plugins: [pinia]
-      }
+        plugins: [pinia],
+      },
     })
 
-    // 等待组件挂载和音频系统初始化
+    // 等待组件挂载和音效门面就绪
     await wrapper.vm.$nextTick()
     await new Promise(resolve => setTimeout(resolve, 100))
   })
@@ -190,10 +208,9 @@ describe('属性 32: 庆祝页面交互音效', () => {
     const balloon = wrapper.find('.balloon')
     await balloon.trigger('click')
     await balloon.trigger('click')
-    
+
     // 气球爆炸后不应该再次播放音效
     expect(mockPlaySoundEffect).toHaveBeenCalledTimes(1)
     expect(mockPlaySoundEffect).toHaveBeenCalledWith(SoundEffect.BALLOON_POP)
   })
 })
-

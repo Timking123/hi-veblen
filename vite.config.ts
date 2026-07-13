@@ -17,12 +17,7 @@ export default defineConfig(({ mode }) => {
       // 验证: 需求 3.7 - 在 manifest.json 中定义应用元数据
       VitePWA({
         registerType: 'autoUpdate',
-        includeAssets: [
-          'favicon.ico',
-          'apple-touch-icon.png',
-          'pwa-192x192.png',
-          'pwa-512x512.png',
-        ],
+        includeAssets: ['pwa-icon.svg'],
         manifest: {
           name: '黄彦杰 - 个人求职网站',
           short_name: '黄彦杰',
@@ -38,44 +33,10 @@ export default defineConfig(({ mode }) => {
           categories: ['portfolio', 'personal', 'resume'],
           icons: [
             {
-              src: 'pwa-192x192.png',
-              sizes: '192x192',
-              type: 'image/png',
+              src: 'pwa-icon.svg',
+              sizes: 'any',
+              type: 'image/svg+xml',
               purpose: 'any',
-            },
-            {
-              src: 'pwa-512x512.png',
-              sizes: '512x512',
-              type: 'image/png',
-              purpose: 'any',
-            },
-            {
-              src: 'pwa-512x512.png',
-              sizes: '512x512',
-              type: 'image/png',
-              purpose: 'maskable',
-            },
-            {
-              src: 'apple-touch-icon.png',
-              sizes: '180x180',
-              type: 'image/png',
-              purpose: 'apple touch icon',
-            },
-          ],
-          screenshots: [
-            {
-              src: 'screenshot-wide.png',
-              sizes: '1280x720',
-              type: 'image/png',
-              form_factor: 'wide',
-              label: '黄彦杰个人网站 - 桌面版',
-            },
-            {
-              src: 'screenshot-narrow.png',
-              sizes: '750x1334',
-              type: 'image/png',
-              form_factor: 'narrow',
-              label: '黄彦杰个人网站 - 移动版',
             },
           ],
         },
@@ -123,7 +84,8 @@ export default defineConfig(({ mode }) => {
             },
             {
               // 缓存图片资源
-              urlPattern: /^(?!.*\/(?:lingxi|api|ws)(?:\/|$)).*\.(?:png|jpg|jpeg|svg|gif|webp|avif)(?:\?.*)?$/i,
+              urlPattern:
+                /^(?!.*\/(?:lingxi|api|ws)(?:\/|$)).*\.(?:png|jpg|jpeg|svg|gif|webp|avif)(?:\?.*)?$/i,
               handler: 'CacheFirst',
               options: {
                 cacheName: 'images-cache',

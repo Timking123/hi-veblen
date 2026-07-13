@@ -109,7 +109,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, onMounted, onUnmounted, computed } from 'vue'
+import { ref, onUnmounted, computed, watch } from 'vue'
 import { useEasterEggStore } from '@/stores/easterEgg'
 import { GamePhase } from '@/game/types'
 import { AudioSystem, SoundEffect } from '@/game/AudioSystem'
@@ -290,20 +290,17 @@ const returnToHome = (): void => {
   easterEggStore.reset({ reload: true })
 }
 
-// 组件挂载
-onMounted(async () => {
-  console.log('[庆祝页面] 组件已挂载')
-
-  // 初始化音频系统
-  try {
-    audioSystem = new AudioSystem()
-    await audioSystem.initialize()
-    await audioSystem.resumeAudioContext()
-    console.log('[庆祝页面] 音频系统初始化成功')
-  } catch (error) {
-    console.error('[庆祝页面] 音频系统初始化失败:', error)
-  }
-})
+// 只在庆祝页真正出现时创建音效门面，避免门户首屏触发浏览器自动播放告警。
+watch(
+  isVisible,
+  visible => {
+    if (visible && !audioSystem) {
+      audioSystem = new AudioSystem()
+      console.log('[庆祝页面] 音效系统已就绪')
+    }
+  },
+  { immediate: true }
+)
 
 // 组件卸载
 onUnmounted(() => {
