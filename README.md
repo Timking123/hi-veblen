@@ -103,7 +103,7 @@ npx playwright install chromium
 npx playwright test e2e/art-museum-experience.spec.ts --project=chromium
 ```
 
-截至 2026-07-14，Portal `3a0b4a9` 的 [CI run `29287253837`](https://github.com/Timking123/hi-veblen/actions/runs/29287253837) 四个 job 均为 success；Lingxi `0e7383a` 的 [CI run `29286909305`](https://github.com/Timking123/Lingxi/actions/runs/29286909305) 中，Web、Python 3.11 与 Python 3.12 三个确定性 job 全部通过。前三组门户检查负责阻断发布，`Legacy diagnostics (non-blocking)` 只保留旧全量诊断结果。
+截至 2026-07-14，Portal `3b0f010a0fb495504d0c3ffa01006f8bc33a8475` 的 [CI run `29301865888` attempt 2](https://github.com/Timking123/hi-veblen/actions/runs/29301865888/attempts/2) 四个 job 均为 success。attempt 1 因 GitHub 托管 runner 访问 APT 镜像超时而中断，未形成项目代码失败结论；同一提交重跑后四路通过。Lingxi `55255df61ae6aef89ce5d8e4d46ba637ca3cd632` 的 [CI run `29301558361`](https://github.com/Timking123/Lingxi/actions/runs/29301558361) 中，Web、Python 3.11 与 Python 3.12 三个确定性 job 全部通过。前三组门户检查负责阻断发布，`Legacy diagnostics (non-blocking)` 只保留旧全量诊断结果。
 
 | 检查组 | 覆盖范围 | 是否阻断发布 |
 | --- | --- | --- |
@@ -133,9 +133,9 @@ hi-veblen/
 
 上传目录创建后立即写入 `PRESERVE`；完成切换的 release 写入 `DEPLOYED`。切换前失败不会改变当前指针。进入维护或完成切换后失败时，workflow 会尝试恢复上一组指针、服务与 Nginx 配置，并重新验证旧 revision 和健康状态。恢复门未全部通过时，现场保护标记会保留，Lingxi 服务停止并转入人工恢复。
 
-截至 2026-07-14，[生产 workflow `29299508872`](https://github.com/Timking123/hi-veblen/actions/runs/29299508872) 的构建与部署 job 均为 success，线上版本为 portal `3a0b4a9`、Lingxi frontend/backend/host `0e7383a`。构建和部署日志中的 `Traceback`、`AssertionError`、`FileNotFoundError` 均为 0 命中；匿名公网协议探针 24/24 通过，两站 `release.txt`、入口资源、MIME、安全头、缺失资源 404 和健康接口都符合发布契约。Lingxi 的 `ok`、`ready`、`continuity_ok` 与 `production_auth_safe` 均为 `true`。
+截至 2026-07-14，[生产 workflow `29302920011`](https://github.com/Timking123/hi-veblen/actions/runs/29302920011) 的构建与部署 job 均为 success，构建耗时 3 分 30 秒，部署耗时 1 分 50 秒。线上版本为 portal `3b0f010a0fb495504d0c3ffa01006f8bc33a8475`、Lingxi frontend/backend/host `55255df61ae6aef89ce5d8e4d46ba637ca3cd632`。构建和部署日志分别搜索 `Traceback`、`AssertionError`、`FileNotFoundError`，六项检查均为 0 命中；匿名公网协议探针 24/24 通过，两站 `release.txt`、入口资源、MIME、安全头、缺失资源 404 和健康接口都符合发布契约。Lingxi 的 `ok`、`ready`、`continuity_ok` 与 `production_auth_safe` 均为 `true`。
 
-真实 Chromium 复验覆盖 1440×900、1024×768、768×1024、375×812、844×390、812×375 六档 Lingxi 视口，全部保持横向溢出 0、单一裂缝宿主和单一 ready Canvas；`hover`、`click`、`drag`、`long_press` 四类页面会话痕迹刷新后仍完整保留。Portal 首屏连续帧有效，双站控制台 warning/error 为 0。本轮没有生产用户凭据，因此没有把公开入口验收写成登录后角色创建、历史分页或完整对话验收；Windows Chromium 也不替代 iOS、Android、Safari 与真实平板真机。
+真实 Chromium 复验覆盖 1440×900、1024×768、768×1024、375×812、844×390、812×375 六档 Lingxi 视口，全部保持横向溢出 0、单一裂缝宿主和单一 ready Canvas；`hover`、`click`、`drag`、`long_press` 四类页面会话痕迹刷新后仍完整保留。Portal 首屏连续帧有效，双站控制台 warning/error 为 0。完整证据归档在 `E:\MyAgent Test\P6生产浏览器验收\2026-07-14_1124_P6短会话鉴权优化最终生产复验\`。本轮没有生产用户凭据，因此没有把公开入口验收写成登录后角色创建、历史分页或完整对话验收；Windows Chromium 也不替代 iOS、Android、Safari 与真实平板真机。
 
 完整边界与人工恢复要求见 [生产发布与回滚](./docs/PRODUCTION_DEPLOYMENT.md)。仓库不再维护 Docker、Vercel、服务器手工上传等第二套发布路线。
 
