@@ -103,7 +103,7 @@ npx playwright install chromium
 npx playwright test e2e/art-museum-experience.spec.ts --project=chromium
 ```
 
-截至 2026-07-13，已归档的生产验收记录包含四组 CI，只有前三组构成发布证明。Portal `afec408` 的 [CI run `29248710951`](https://github.com/Timking123/hi-veblen/actions/runs/29248710951) 四个 job 均为 success；Lingxi `7ed6529` 的 [CI run `29248524452`](https://github.com/Timking123/Lingxi/actions/runs/29248524452) 中，Web、Python 3.11 与 Python 3.12 三个确定性 job 全部通过。
+截至 2026-07-14，Portal `3a0b4a9` 的 [CI run `29287253837`](https://github.com/Timking123/hi-veblen/actions/runs/29287253837) 四个 job 均为 success；Lingxi `0e7383a` 的 [CI run `29286909305`](https://github.com/Timking123/Lingxi/actions/runs/29286909305) 中，Web、Python 3.11 与 Python 3.12 三个确定性 job 全部通过。前三组门户检查负责阻断发布，`Legacy diagnostics (non-blocking)` 只保留旧全量诊断结果。
 
 | 检查组 | 覆盖范围 | 是否阻断发布 |
 | --- | --- | --- |
@@ -133,7 +133,9 @@ hi-veblen/
 
 上传目录创建后立即写入 `PRESERVE`；完成切换的 release 写入 `DEPLOYED`。切换前失败不会改变当前指针。进入维护或完成切换后失败时，workflow 会尝试恢复上一组指针、服务与 Nginx 配置，并重新验证旧 revision 和健康状态。恢复门未全部通过时，现场保护标记会保留，Lingxi 服务停止并转入人工恢复。
 
-截至 2026-07-13，[生产 workflow `29249202454`](https://github.com/Timking123/hi-veblen/actions/runs/29249202454) 的构建与部署 job 均为 success，验收确认生产版本为 portal `afec408`、Lingxi frontend/backend/host `7ed6529`。发布日志记录 staging `removed=0`、release `kept_newest=5 / protected=4 / removed=1`；公网只读复核确认两站 `release.txt` 与预期 revision 一致，Lingxi 健康接口的 `ok`、`ready`、`continuity_ok` 和 `production_auth_safe` 均为 `true`。独立 Python 3.12 release venv、`pip check`、安全头和公网协议检查均已通过，两个 Lingxi systemd 单元的 `DropInPaths` 为空。
+截至 2026-07-14，[生产 workflow `29299508872`](https://github.com/Timking123/hi-veblen/actions/runs/29299508872) 的构建与部署 job 均为 success，线上版本为 portal `3a0b4a9`、Lingxi frontend/backend/host `0e7383a`。构建和部署日志中的 `Traceback`、`AssertionError`、`FileNotFoundError` 均为 0 命中；匿名公网协议探针 24/24 通过，两站 `release.txt`、入口资源、MIME、安全头、缺失资源 404 和健康接口都符合发布契约。Lingxi 的 `ok`、`ready`、`continuity_ok` 与 `production_auth_safe` 均为 `true`。
+
+真实 Chromium 复验覆盖 1440×900、1024×768、768×1024、375×812、844×390、812×375 六档 Lingxi 视口，全部保持横向溢出 0、单一裂缝宿主和单一 ready Canvas；`hover`、`click`、`drag`、`long_press` 四类页面会话痕迹刷新后仍完整保留。Portal 首屏连续帧有效，双站控制台 warning/error 为 0。本轮没有生产用户凭据，因此没有把公开入口验收写成登录后角色创建、历史分页或完整对话验收；Windows Chromium 也不替代 iOS、Android、Safari 与真实平板真机。
 
 完整边界与人工恢复要求见 [生产发布与回滚](./docs/PRODUCTION_DEPLOYMENT.md)。仓库不再维护 Docker、Vercel、服务器手工上传等第二套发布路线。
 
