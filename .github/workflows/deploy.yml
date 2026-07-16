@@ -8,7 +8,7 @@ concurrency:
   cancel-in-progress: false
 
 env:
-  LINGXI_SHA: a6a676315979d1543973ba7a37ac4c1375cca969
+  LINGXI_SHA: aa1bfc4b4e5ef9bb28f3030ae209d19cc41121a6
 
 jobs:
   build:
