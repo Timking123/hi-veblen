@@ -47,6 +47,11 @@ def validate_payload(data: dict[str, Any], mode: str, expected: str) -> str:
     )
     host = _base_health(data, expected)
     contract = "v2" if mode == "current" else LEGACY_ROLLBACK_CONTRACTS.get(expected, "v2")
+    if mode == "current":
+        _require(
+            (data.get("persona_import") or {}).get("ready") is True,
+            "角色设定导入能力尚未 ready",
+        )
     if contract == "v2":
         _strict_health(host)
     return contract
@@ -76,6 +81,7 @@ def _self_test() -> None:
         "ok": True,
         "backend_revision": strict_revision,
         "production_auth_safe": True,
+        "persona_import": {"ready": True},
         "host": {
             "ok": True,
             "backend_revision": strict_revision,
@@ -92,6 +98,14 @@ def _self_test() -> None:
     }
     _require(validate_payload(strict, "current", strict_revision) == "v2", "v2 当前发布未通过")
     _require(validate_payload(strict, "rollback", strict_revision) == "v2", "v2 回滚未通过")
+
+    missing_persona_import = copy.deepcopy(strict)
+    del missing_persona_import["persona_import"]
+    _expect_rejected(missing_persona_import, "current", strict_revision)
+
+    disabled_persona_import = copy.deepcopy(strict)
+    disabled_persona_import["persona_import"]["ready"] = False
+    _expect_rejected(disabled_persona_import, "current", strict_revision)
 
     unknown_legacy = copy.deepcopy(legacy)
     unknown_legacy["backend_revision"] = strict_revision
