@@ -8,7 +8,7 @@ concurrency:
   cancel-in-progress: false
 
 env:
-  LINGXI_SHA: aa1bfc4b4e5ef9bb28f3030ae209d19cc41121a6
+  LINGXI_SHA: 4684d64487145cc56c8a2ac22daffa678786482c
 
 jobs:
   build:
@@ -147,6 +147,12 @@ jobs:
           test -s release-package/backend/brain/workspace/world_server.py
           test -s release-package/backend/ui/backend/app.py
           test -s release-package/backend/scripts/install_linux_services.sh
+          if test -e release-package/backend/ops/apparmor/myagent-persona-parser || \
+            test -L release-package/backend/ops/apparmor/myagent-persona-parser; then
+            test ! -L release-package/backend/ops/apparmor/myagent-persona-parser
+            test -f release-package/backend/ops/apparmor/myagent-persona-parser
+            test -s release-package/backend/ops/apparmor/myagent-persona-parser
+          fi
           python3 scripts/validate_release_nginx.py \
             release-package/backend/ops/nginx/hi-veblen.com.http.conf
           test -x release-package/prune-production-releases.sh
@@ -384,6 +390,10 @@ jobs:
           preserve_marker=/run/hi-veblen-release-preserve
           lease_dir=/run/hi-veblen-release-lease
           lease_owner="$run_id-$run_attempt"
+          apparmor_profile_name=myagent-persona-parser
+          apparmor_profile_path="/etc/apparmor.d/$apparmor_profile_name"
+          userns_restriction=/proc/sys/kernel/apparmor_restrict_unprivileged_userns
+          legacy_apparmor_sha=55255df61ae6aef89ce5d8e4d46ba637ca3cd632
 
           if test "$(cat "$lease_dir/owner" 2>/dev/null || true)" != "$lease_owner"; then
             echo "发布生命周期租约不属于本次运行，拒绝进入主事务。" >&2
@@ -460,6 +470,55 @@ jobs:
             ops/systemd/myagent-gateway.service ops/nginx/hi-veblen.com.http.conf; do
             test -s "$release/backend/$required"
           done
+          apparmor_profile_source="$release/backend/ops/apparmor/$apparmor_profile_name"
+          apparmor_profile_mode=legacy
+          if test -e "$apparmor_profile_source" || test -L "$apparmor_profile_source"; then
+            if test -L "$apparmor_profile_source" || \
+              ! test -f "$apparmor_profile_source" || ! test -s "$apparmor_profile_source"; then
+              echo "候选 AppArmor profile 必须是非空普通文件。" >&2
+              exit 1
+            fi
+            apparmor_profile_mode=managed
+          elif test "$expected_backend" != "$legacy_apparmor_sha"; then
+            echo "候选后端缺少受管 AppArmor profile，拒绝发布。" >&2
+            exit 1
+          fi
+          command -v apparmor_parser >/dev/null
+          test -r /sys/kernel/security/apparmor/profiles
+          test -r "$userns_restriction"
+          test "$(cat "$userns_restriction")" = "1"
+          if test "$apparmor_profile_mode" = "managed"; then
+            command -v setpriv >/dev/null
+            test -x /usr/bin/aa-exec
+            apparmor_parser --skip-kernel-load --skip-cache --base /etc/apparmor.d \
+              "$apparmor_profile_source"
+          fi
+          if test -L "$apparmor_profile_path"; then
+            echo "AppArmor profile 不能是符号链接。" >&2
+            exit 1
+          fi
+          if test -e "$apparmor_profile_path" && ! test -f "$apparmor_profile_path"; then
+            echo "AppArmor profile 必须是普通文件。" >&2
+            exit 1
+          fi
+          previous_apparmor_present=0
+          if test -e "$apparmor_profile_path"; then
+            previous_apparmor_present=1
+            test "$(stat -c '%U:%G:%a' "$apparmor_profile_path")" = "root:root:644"
+          fi
+          previous_apparmor_loaded=0
+          if grep -Fq "$apparmor_profile_name (" /sys/kernel/security/apparmor/profiles; then
+            if ! grep -Fxq "$apparmor_profile_name (enforce)" \
+              /sys/kernel/security/apparmor/profiles; then
+              echo "AppArmor profile 未处于 enforce 模式，拒绝发布。" >&2
+              exit 1
+            fi
+            previous_apparmor_loaded=1
+          fi
+          if test "$previous_apparmor_present" -ne "$previous_apparmor_loaded"; then
+            echo "AppArmor profile 文件与内核加载状态不一致，拒绝发布。" >&2
+            exit 1
+          fi
           test -d "$project_root/data"
           test ! -e "$release/backend/data"
           ln -s "$project_root/data" "$release/backend/data"
@@ -533,7 +592,11 @@ jobs:
 
           rollback_root="$upload_dir/rollback"
           mkdir -m 0700 "$rollback_root"
-          mkdir "$rollback_root/systemd" "$rollback_root/nginx-available" "$rollback_root/nginx-enabled"
+          mkdir "$rollback_root/apparmor" "$rollback_root/systemd" \
+            "$rollback_root/nginx-available" "$rollback_root/nginx-enabled"
+          if test "$previous_apparmor_present" -eq 1; then
+            cp -a "$apparmor_profile_path" "$rollback_root/apparmor/"
+          fi
           for unit in myagent-world.service myagent-gateway.service; do
             if test -e "/etc/systemd/system/$unit"; then
               cp -a "/etc/systemd/system/$unit" "$rollback_root/systemd/"
@@ -562,6 +625,64 @@ jobs:
             if test -e "$backup" || test -L "$backup"; then
               cp -a "$backup" "$target"
             fi
+          }
+
+          apparmor_profile_is_present() {
+            grep -Fq "$apparmor_profile_name (" /sys/kernel/security/apparmor/profiles
+          }
+
+          apparmor_profile_is_enforced() {
+            grep -Fxq "$apparmor_profile_name (enforce)" \
+              /sys/kernel/security/apparmor/profiles
+          }
+
+          remove_apparmor_profile() {
+            if apparmor_profile_is_present; then
+              removal_source="$apparmor_profile_path"
+              if ! test -s "$removal_source"; then
+                removal_source="$rollback_root/apparmor/$apparmor_profile_name"
+              fi
+              if ! test -s "$removal_source"; then
+                removal_source="$apparmor_profile_source"
+              fi
+              test -s "$removal_source" || return 1
+              apparmor_parser --remove --base /etc/apparmor.d \
+                "$removal_source" || return 1
+            fi
+            rm -f "$apparmor_profile_path" || return 1
+            if test -e "$apparmor_profile_path" || test -L "$apparmor_profile_path"; then
+              return 1
+            fi
+            ! apparmor_profile_is_present
+          }
+
+          restore_apparmor_profile() {
+            if test "$previous_apparmor_present" -eq 0; then
+              remove_apparmor_profile
+              return
+            fi
+
+            restore_file "$apparmor_profile_path" \
+              "$rollback_root/apparmor/$apparmor_profile_name" || return 1
+            apparmor_parser --replace --skip-cache --base /etc/apparmor.d \
+              "$apparmor_profile_path" || return 1
+            test "$(stat -c '%U:%G:%a' "$apparmor_profile_path")" = "root:root:644" || return 1
+            apparmor_profile_is_enforced
+          }
+
+          verify_apparmor_profile_state() {
+            test "$(cat "$userns_restriction")" = "1" || return 1
+            if test "$apparmor_profile_mode" = "managed"; then
+              cmp -s "$apparmor_profile_source" "$apparmor_profile_path" || return 1
+              test "$(stat -c '%U:%G:%a' "$apparmor_profile_path")" = "root:root:644" || return 1
+              apparmor_profile_is_enforced
+              return
+            fi
+
+            if test -e "$apparmor_profile_path" || test -L "$apparmor_profile_path"; then
+              return 1
+            fi
+            ! apparmor_profile_is_present
           }
 
           restore_nginx_backup() {
@@ -655,6 +776,7 @@ jobs:
           services_stopped=0
           maintenance_active=0
           nginx_mutated=0
+          apparmor_mutated=0
           rollback() {
             status=$?
             trap - EXIT
@@ -695,6 +817,12 @@ jobs:
               fi
               maintenance_active=1
               rollback_safe=1
+              systemctl stop myagent-gateway.service myagent-world.service || rollback_safe=0
+              if systemctl is-active --quiet myagent-gateway.service || \
+                systemctl is-active --quiet myagent-world.service; then
+                rollback_safe=0
+              fi
+              services_stopped=1
               if test "$switched" -eq 1; then
                 restore_link "$previous_portal" "$portal_current" || rollback_safe=0
                 restore_link "$previous_lingxi" "$lingxi_current" || rollback_safe=0
@@ -702,6 +830,13 @@ jobs:
                 for unit in myagent-world.service myagent-gateway.service; do
                   restore_file "/etc/systemd/system/$unit" "$rollback_root/systemd/$unit" || rollback_safe=0
                 done
+              fi
+              if test "$rollback_safe" -eq 1 && test "$apparmor_mutated" -eq 1; then
+                restore_apparmor_profile || rollback_safe=0
+              fi
+              if test "$rollback_safe" -eq 1 && \
+                test "$(cat "$userns_restriction")" != "1"; then
+                rollback_safe=0
               fi
               if test "$rollback_safe" -eq 1 && ! nginx_has_maintenance_guards; then
                 rollback_safe=0
@@ -792,11 +927,19 @@ jobs:
           ! systemctl is-active --quiet myagent-gateway.service
           ! systemctl is-active --quiet myagent-world.service
 
+          if test "$apparmor_profile_mode" = "legacy"; then
+            apparmor_mutated=1
+            remove_apparmor_profile
+          fi
+
           switched=1
           restore_link "$release/portal" "$portal_current"
           restore_link "$release/lingxi" "$lingxi_current"
           restore_link "$release/backend" "$backend_current"
 
+          if test "$apparmor_profile_mode" = "managed"; then
+            apparmor_mutated=1
+          fi
           RELEASE_TRANSACTION=1 REVISION="$expected_backend" PROJECT_DIR="$project_root" \
             BACKEND_DIR="$release/backend" \
             bash "$release/backend/scripts/install_linux_services.sh"
@@ -805,6 +948,7 @@ jobs:
           systemctl is-active --quiet myagent-gateway.service
           test -z "$(systemctl show myagent-world.service -p DropInPaths --value)"
           test -z "$(systemctl show myagent-gateway.service -p DropInPaths --value)"
+          verify_apparmor_profile_state
 
           nginx_dump="$(nginx -T 2>&1)"
           for expected in \
@@ -926,13 +1070,13 @@ jobs:
           printf '%s' "$api_health" | python3 \
             "$release/validate_release_health.py" current "$expected_lingxi"
 
+          verify_apparmor_profile_state
+          rm -f "$upload_dir/PRESERVE"
+          install -m 0600 /dev/null "$upload_dir/DEPLOYED"
           rm -f "$maintenance_marker"
           maintenance_active=0
           switched=0
-          install -m 0600 /dev/null "$upload_dir/DEPLOYED"
           trap - EXIT
-          rm -f "$upload_dir/PRESERVE"
-          assert_no_global_protection
           REMOTE
 
       - name: 清理本次远端暂存与未引用发布

@@ -42,6 +42,10 @@ jobs:
           nginx_guard_start = workflow.index(nginx_guard)
           assert workflow.index('git -C lingxi-source archive --format=tar') < nginx_guard_start
           assert nginx_guard_start < workflow.index('tar -C release-package -czf portal-dist.tar.gz')
+          assert 'test -L release-package/backend/ops/apparmor/myagent-persona-parser; then' in workflow
+          assert 'test ! -L release-package/backend/ops/apparmor/myagent-persona-parser' in workflow
+          assert 'test -f release-package/backend/ops/apparmor/myagent-persona-parser' in workflow
+          assert 'test -s release-package/backend/ops/apparmor/myagent-persona-parser' in workflow
           health_validator_install = (
               "          install -m 0755 scripts/validate_release_health.py \\\n"
               "            release-package/validate_release_health.py"
@@ -84,6 +88,36 @@ jobs:
           assert '"$release/validate_release_health.py" current' not in previous_health
           assert 'previous_revision_reliable' not in workflow
           assert '旧后端 release revision 不是完整提交 SHA' in workflow
+          assert "ops/apparmor/myagent-persona-parser" in workflow
+          assert 'apparmor_profile_mode=legacy' in workflow
+          assert 'apparmor_profile_mode=managed' in workflow
+          assert 'legacy_apparmor_sha=55255df61ae6aef89ce5d8e4d46ba637ca3cd632' in workflow
+          assert 'test "$expected_backend" != "$legacy_apparmor_sha"' in workflow
+          assert '候选后端缺少受管 AppArmor profile' in workflow
+          assert 'test "$(cat "$userns_restriction")" = "1"' in workflow
+          profile_preflight = workflow.index(
+              'apparmor_parser --skip-kernel-load --skip-cache --base /etc/apparmor.d'
+          )
+          rollback_snapshot = workflow.index('rollback_root="$upload_dir/rollback"')
+          assert profile_preflight < rollback_snapshot
+          assert 'previous_apparmor_present' in workflow[:rollback_snapshot]
+          assert 'previous_apparmor_loaded' in workflow[:rollback_snapshot]
+          assert 'AppArmor profile 文件与内核加载状态不一致' in workflow
+          assert 'AppArmor profile 未处于 enforce 模式' in workflow
+          assert 'mkdir "$rollback_root/apparmor"' in workflow
+          assert 'remove_apparmor_profile() {' in workflow
+          assert 'restore_apparmor_profile() {' in workflow
+          assert 'apparmor_parser --remove --base /etc/apparmor.d' in workflow
+          assert rollback.index("systemctl stop myagent-gateway.service") < rollback.index("restore_apparmor_profile")
+          assert 'if test "$services_stopped" -eq 0' not in rollback
+          assert rollback.index("systemctl stop myagent-gateway.service") < rollback.index("systemctl is-active --quiet myagent-gateway.service")
+          assert 'test "$apparmor_mutated" -eq 1' in rollback
+          assert rollback.index("restore_apparmor_profile") < rollback.index("systemctl restart myagent-world.service")
+          rollback_userns_check = rollback.index(
+              'test "$(cat "$userns_restriction")" != "1"'
+          )
+          assert rollback.index("restore_apparmor_profile") < rollback_userns_check
+          assert rollback_userns_check < rollback.index("systemctl restart myagent-world.service")
           assert rollback.index("nginx_has_maintenance_guards") < rollback.index("systemctl restart myagent-world.service")
           assert rollback.index("previous_backend_healthy") < rollback.rindex("systemctl reload nginx")
           assert rollback.rindex("systemctl reload nginx") < rollback.index("maintenance_public_blocked")
@@ -97,6 +131,13 @@ jobs:
           assert maintenance_prelude.index("systemctl reload nginx") < maintenance_prelude.index("activate_maintenance")
           assert maintenance_prelude.index("activate_maintenance") < maintenance_prelude.index("maintenance_public_blocked")
           assert "nginx_has_maintenance_guards" in maintenance_prelude
+          main_stop = workflow.index('          systemctl stop myagent-gateway.service myagent-world.service', services_stop)
+          gateway_inactive = workflow.index('          ! systemctl is-active --quiet myagent-gateway.service', main_stop)
+          world_inactive = workflow.index('          ! systemctl is-active --quiet myagent-world.service', main_stop)
+          legacy_remove = workflow.index('            remove_apparmor_profile', services_stop)
+          switch_start = workflow.index("          switched=1", services_stop)
+          assert services_stop < main_stop < gateway_inactive < legacy_remove < switch_start
+          assert main_stop < world_inactive < legacy_remove
           final_remove = workflow.rindex('          rm -f "$maintenance_marker"')
           assert workflow.rindex("http://127.0.0.1:8000/api/session") < final_remove
           assert workflow.rindex("http://127.0.0.1:8000/api/health") < final_remove
@@ -104,6 +145,27 @@ jobs:
           assert '"$release/validate_release_health.py" current "$expected_lingxi"' in final_health
           assert '"$release/validate_release_health.py" rollback' not in final_health
           assert '"$expected_lingxi"' in final_health
+          profile_state = workflow[
+              workflow.index("          verify_apparmor_profile_state() {"):
+              workflow.index("          restore_nginx_backup() {")
+          ]
+          assert 'test "$apparmor_profile_mode" = "managed"' in profile_state
+          assert 'cmp -s "$apparmor_profile_source" "$apparmor_profile_path"' in profile_state
+          assert "stat -c '%U:%G:%a'" in profile_state
+          assert 'test -e "$apparmor_profile_path" || test -L "$apparmor_profile_path"' in profile_state
+          assert "apparmor_profile_is_present" in profile_state
+          assert profile_state.count("apparmor_profile_is_enforced") == 1
+          restore_profile = workflow[
+              workflow.index("          restore_apparmor_profile() {"):
+              workflow.index("          verify_apparmor_profile_state() {")
+          ]
+          assert "apparmor_profile_is_enforced" in restore_profile
+          final_profile_check = workflow.rindex('          verify_apparmor_profile_state')
+          assert final_profile_check < final_remove
+          deployed_marker = workflow.rindex(
+              '          install -m 0600 /dev/null "$upload_dir/DEPLOYED"'
+          )
+          assert final_profile_check < deployed_marker < final_remove
           assert "curl " not in workflow[final_remove:workflow.index("          trap - EXIT", final_remove)]
           assert "RELEASE_TRANSACTION=1" in workflow
           assert "拒绝未纳管的 systemd 覆盖" in workflow
@@ -143,8 +205,14 @@ jobs:
           assert "$" + "{{" not in staging
           assert '! -path "$upload_dir/PRESERVE"' in main_remote
           assert '发布生命周期租约不属于本次运行' in main_remote
+          preserve_remove = workflow.rfind(
+              '          rm -f "$upload_dir/PRESERVE"', 0, deploy_step_end
+          )
+          assert final_profile_check < preserve_remove < deployed_marker < final_remove
           success_tail = workflow[final_remove:deploy_step_end]
-          assert success_tail.index('install -m 0600 /dev/null "$upload_dir/DEPLOYED"') < success_tail.index("trap - EXIT")
+          assert "trap - EXIT" in success_tail
+          assert 'rm -f "$upload_dir/PRESERVE"' not in success_tail
+          assert "assert_no_global_protection" not in success_tail
           assert 'rm -rf -- "$upload_dir"' not in success_tail
           cleanup = workflow[workflow.index("      - name: 清理本次远端暂存与未引用发布"):]
           assert "if:" in cleanup and "always()" in cleanup and "configure-ssh.outcome" in cleanup
