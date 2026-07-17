@@ -359,11 +359,13 @@ jobs:
       - name: 维护窗口内协调切换并验证
         env:
           EXPECTED_ARCHIVE_SHA: ${{ steps.release.outputs.package_sha256 }}
+          PERSONA_GROWTH_CANARY_HASHES: ${{ vars.LINGXI_PERSONA_GROWTH_CANARY_HASHES }}
         run: |
           ssh hi-veblen-production 'bash -se --' \
             "$GITHUB_RUN_ID" "$GITHUB_RUN_ATTEMPT" "$GITHUB_SHA" \
             "$EXPECTED_ARCHIVE_SHA" "$EXPECTED_PERSONA_SCHEMA_PHASE" \
-            "$EXPECTED_PERSONA_GROWTH_PHASE" <<'REMOTE'
+            "$EXPECTED_PERSONA_GROWTH_PHASE" \
+            "$PERSONA_GROWTH_CANARY_HASHES" <<'REMOTE'
           set -eu
 
           release_lock=/run/hi-veblen-release.lock
@@ -380,6 +382,7 @@ jobs:
           expected_archive_sha="$4"
           expected_persona_schema_phase="$5"
           expected_persona_growth_phase="$6"
+          persona_growth_canary_hashes="$7"
           case "$run_id" in
             ''|*[!0-9]*) echo "GitHub run id 格式无效：$run_id" >&2; exit 1 ;;
           esac
@@ -394,6 +397,12 @@ jobs:
             compat|shadow|canary|active) ;;
             *) echo "Persona growth phase 无效：$expected_persona_growth_phase" >&2; exit 1 ;;
           esac
+          if test -n "$persona_growth_canary_hashes" && \
+            ! printf '%s' "$persona_growth_canary_hashes" | \
+              grep -Eq '^[0-9a-f]{64}(,[0-9a-f]{64})*$'; then
+            echo "Persona growth canary 摘要格式无效。" >&2
+            exit 1
+          fi
           upload_dir="/opt/hi-veblen/staging/run-$run_id-$run_attempt"
           archive="$upload_dir/portal-dist.tar.gz"
           release_root="/opt/hi-veblen/releases"
@@ -974,6 +983,9 @@ jobs:
           fi
           RELEASE_TRANSACTION=1 REVISION="$expected_backend" PROJECT_DIR="$project_root" \
             BACKEND_DIR="$release/backend" \
+            LINGXI_PERSONA_SCHEMA_PHASE="$expected_persona_schema_phase" \
+            LINGXI_PERSONA_GROWTH_PHASE="$expected_persona_growth_phase" \
+            LINGXI_PERSONA_GROWTH_CANARY_HASHES="$persona_growth_canary_hashes" \
             bash "$release/backend/scripts/install_linux_services.sh"
           services_stopped=0
           systemctl is-active --quiet myagent-world.service

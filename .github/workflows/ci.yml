@@ -79,6 +79,7 @@ jobs:
           )
           assert "EXPECTED_PERSONA_SCHEMA_PHASE: compat" in workflow
           assert "EXPECTED_PERSONA_GROWTH_PHASE: compat" in workflow
+          assert "vars.LINGXI_PERSONA_GROWTH_CANARY_HASHES" in workflow
           auth_probe_token = workflow.index("Authorization: Bearer nginx-forwarding-probe")
           auth_probe = workflow[workflow.rfind('          portal_auth_probe="', 0, auth_probe_token):workflow.index('          invalid_status="', auth_probe_token)]
           assert "https://hi-veblen.com/api/auth/profile" in auth_probe
@@ -243,7 +244,8 @@ jobs:
               "          ssh hi-veblen-production 'bash -se --' \\\n"
               '            "$GITHUB_RUN_ID" "$GITHUB_RUN_ATTEMPT" "$GITHUB_SHA" \\\n'
               '            "$EXPECTED_ARCHIVE_SHA" "$EXPECTED_PERSONA_SCHEMA_PHASE" \\\n'
-              '            "$EXPECTED_PERSONA_GROWTH_PHASE" <<\'REMOTE\''
+              '            "$EXPECTED_PERSONA_GROWTH_PHASE" \\\n'
+              '            "$PERSONA_GROWTH_CANARY_HASHES" <<\'REMOTE\''
           )
           assert deploy_invocation in deploy_run
           assert (
@@ -252,8 +254,12 @@ jobs:
               '          portal_revision="$3"\n'
               '          expected_archive_sha="$4"\n'
               '          expected_persona_schema_phase="$5"\n'
-              '          expected_persona_growth_phase="$6"'
+              '          expected_persona_growth_phase="$6"\n'
+              '          persona_growth_canary_hashes="$7"'
           ) in deploy_run
+          assert 'LINGXI_PERSONA_SCHEMA_PHASE="$expected_persona_schema_phase"' in deploy_run
+          assert 'LINGXI_PERSONA_GROWTH_PHASE="$expected_persona_growth_phase"' in deploy_run
+          assert 'LINGXI_PERSONA_GROWTH_CANARY_HASHES="$persona_growth_canary_hashes"' in deploy_run
           assert "bash -se -- deploy" not in deploy_run
           preflight = workflow[workflow.index("      - name: 拒绝未纳管的 systemd 覆盖"):workflow.index("      - name: 创建私有暂存目录")]
           assert "myagent-world.service myagent-gateway.service" in preflight
@@ -317,13 +323,14 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          mapped="$(printf '%s' 'printf "%s|%s|%s|%s|%s|%s" "$1" "$2" "$3" "$4" "$5" "$6"' | \
+          mapped="$(printf '%s' 'printf "%s|%s|%s|%s|%s|%s|%s" "$1" "$2" "$3" "$4" "$5" "$6" "$7"' | \
             "$BASH" -se -- 29160903633 1 \
               aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa \
               bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb \
-              compat compat)"
+              active canary \
+              cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc)"
           test "$mapped" = \
-            "29160903633|1|aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa|bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb|compat|compat"
+            "29160903633|1|aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa|bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb|active|canary|cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
 
       - name: Test release retention guard
         shell: bash
