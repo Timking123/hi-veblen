@@ -52,6 +52,33 @@ jobs:
           )
           assert workflow.index(health_validator_install) < workflow.index('tar -C release-package -czf portal-dist.tar.gz')
           assert 'test -x release-package/validate_release_health.py' in workflow
+          release_env_contract = (
+              "BRAIN_RELEASE_SHA=%s\\n"
+              "LINGXI_PERSONA_SCHEMA_CAPABILITY=dual-read-v1"
+          )
+          build_package = workflow[
+              workflow.index("      - name: 组合不可变发布包"):
+              workflow.index("      - name: 保存发布制品")
+          ]
+          build_release_env = (
+              f'          release_env="$(printf \'{release_env_contract}\' "$lingxi_sha")"'
+          )
+          assert build_release_env in build_package
+          assert 'printf \'%s\\n\' "$release_env" > release-package/backend/.release.env' in build_package
+          assert 'printf \'%s\\n\' "$release_env" | cmp -s - release-package/backend/.release.env' in build_package
+          installer_capability_guard = (
+              "          grep -Fq 'LINGXI_PERSONA_SCHEMA_CAPABILITY=dual-read-v1' \\\n"
+              "            release-package/backend/scripts/install_linux_services.sh"
+          )
+          assert installer_capability_guard in build_package
+          assert build_package.index(build_release_env) < build_package.index(
+              'tar -C release-package -czf portal-dist.tar.gz'
+          )
+          assert build_package.index(installer_capability_guard) < build_package.index(
+              'tar -C release-package -czf portal-dist.tar.gz'
+          )
+          assert "EXPECTED_PERSONA_SCHEMA_PHASE: compat" in workflow
+          assert "EXPECTED_PERSONA_GROWTH_PHASE: compat" in workflow
           auth_probe_token = workflow.index("Authorization: Bearer nginx-forwarding-probe")
           auth_probe = workflow[workflow.rfind('          portal_auth_probe="', 0, auth_probe_token):workflow.index('          invalid_status="', auth_probe_token)]
           assert "https://hi-veblen.com/api/auth/profile" in auth_probe
@@ -78,6 +105,20 @@ jobs:
           assert rollback.index("systemctl reload nginx") < rollback_remove
           assert rollback.rindex("stop_services_for_manual_recovery") > rollback_remove
           assert "backup_nginx_has_maintenance_guards" in rollback
+          rollback_floor_guard = rollback.index(
+              'if test "$previous_backend_rollback_floor" -ne 1; then'
+          )
+          first_pointer_restore = rollback.index('restore_link "$previous_portal"')
+          first_service_restart = rollback.index(
+              "systemctl restart myagent-world.service myagent-gateway.service"
+          )
+          assert rollback_floor_guard < first_pointer_restore < first_service_restart
+          rollback_floor_failure = rollback[rollback_floor_guard:first_pointer_restore]
+          assert "dual-read-v1 回滚下限" in rollback_floor_failure
+          assert "stop_services_for_manual_recovery" in rollback_floor_failure
+          assert 'exit "$status"' in rollback_floor_failure
+          assert 'rm -f "$upload_dir/PRESERVE"' not in rollback_floor_failure
+          assert 'rm -f "$maintenance_marker"' not in rollback_floor_failure
           previous_health = workflow[
               workflow.index("          previous_backend_healthy() {"):
               workflow.index("          nginx_has_maintenance_guards() {")
@@ -143,6 +184,10 @@ jobs:
           assert workflow.rindex("http://127.0.0.1:8000/api/health") < final_remove
           final_health = workflow[workflow.rindex('          api_health="'):final_remove]
           assert '"$release/validate_release_health.py" current "$expected_lingxi"' in final_health
+          assert (
+              '"$expected_persona_schema_phase" "$expected_persona_growth_phase"'
+              in final_health
+          )
           assert '"$release/validate_release_health.py" rollback' not in final_health
           assert '"$expected_lingxi"' in final_health
           profile_state = workflow[
@@ -172,8 +217,23 @@ jobs:
           assert workflow.count("-p DropInPaths --value") >= 3
           prune_call = workflow.index('          bash "$release/prune-production-releases.sh"')
           assert workflow.index('          previous_backend="$(readlink -f "$backend_current")"') < prune_call
+          previous_floor = workflow.index('          previous_backend_rollback_floor=0')
+          previous_env = (
+              f'          previous_release_env="$(printf \'{release_env_contract}\' '
+              '"$previous_backend_revision")"'
+          )
+          assert previous_floor < workflow.index(previous_env) < prune_call
+          assert 'test -f "$previous_backend/.release.env"' in workflow[previous_floor:prune_call]
+          assert '! test -L "$previous_backend/.release.env"' in workflow[previous_floor:prune_call]
+          assert 'cmp -s - "$previous_backend/.release.env"' in workflow[previous_floor:prune_call]
           assert prune_call < workflow.index('          release_venv="$release/backend/.venv"')
           main_remote = workflow[workflow.index('          upload_dir="/opt/hi-veblen/staging/run-', workflow.index("      - name: 维护窗口内协调切换并验证")):prune_call]
+          expected_release_env = (
+              f'          expected_release_env="$(printf \'{release_env_contract}\' '
+              '"$expected_backend")"'
+          )
+          assert expected_release_env in main_remote
+          assert 'printf \'%s\\n\' "$expected_release_env" | cmp -s - "$release/backend/.release.env"' in main_remote
           assert main_remote.index('test -e "$maintenance_marker"') < main_remote.index('mkdir -p "$release_root"')
           deploy_step_start = workflow.index("      - name: 维护窗口内协调切换并验证")
           deploy_step_end = workflow.index("      - name: 清理本次远端暂存与未引用发布")
@@ -182,14 +242,17 @@ jobs:
           deploy_invocation = (
               "          ssh hi-veblen-production 'bash -se --' \\\n"
               '            "$GITHUB_RUN_ID" "$GITHUB_RUN_ATTEMPT" "$GITHUB_SHA" \\\n'
-              '            "$EXPECTED_ARCHIVE_SHA" <<\'REMOTE\''
+              '            "$EXPECTED_ARCHIVE_SHA" "$EXPECTED_PERSONA_SCHEMA_PHASE" \\\n'
+              '            "$EXPECTED_PERSONA_GROWTH_PHASE" <<\'REMOTE\''
           )
           assert deploy_invocation in deploy_run
           assert (
               '          run_id="$1"\n'
               '          run_attempt="$2"\n'
               '          portal_revision="$3"\n'
-              '          expected_archive_sha="$4"'
+              '          expected_archive_sha="$4"\n'
+              '          expected_persona_schema_phase="$5"\n'
+              '          expected_persona_growth_phase="$6"'
           ) in deploy_run
           assert "bash -se -- deploy" not in deploy_run
           preflight = workflow[workflow.index("      - name: 拒绝未纳管的 systemd 覆盖"):workflow.index("      - name: 创建私有暂存目录")]
@@ -254,12 +317,13 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          mapped="$(printf '%s' 'printf "%s|%s|%s|%s" "$1" "$2" "$3" "$4"' | \
+          mapped="$(printf '%s' 'printf "%s|%s|%s|%s|%s|%s" "$1" "$2" "$3" "$4" "$5" "$6"' | \
             "$BASH" -se -- 29160903633 1 \
               aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa \
-              bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb)"
+              bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb \
+              compat compat)"
           test "$mapped" = \
-            "29160903633|1|aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa|bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+            "29160903633|1|aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa|bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb|compat|compat"
 
       - name: Test release retention guard
         shell: bash

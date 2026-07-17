@@ -9,6 +9,8 @@ concurrency:
 
 env:
   LINGXI_SHA: 4684d64487145cc56c8a2ac22daffa678786482c
+  EXPECTED_PERSONA_SCHEMA_PHASE: compat
+  EXPECTED_PERSONA_GROWTH_PHASE: compat
 
 jobs:
   build:
@@ -139,7 +141,8 @@ jobs:
           printf '%s\n' "$GITHUB_SHA" > release-package/portal/release.txt
           printf '%s\n' "$lingxi_sha" > release-package/lingxi/release.txt
           printf '%s\n' "$lingxi_sha" > release-package/backend/release.txt
-          printf 'BRAIN_RELEASE_SHA=%s\n' "$lingxi_sha" > release-package/backend/.release.env
+          release_env="$(printf 'BRAIN_RELEASE_SHA=%s\nLINGXI_PERSONA_SCHEMA_CAPABILITY=dual-read-v1' "$lingxi_sha")"
+          printf '%s\n' "$release_env" > release-package/backend/.release.env
           printf 'portal=%s\nlingxi=%s\nbackend=%s\n' \
             "$GITHUB_SHA" "$lingxi_sha" "$lingxi_sha" > release-package/release.txt
           test -s release-package/portal/index.html
@@ -147,6 +150,8 @@ jobs:
           test -s release-package/backend/brain/workspace/world_server.py
           test -s release-package/backend/ui/backend/app.py
           test -s release-package/backend/scripts/install_linux_services.sh
+          grep -Fq 'LINGXI_PERSONA_SCHEMA_CAPABILITY=dual-read-v1' \
+            release-package/backend/scripts/install_linux_services.sh
           if test -e release-package/backend/ops/apparmor/myagent-persona-parser || \
             test -L release-package/backend/ops/apparmor/myagent-persona-parser; then
             test ! -L release-package/backend/ops/apparmor/myagent-persona-parser
@@ -161,7 +166,7 @@ jobs:
           test "$(cat release-package/portal/release.txt)" = "$GITHUB_SHA"
           test "$(cat release-package/lingxi/release.txt)" = "$lingxi_sha"
           test "$(cat release-package/backend/release.txt)" = "$lingxi_sha"
-          test "$(cat release-package/backend/.release.env)" = "BRAIN_RELEASE_SHA=$lingxi_sha"
+          printf '%s\n' "$release_env" | cmp -s - release-package/backend/.release.env
           grep -R -q 'https://lingxi.hi-veblen.com/' release-package/portal/assets
           for site in portal lingxi; do
             assets="$(grep -oE '/assets/[^" ]+\.(js|css)' "release-package/$site/index.html" | sort -u)"
@@ -357,7 +362,8 @@ jobs:
         run: |
           ssh hi-veblen-production 'bash -se --' \
             "$GITHUB_RUN_ID" "$GITHUB_RUN_ATTEMPT" "$GITHUB_SHA" \
-            "$EXPECTED_ARCHIVE_SHA" <<'REMOTE'
+            "$EXPECTED_ARCHIVE_SHA" "$EXPECTED_PERSONA_SCHEMA_PHASE" \
+            "$EXPECTED_PERSONA_GROWTH_PHASE" <<'REMOTE'
           set -eu
 
           release_lock=/run/hi-veblen-release.lock
@@ -372,11 +378,21 @@ jobs:
           run_attempt="$2"
           portal_revision="$3"
           expected_archive_sha="$4"
+          expected_persona_schema_phase="$5"
+          expected_persona_growth_phase="$6"
           case "$run_id" in
             ''|*[!0-9]*) echo "GitHub run id 格式无效：$run_id" >&2; exit 1 ;;
           esac
           case "$run_attempt" in
             ''|*[!0-9]*) echo "GitHub run attempt 格式无效：$run_attempt" >&2; exit 1 ;;
+          esac
+          case "$expected_persona_schema_phase" in
+            compat|active) ;;
+            *) echo "Persona schema phase 无效：$expected_persona_schema_phase" >&2; exit 1 ;;
+          esac
+          case "$expected_persona_growth_phase" in
+            compat|shadow|canary|active) ;;
+            *) echo "Persona growth phase 无效：$expected_persona_growth_phase" >&2; exit 1 ;;
           esac
           upload_dir="/opt/hi-veblen/staging/run-$run_id-$run_attempt"
           archive="$upload_dir/portal-dist.tar.gz"
@@ -458,7 +474,8 @@ jobs:
           test "$(cat "$release/portal/release.txt")" = "$expected_portal"
           test "$(cat "$release/lingxi/release.txt")" = "$expected_lingxi"
           test "$(cat "$release/backend/release.txt")" = "$expected_backend"
-          test "$(cat "$release/backend/.release.env")" = "BRAIN_RELEASE_SHA=$expected_backend"
+          expected_release_env="$(printf 'BRAIN_RELEASE_SHA=%s\nLINGXI_PERSONA_SCHEMA_CAPABILITY=dual-read-v1' "$expected_backend")"
+          printf '%s\n' "$expected_release_env" | cmp -s - "$release/backend/.release.env"
           test -s "$release/backend-files.sha256"
           (
             cd "$release/backend"
@@ -557,6 +574,14 @@ jobs:
           if [[ ! "$previous_backend_revision" =~ ^[0-9a-f]{40}$ ]]; then
             echo "旧后端 release revision 不是完整提交 SHA，拒绝进入可变更阶段。" >&2
             exit 1
+          fi
+          previous_backend_rollback_floor=0
+          previous_release_env="$(printf 'BRAIN_RELEASE_SHA=%s\nLINGXI_PERSONA_SCHEMA_CAPABILITY=dual-read-v1' "$previous_backend_revision")"
+          if test -f "$previous_backend/.release.env" && \
+            ! test -L "$previous_backend/.release.env" && \
+            printf '%s\n' "$previous_release_env" | \
+              cmp -s - "$previous_backend/.release.env"; then
+            previous_backend_rollback_floor=1
           fi
 
           bash "$release/prune-production-staging.sh" \
@@ -823,6 +848,13 @@ jobs:
                 rollback_safe=0
               fi
               services_stopped=1
+              if test "$previous_backend_rollback_floor" -ne 1; then
+                echo "旧后端不满足 dual-read-v1 回滚下限；保留维护态、PRESERVE 与停止服务现场。" >&2
+                if ! stop_services_for_manual_recovery; then
+                  echo "无法确认 world/gateway 已停止，必须立即人工隔离流量。" >&2
+                fi
+                exit "$status"
+              fi
               if test "$switched" -eq 1; then
                 restore_link "$previous_portal" "$portal_current" || rollback_safe=0
                 restore_link "$previous_lingxi" "$lingxi_current" || rollback_safe=0
@@ -1068,7 +1100,8 @@ jobs:
           api_health="$(curl --connect-timeout 10 --max-time 30 \
             --fail --silent --show-error http://127.0.0.1:8000/api/health)"
           printf '%s' "$api_health" | python3 \
-            "$release/validate_release_health.py" current "$expected_lingxi"
+            "$release/validate_release_health.py" current "$expected_lingxi" \
+            "$expected_persona_schema_phase" "$expected_persona_growth_phase"
 
           verify_apparmor_profile_state
           rm -f "$upload_dir/PRESERVE"
