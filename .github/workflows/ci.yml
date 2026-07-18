@@ -256,12 +256,16 @@ jobs:
           deploy_step_end = workflow.index("      - name: 清理本次远端暂存与未引用发布")
           deploy_run = workflow[workflow.index("        run: |", deploy_step_start):deploy_step_end]
           assert "$" + "{{" not in deploy_run
+          assert (
+              '          persona_growth_canary_arg="${PERSONA_GROWTH_CANARY_HASHES:--}"'
+              in deploy_run
+          )
           deploy_invocation = (
               "          ssh hi-veblen-production 'bash -se --' \\\n"
               '            "$GITHUB_RUN_ID" "$GITHUB_RUN_ATTEMPT" "$GITHUB_SHA" \\\n'
               '            "$EXPECTED_ARCHIVE_SHA" "$EXPECTED_PERSONA_SCHEMA_PHASE" \\\n'
               '            "$EXPECTED_PERSONA_GROWTH_PHASE" \\\n'
-              '            "$PERSONA_GROWTH_CANARY_HASHES" <<\'REMOTE\''
+              '            "$persona_growth_canary_arg" <<\'REMOTE\''
           )
           assert deploy_invocation in deploy_run
           assert (
@@ -271,7 +275,10 @@ jobs:
               '          expected_archive_sha="$4"\n'
               '          expected_persona_schema_phase="$5"\n'
               '          expected_persona_growth_phase="$6"\n'
-              '          persona_growth_canary_hashes="$7"'
+              '          persona_growth_canary_hashes="$7"\n'
+              '          if test "$persona_growth_canary_hashes" = "-"; then\n'
+              '            persona_growth_canary_hashes=""\n'
+              '          fi'
           ) in deploy_run
           assert 'LINGXI_PERSONA_SCHEMA_PHASE="$expected_persona_schema_phase"' in deploy_run
           assert 'LINGXI_PERSONA_GROWTH_PHASE="$expected_persona_growth_phase"' in deploy_run
@@ -347,6 +354,12 @@ jobs:
               cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc)"
           test "$mapped" = \
             "29160903633|1|aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa|bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb|active|canary|cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+          empty_mapped="$(printf '%s' 'value="$7"; test "$value" = "-" && value=""; printf "%s|%s" "$6" "$value"' | \
+            "$BASH" -se -- 29160903633 1 \
+              aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa \
+              bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb \
+              compat compat -)"
+          test "$empty_mapped" = "compat|"
 
       - name: Test release retention guard
         shell: bash

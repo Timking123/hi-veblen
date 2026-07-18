@@ -361,11 +361,12 @@ jobs:
           EXPECTED_ARCHIVE_SHA: ${{ steps.release.outputs.package_sha256 }}
           PERSONA_GROWTH_CANARY_HASHES: ${{ vars.LINGXI_PERSONA_GROWTH_CANARY_HASHES }}
         run: |
+          persona_growth_canary_arg="${PERSONA_GROWTH_CANARY_HASHES:--}"
           ssh hi-veblen-production 'bash -se --' \
             "$GITHUB_RUN_ID" "$GITHUB_RUN_ATTEMPT" "$GITHUB_SHA" \
             "$EXPECTED_ARCHIVE_SHA" "$EXPECTED_PERSONA_SCHEMA_PHASE" \
             "$EXPECTED_PERSONA_GROWTH_PHASE" \
-            "$PERSONA_GROWTH_CANARY_HASHES" <<'REMOTE'
+            "$persona_growth_canary_arg" <<'REMOTE'
           set -eu
 
           release_lock=/run/hi-veblen-release.lock
@@ -383,6 +384,9 @@ jobs:
           expected_persona_schema_phase="$5"
           expected_persona_growth_phase="$6"
           persona_growth_canary_hashes="$7"
+          if test "$persona_growth_canary_hashes" = "-"; then
+            persona_growth_canary_hashes=""
+          fi
           case "$run_id" in
             ''|*[!0-9]*) echo "GitHub run id 格式无效：$run_id" >&2; exit 1 ;;
           esac
