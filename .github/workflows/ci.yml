@@ -82,6 +82,11 @@ jobs:
           assert "vars.LINGXI_PERSONA_GROWTH_CANARY_HASHES" in workflow
           assert "systemctl is-enabled --quiet myagent-world.service" in workflow
           assert "systemctl is-enabled --quiet myagent-gateway.service" in workflow
+          assert 'Environment=LINGXI_PERSONA_GROWTH_PHASE=$expected_persona_growth_phase' in workflow
+          assert 'Environment=LINGXI_PERSONA_GROWTH_CANARY_HASHES=$persona_growth_canary_hashes' in workflow
+          assert 'assert hashes == {expected}' in workflow
+          assert 'assert not persona_growth_applies_for("p6_e2e_control")' in workflow
+          assert 'assert persona_growth_applies_for("p6_e2e_control")' in workflow
           assert 'synthetic_db="$project_root/data/users/p6_e2e_cn/conversation.sqlite3"' in workflow
           assert 'closing(sqlite3.connect(f"file:{path}?mode=ro", uri=True))' in workflow
           assert '{"persona_evidence", "persona_growth_state"} <= tables' in workflow

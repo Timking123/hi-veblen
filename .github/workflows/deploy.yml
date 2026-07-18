@@ -1000,9 +1000,47 @@ jobs:
           systemctl is-active --quiet myagent-gateway.service
           systemctl is-enabled --quiet myagent-world.service
           systemctl is-enabled --quiet myagent-gateway.service
+          for unit in myagent-world.service myagent-gateway.service; do
+            grep -Fqx "Environment=LINGXI_PERSONA_SCHEMA_PHASE=$expected_persona_schema_phase" \
+              "/etc/systemd/system/$unit"
+            grep -Fqx "Environment=LINGXI_PERSONA_GROWTH_PHASE=$expected_persona_growth_phase" \
+              "/etc/systemd/system/$unit"
+            grep -Fqx "Environment=LINGXI_PERSONA_GROWTH_CANARY_HASHES=$persona_growth_canary_hashes" \
+              "/etc/systemd/system/$unit"
+          done
           test -z "$(systemctl show myagent-world.service -p DropInPaths --value)"
           test -z "$(systemctl show myagent-gateway.service -p DropInPaths --value)"
           verify_apparmor_profile_state
+
+          (
+            cd "$release/backend"
+            LINGXI_PERSONA_SCHEMA_PHASE="$expected_persona_schema_phase" \
+              LINGXI_PERSONA_GROWTH_PHASE="$expected_persona_growth_phase" \
+              LINGXI_PERSONA_GROWTH_CANARY_HASHES="$persona_growth_canary_hashes" \
+              "$release_python" -B - <<'PY'
+          from brain.persona.schema_phase import (
+              GROWTH_PHASE_ACTIVE,
+              GROWTH_PHASE_CANARY,
+              growth_canary_hashes,
+              growth_canary_subject,
+              persona_growth_applies_for,
+              persona_growth_phase,
+          )
+
+          phase = persona_growth_phase()
+          hashes = growth_canary_hashes()
+          if phase == GROWTH_PHASE_CANARY:
+              expected = growth_canary_subject("p6_e2e_cn")
+              assert hashes == {expected}
+              assert persona_growth_applies_for("p6_e2e_cn")
+              assert not persona_growth_applies_for("p6_e2e_control")
+          elif phase == GROWTH_PHASE_ACTIVE:
+              assert not hashes
+              assert persona_growth_applies_for("p6_e2e_cn")
+              assert persona_growth_applies_for("p6_e2e_control")
+          print(f"persona growth routing OK: phase={phase}, canary_count={len(hashes)}")
+          PY
+          )
 
           nginx_dump="$(nginx -T 2>&1)"
           for expected in \
