@@ -941,6 +941,10 @@ jobs:
             fi
             exit "$status"
           }
+          if ! previous_backend_healthy; then
+            echo "旧后端未通过 revision、连续性与心跳回滚下限，拒绝进入可变更阶段。" >&2
+            exit 1
+          fi
           trap rollback EXIT
 
           primary_conf=/etc/nginx/sites-available/hi-veblen.com.conf
