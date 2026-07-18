@@ -10,7 +10,7 @@ concurrency:
 env:
   LINGXI_SHA: 10f8f3a47d3207f4e55afab3e51b8034faf43cfd
   EXPECTED_PERSONA_SCHEMA_PHASE: compat
-  EXPECTED_PERSONA_GROWTH_PHASE: compat
+  EXPECTED_PERSONA_GROWTH_PHASE: shadow
 
 jobs:
   build:
@@ -998,6 +998,8 @@ jobs:
           services_stopped=0
           systemctl is-active --quiet myagent-world.service
           systemctl is-active --quiet myagent-gateway.service
+          systemctl is-enabled --quiet myagent-world.service
+          systemctl is-enabled --quiet myagent-gateway.service
           test -z "$(systemctl show myagent-world.service -p DropInPaths --value)"
           test -z "$(systemctl show myagent-gateway.service -p DropInPaths --value)"
           verify_apparmor_profile_state
@@ -1122,6 +1124,32 @@ jobs:
           printf '%s' "$api_health" | python3 \
             "$release/validate_release_health.py" current "$expected_lingxi" \
             "$expected_persona_schema_phase" "$expected_persona_growth_phase"
+
+          synthetic_db="$project_root/data/users/p6_e2e_cn/conversation.sqlite3"
+          test -f "$synthetic_db"
+          "$release_python" -B - "$synthetic_db" "$expected_persona_schema_phase" <<'PY'
+          from contextlib import closing
+          import sqlite3
+          import sys
+
+          path, phase = sys.argv[1:]
+          with closing(sqlite3.connect(f"file:{path}?mode=ro", uri=True)) as conn:
+              version = int(conn.execute("PRAGMA user_version").fetchone()[0])
+              tables = {
+                  str(row[0])
+                  for row in conn.execute(
+                      "SELECT name FROM sqlite_master WHERE type='table'"
+                  )
+              }
+              columns = {
+                  str(row[1])
+                  for row in conn.execute("PRAGMA table_info(conversation_events)")
+              }
+          assert version == 3 if phase == "active" else version in {2, 3}
+          assert {"persona_evidence", "persona_growth_state"} <= tables
+          assert "persona_hash" in columns
+          print(f"p6_e2e_cn schema OK: version={version}, d050_tables=ready")
+          PY
 
           verify_apparmor_profile_state
           rm -f "$upload_dir/PRESERVE"

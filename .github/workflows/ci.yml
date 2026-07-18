@@ -78,8 +78,13 @@ jobs:
               'tar -C release-package -czf portal-dist.tar.gz'
           )
           assert "EXPECTED_PERSONA_SCHEMA_PHASE: compat" in workflow
-          assert "EXPECTED_PERSONA_GROWTH_PHASE: compat" in workflow
+          assert "EXPECTED_PERSONA_GROWTH_PHASE: shadow" in workflow
           assert "vars.LINGXI_PERSONA_GROWTH_CANARY_HASHES" in workflow
+          assert "systemctl is-enabled --quiet myagent-world.service" in workflow
+          assert "systemctl is-enabled --quiet myagent-gateway.service" in workflow
+          assert 'synthetic_db="$project_root/data/users/p6_e2e_cn/conversation.sqlite3"' in workflow
+          assert 'closing(sqlite3.connect(f"file:{path}?mode=ro", uri=True))' in workflow
+          assert '{"persona_evidence", "persona_growth_state"} <= tables' in workflow
           auth_probe_token = workflow.index("Authorization: Bearer nginx-forwarding-probe")
           auth_probe = workflow[workflow.rfind('          portal_auth_probe="', 0, auth_probe_token):workflow.index('          invalid_status="', auth_probe_token)]
           assert "https://hi-veblen.com/api/auth/profile" in auth_probe
