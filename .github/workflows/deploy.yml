@@ -10,7 +10,7 @@ concurrency:
 env:
   LINGXI_SHA: 10f8f3a47d3207f4e55afab3e51b8034faf43cfd
   EXPECTED_PERSONA_SCHEMA_PHASE: active
-  EXPECTED_PERSONA_GROWTH_PHASE: shadow
+  EXPECTED_PERSONA_GROWTH_PHASE: canary
 
 jobs:
   build:
