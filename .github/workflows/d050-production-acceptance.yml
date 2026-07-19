@@ -119,7 +119,7 @@ jobs:
           mapping = json.loads(values.get("BRAIN_GATEWAY_USER_TOKENS") or "{}")
           available = []
           diagnostics = []
-          for candidate in ("p6_load_b",):
+          for candidate in ("p6_e2e_current", "p6_load_a", "p6_load_b", "p6_load_c"):
               token = str(mapping.get(candidate) or "")
               user_dir = Path("/opt/myagent/data/users") / candidate
               token_present = bool(token)
