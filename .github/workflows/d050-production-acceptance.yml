@@ -1,0 +1,207 @@
+name: D050 生产浏览器与删除链验收
+
+on:
+  workflow_dispatch:
+    inputs:
+      expected_portal_revision:
+        description: 等待并验收的最终 Portal 完整提交 SHA
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: d050-production-acceptance
+  cancel-in-progress: false
+
+jobs:
+  acceptance:
+    name: 生产桌面移动全链
+    if: github.repository == 'Timking123/hi-veblen' && github.actor == 'Timking123'
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    environment:
+      name: production
+
+    steps:
+      - name: 检出验收脚本
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          persist-credentials: false
+          ref: ${{ github.sha }}
+
+      - name: 等待最终生产 revision
+        env:
+          EXPECTED_PORTAL_REVISION: ${{ inputs.expected_portal_revision }}
+        run: |
+          set -euo pipefail
+          if ! printf '%s' "$EXPECTED_PORTAL_REVISION" | grep -Eq '^[0-9a-f]{40}$'; then
+            echo "目标 Portal revision 格式无效" >&2
+            exit 1
+          fi
+          deadline=$((SECONDS + 1500))
+          while test "$SECONDS" -lt "$deadline"; do
+            current="$(curl --connect-timeout 10 --max-time 30 \
+              --fail --silent --show-error https://hi-veblen.com/release.txt || true)"
+            if test "$current" = "$EXPECTED_PORTAL_REVISION"; then
+              echo "目标生产 revision 已就绪"
+              exit 0
+            fi
+            sleep 15
+          done
+          echo "等待目标生产 revision 超时" >&2
+          exit 1
+
+      - name: 设置 Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: '22'
+          cache: npm
+
+      - name: 安装浏览器依赖
+        run: |
+          npm ci
+          npx playwright install --with-deps chromium
+
+      - name: 配置受信 SSH
+        env:
+          SERVER_HOST: ${{ secrets.SERVER_HOST }}
+          SERVER_USER: ${{ secrets.SERVER_USER }}
+          SERVER_SSH_KEY: ${{ secrets.SERVER_SSH_KEY }}
+        run: |
+          set -eu
+          case "$SERVER_HOST" in
+            ''|*[!A-Za-z0-9.:-]*) echo "SERVER_HOST 格式无效" >&2; exit 1 ;;
+          esac
+          case "$SERVER_USER" in
+            ''|*[!A-Za-z0-9._-]*) echo "SERVER_USER 格式无效" >&2; exit 1 ;;
+          esac
+          install -d -m 0700 "$HOME/.ssh"
+          printf '%s\n' "$SERVER_SSH_KEY" | tr -d '\r' > "$HOME/.ssh/hi-veblen-deploy"
+          chmod 0600 "$HOME/.ssh/hi-veblen-deploy"
+          printf '%s\n' \
+            'hi-veblen-production ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIM4IhOSWQcIioXavkJYcZ1WbE682kGvQF+rTAgnBRNif' \
+            > "$HOME/.ssh/known_hosts"
+          printf '%s\n' \
+            'Host hi-veblen-production' \
+            "  HostName $SERVER_HOST" \
+            "  User $SERVER_USER" \
+            '  HostKeyAlias hi-veblen-production' \
+            '  IdentityFile ~/.ssh/hi-veblen-deploy' \
+            '  IdentitiesOnly yes' \
+            '  BatchMode yes' \
+            '  StrictHostKeyChecking yes' \
+            '  ConnectTimeout 10' \
+            > "$HOME/.ssh/config"
+          chmod 0600 "$HOME/.ssh/config" "$HOME/.ssh/known_hosts"
+          ssh hi-veblen-production true
+
+      - name: 读取并掩码合成用户凭证
+        run: |
+          set -euo pipefail
+          mapfile -t values < <(
+            ssh hi-veblen-production 'bash -se' <<'REMOTE'
+          set -eu
+          python=/opt/myagent/backend-current/.venv/bin/python
+          test -x "$python"
+          "$python" - <<'PY'
+          import json
+          from pathlib import Path
+
+          from dotenv import dotenv_values
+          from brain.workspace.p6_config import is_gateway_token_revoked, token_hash
+
+          values = dotenv_values("/opt/myagent/.env")
+          mapping = json.loads(values.get("BRAIN_GATEWAY_USER_TOKENS") or "{}")
+          available = []
+          for candidate in ("p6_e2e_cn", "p6_e2e_current", "p6_load_a", "p6_load_b", "p6_load_c"):
+              token = str(mapping.get(candidate) or "")
+              if (token and (Path("/opt/myagent/data/users") / candidate).is_dir()
+                      and not is_gateway_token_revoked("/opt/myagent/data", token_hash(token))):
+                  available.append((candidate, token))
+          if not available:
+              raise SystemExit("缺少可用的合成用户凭证")
+
+          primary_id, primary = available[0]
+          delete_id, delete_token = available[-1]
+          print(primary_id)
+          print(primary)
+          print(delete_id)
+          print(delete_token)
+          PY
+          REMOTE
+          )
+          test "${#values[@]}" -eq 4
+          primary_id="${values[0]}"
+          primary_token="${values[1]}"
+          delete_id="${values[2]}"
+          delete_token="${values[3]}"
+          case "$primary_id" in
+            p6_e2e_cn|p6_e2e_current|p6_load_a|p6_load_b|p6_load_c) ;;
+            *) echo "登录验收用户不在合成白名单" >&2; exit 1 ;;
+          esac
+          test -n "$primary_token"
+          case "$delete_id" in
+            p6_e2e_current|p6_load_a|p6_load_b|p6_load_c) ;;
+            *) echo "删除验收用户不在合成白名单" >&2; exit 1 ;;
+          esac
+          test -n "$delete_token"
+          primary_token_b64="$(printf '%s' "$primary_token" | base64 -w0)"
+          delete_token_b64="$(printf '%s' "$delete_token" | base64 -w0)"
+          echo "::add-mask::$primary_token"
+          echo "::add-mask::$delete_token"
+          echo "::add-mask::$primary_token_b64"
+          echo "::add-mask::$delete_token_b64"
+          {
+            printf 'D050_PRIMARY_ID=%s\n' "$primary_id"
+            printf 'D050_PRIMARY_TOKEN_B64=%s\n' "$primary_token_b64"
+            printf 'D050_DELETE_ID=%s\n' "$delete_id"
+            printf 'D050_DELETE_TOKEN_B64=%s\n' "$delete_token_b64"
+          } >> "$GITHUB_ENV"
+          echo "已选择合成验收用户：$primary_id；删除用户：$delete_id"
+
+      - name: 运行生产真实 Chromium 全链
+        env:
+          D050_BASE_URL: https://lingxi.hi-veblen.com
+          D050_EXPECTED_PORTAL_REVISION: ${{ inputs.expected_portal_revision }}
+          D050_EXPECTED_BACKEND_REVISION: a1a04d7d9c928aa69cddfb2cc7f29fe742dc16c5
+        run: npx playwright test e2e/d050-production-acceptance.spec.ts --config=e2e/d050-production-acceptance.config.ts
+
+      - name: 清除 Runner 合成凭证
+        if: ${{ always() }}
+        run: |
+          {
+            printf 'D050_PRIMARY_TOKEN_B64=\n'
+            printf 'D050_DELETE_TOKEN_B64=\n'
+          } >> "$GITHUB_ENV"
+
+      - name: 复核整用户磁盘删除
+        if: ${{ success() }}
+        run: |
+          set -euo pipefail
+          ssh hi-veblen-production 'bash -se --' "$D050_DELETE_ID" <<'REMOTE'
+          set -eu
+          persist_id="$1"
+          case "$persist_id" in
+            p6_e2e_current|p6_load_a|p6_load_b|p6_load_c) ;;
+            *) echo "删除验收用户不在合成白名单" >&2; exit 1 ;;
+          esac
+          test ! -e "/opt/myagent/data/users/$persist_id"
+          test ! -L "/opt/myagent/data/users/$persist_id"
+          echo "整用户磁盘删除 OK"
+          REMOTE
+
+      - name: 保存非敏感验收证据
+        if: ${{ always() }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: d050-production-acceptance-${{ github.sha }}
+          path: |
+            d050-production-evidence.json
+            d050-portal.png
+            d050-desktop.png
+            d050-mobile.png
+            d050-delete-complete.png
+          if-no-files-found: warn
+          retention-days: 3
