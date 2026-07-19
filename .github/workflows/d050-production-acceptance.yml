@@ -118,26 +118,41 @@ jobs:
           values = dotenv_values("/opt/myagent/.env")
           mapping = json.loads(values.get("BRAIN_GATEWAY_USER_TOKENS") or "{}")
           available = []
+          diagnostics = []
           for candidate in ("p6_load_b",):
               token = str(mapping.get(candidate) or "")
               user_dir = Path("/opt/myagent/data/users") / candidate
-              if not token or not user_dir.is_dir():
-                  continue
-              if is_gateway_token_revoked("/opt/myagent/data", token_hash(token)):
-                  continue
-              config = load_user_config("/opt/myagent/data", candidate)
+              token_present = bool(token)
+              directory_present = user_dir.is_dir()
+              revoked = token_present and is_gateway_token_revoked(
+                  "/opt/myagent/data", token_hash(token)
+              )
+              config = (
+                  load_user_config("/opt/myagent/data", candidate)
+                  if directory_present
+                  else {}
+              )
               role = config.get("role_choice") if isinstance(config, dict) else {}
               persona_id = str((role or {}).get("persona_id") or "")
               onboarding = config.get("onboarding") if isinstance(config, dict) else {}
               growth = persona_growth_consent_status(config)
-              if (
-                  bool((onboarding or {}).get("completed"))
-                  and persona_id
-                  and not persona_id.startswith("custom_")
-                  and not growth["accepted"]
-              ):
+              onboarding_completed = bool((onboarding or {}).get("completed"))
+              shared_persona = bool(persona_id) and not persona_id.startswith("custom_")
+              growth_accepted = bool(growth["accepted"])
+              diagnostics.append({
+                  "persist_id": candidate,
+                  "token_present": token_present,
+                  "directory_present": directory_present,
+                  "revoked": revoked,
+                  "onboarding_completed": onboarding_completed,
+                  "shared_persona": shared_persona,
+                  "growth_accepted": growth_accepted,
+              })
+              if all((token_present, directory_present, not revoked,
+                      onboarding_completed, shared_persona, not growth_accepted)):
                   available.append((candidate, token))
           if not available:
+              print(json.dumps({"synthetic_eligibility": diagnostics}, sort_keys=True))
               raise SystemExit("缺少可验证共享预设私有换绑的合成用户")
 
           primary_id, primary = available[-1]
