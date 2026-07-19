@@ -6,23 +6,30 @@ const primaryId = required('D050_PRIMARY_ID')
 const primaryToken = decodedSecret('D050_PRIMARY_TOKEN_B64')
 const deleteToken = decodedSecret('D050_DELETE_TOKEN_B64')
 const deleteId = required('D050_DELETE_ID')
+const acceptanceMode = required('D050_ACCEPTANCE_MODE')
 const expectedPortalRevision = required('D050_EXPECTED_PORTAL_REVISION')
 const expectedBackendRevision = required('D050_EXPECTED_BACKEND_REVISION')
 const prompt = 'D050 生产验收：请用一句话确认你会继续陪伴我，并保持当前角色口吻。'
 const postRebindPrompt = 'D050 私有角色换绑验收：请继续用当前角色口吻回应一句。'
 
 test('D050 生产桌面、移动、导出与整用户删除全链', async ({ browser }) => {
+  expect(['shared_pending', 'private_resumed']).toContain(acceptanceMode)
   const evidence: Record<string, unknown> = {
     tested_at: new Date().toISOString(),
     base_url: baseURL,
     primary_id: primaryId,
+    acceptance_mode: acceptanceMode,
     portal_revision: '',
     backend_revision: '',
     schema_phase: '',
     growth_phase: '',
     desktop: {},
     mobile: {},
-    conversation: { pre_rebind: { user: prompt, agent: '' }, post_rebind: {} },
+    conversation: {
+      acceptance_mode: acceptanceMode,
+      first_verification: { user: prompt, agent: '' },
+      private_persona_verification: {},
+    },
     export: {},
     deletion: {},
   }
@@ -82,9 +89,11 @@ async function verifyDesktop(browser: Browser, evidence: Record<string, unknown>
   await acceptGeneralConsentIfNeeded(page)
   expect(me.onboarding?.completed).toBe(true)
   const initialPersonaId = String(me.persona_id || '')
+  const presetRoleId = String(me.role_choice?.preset_role_id || '')
   expect(initialPersonaId).not.toBe('')
-  expect(initialPersonaId).not.toMatch(/^custom_/)
-  expect(String(me.role_choice?.preset_role_id || '')).not.toBe('')
+  expect(presetRoleId).not.toBe('')
+  if (acceptanceMode === 'shared_pending') expect(initialPersonaId).not.toMatch(/^custom_/)
+  else expect(initialPersonaId).toMatch(/^custom_/)
   const retiredControls = await probeRetiredControls(page, primaryId)
   const input = page.getByRole('textbox', { name: '输入消息' })
   await expect(input).toBeEnabled({ timeout: 60_000 })
@@ -114,14 +123,46 @@ async function verifyDesktop(browser: Browser, evidence: Record<string, unknown>
   await exportButton.click()
   const exportResult = await (await exportResponse).json()
   expect(exportResult.ok).toBe(true)
+  expect(exportResult.saved_to).toBeNull()
+  expect(exportResult.record?.record_type).toBe('chat')
+  expect(exportResult.record?.persona).toBe(initialPersonaId)
+  expect(exportResult.record?.state_snapshot?.persist_id).toBe(primaryId)
+  if (acceptanceMode === 'private_resumed') {
+    expect(exportResult.record?.persona_growth?.schema_version).toBe('persona-growth-export-v1')
+  } else {
+    expect(exportResult.record).not.toHaveProperty('persona_growth')
+  }
+  expect(Array.isArray(exportResult.record?.turns)).toBe(true)
+  expect(exportResult.record.turns.length).toBeGreaterThan(0)
+  const exportedTurn = exportResult.record.turns.at(-1)
+  expect(exportedTurn?.user).toBe(prompt)
+  expect(Array.isArray(exportedTurn?.agent)).toBe(true)
+  expect(exportedTurn.agent.join('').length).toBeGreaterThan(0)
   await expect(page.getByText(/已导出本次会话/)).toBeVisible()
+  evidence.conversation = {
+    acceptance_mode: acceptanceMode,
+    first_verification: { user: prompt, agent: reply },
+    private_persona_verification: {},
+  }
+  evidence.export = {
+    ok: true,
+    saved_to: null,
+    record_type: exportResult.record.record_type,
+    turn_count: exportResult.record.turns.length,
+    persist_id_matches: exportResult.record.state_snapshot.persist_id === primaryId,
+    persona_growth_included: Boolean(exportResult.record.persona_growth),
+  }
+  await persistEvidence(evidence)
 
   await page.getByRole('button', { name: '角色档案' }).click()
   await expect(page.getByRole('heading', { name: '自主成长记录' })).toBeVisible()
   await expect(page.getByText('成长没有审批、否决或人格回滚入口。')).toBeVisible()
   const growthConsent = page.getByText('已接受自主成长')
   const consentAttempts: Array<{ status: number; detail: string }> = []
-  if (!(await growthConsent.isVisible().catch(() => false))) {
+  if (
+    acceptanceMode === 'shared_pending' &&
+    !(await growthConsent.isVisible().catch(() => false))
+  ) {
     for (let attempt = 1; attempt <= 3; attempt += 1) {
       const checkbox = page.locator('.persona-growth__acceptance input[type="checkbox"]')
       if (!(await checkbox.isChecked())) await checkbox.check()
@@ -155,35 +196,41 @@ async function verifyDesktop(browser: Browser, evidence: Record<string, unknown>
     }
     await expect(growthConsent).toBeVisible({ timeout: 60_000 })
   }
+  if (acceptanceMode === 'private_resumed') await expect(growthConsent).toBeVisible()
   evidence.growth_consent_attempts = consentAttempts
 
-  let privatePersonaId = ''
-  await expect
-    .poll(
-      async () => {
-        return page.evaluate(async () => {
-          const response = await fetch('/api/me', { cache: 'no-store' })
-          if (!response.ok) return ''
-          const payload = await response.json()
-          return String(payload.persona_id || '')
-        })
-      },
-      { timeout: 60_000 }
-    )
-    .toMatch(/^custom_/)
+  if (acceptanceMode === 'shared_pending') {
+    await expect
+      .poll(
+        async () => {
+          return page.evaluate(async () => {
+            const response = await fetch('/api/me', { cache: 'no-store' })
+            if (!response.ok) return ''
+            const payload = await response.json()
+            return String(payload.persona_id || '')
+          })
+        },
+        { timeout: 60_000 }
+      )
+      .toMatch(/^custom_/)
+  }
   const reboundIdentity = await page.evaluate(async () => {
     const response = await fetch('/api/me', { cache: 'no-store' })
     return response.json()
   })
-  privatePersonaId = String(reboundIdentity.persona_id || '')
-  expect(privatePersonaId).not.toBe(initialPersonaId)
+  const privatePersonaId = String(reboundIdentity.persona_id || '')
+  expect(privatePersonaId).toMatch(/^custom_/)
+  if (acceptanceMode === 'shared_pending') expect(privatePersonaId).not.toBe(initialPersonaId)
+  else expect(privatePersonaId).toBe(initialPersonaId)
   expect(reboundIdentity.persist_id).toBe(primaryId)
   expect(reboundIdentity.persona_rebind).toBeNull()
   evidence.persona_handoff = {
-    source_persona_id: initialPersonaId,
+    source_persona_id: acceptanceMode === 'shared_pending' ? initialPersonaId : presetRoleId,
     private_persona_id: privatePersonaId,
     effective: true,
+    observed_mode: acceptanceMode,
   }
+  await persistEvidence(evidence)
 
   const notificationToggle = page.locator(
     '.persona-growth__notification-setting input[type="checkbox"]'
@@ -232,13 +279,11 @@ async function verifyDesktop(browser: Browser, evidence: Record<string, unknown>
     console_error_count: consoleErrors.length,
   }
   evidence.conversation = {
-    pre_rebind: { user: prompt, agent: reply },
-    post_rebind: { user: postRebindPrompt, agent: postRebindReply },
+    acceptance_mode: acceptanceMode,
+    first_verification: { user: prompt, agent: reply },
+    private_persona_verification: { user: postRebindPrompt, agent: postRebindReply },
   }
-  evidence.export = { ok: true, path_returned: Boolean(exportResult.path) }
   evidence.retired_persona_controls = retiredControls
-  expect(typeof exportResult.path).toBe('string')
-  expect(exportResult.path.length).toBeGreaterThan(0)
   expect(consoleErrors).toEqual([])
   await context.close()
 }

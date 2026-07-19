@@ -105,9 +105,11 @@ jobs:
           cd /opt/myagent/backend-current
           "$python" - <<'PY'
           import json
+          import hashlib
           from pathlib import Path
 
           from dotenv import dotenv_values
+          from brain.persona import DEFAULT_PERSONA_ID
           from brain.workspace.p6_config import (
               is_gateway_token_revoked,
               load_user_config,
@@ -115,10 +117,12 @@ jobs:
               persona_growth_consent_status,
               token_hash,
           )
+          from brain.workspace.user_paths import load_user_meta, user_storage_paths
 
           values = dotenv_values("/opt/myagent/.env")
           mapping = json.loads(values.get("BRAIN_GATEWAY_USER_TOKENS") or "{}")
-          available = []
+          fresh_available = []
+          resumed_available = []
           diagnostics = []
           for candidate in ("p6_e2e_current", "p6_load_a", "p6_load_b", "p6_load_c"):
               token = str(mapping.get(candidate) or "")
@@ -133,17 +137,31 @@ jobs:
                   if directory_present
                   else {}
               )
+              try:
+                  meta = load_user_meta(user_storage_paths("/opt/myagent/data", candidate))
+              except Exception:
+                  meta = {}
               role = config.get("role_choice") if isinstance(config, dict) else {}
               persona_id = str((role or {}).get("persona_id") or "")
+              binding_matches_meta = bool(persona_id) and meta.get("persona") == persona_id
               preset_role_id = str((role or {}).get("preset_role_id") or "")
               growth = persona_growth_consent_status(config)
               onboarding = onboarding_status(config)
               onboarding_completed = bool(onboarding["completed"])
-              shared_persona = (
+              preset_binding = (
                   (role or {}).get("mode") == "preset"
-                  and bool(preset_role_id)
-                  and bool(persona_id)
+                  and preset_role_id == DEFAULT_PERSONA_ID
+                  and binding_matches_meta
                   and not persona_id.startswith("custom_")
+              )
+              resumed_private = (
+                  candidate == "p6_load_b"
+                  and (role or {}).get("mode") == "wizard"
+                  and preset_role_id == DEFAULT_PERSONA_ID
+                  and binding_matches_meta
+                  and persona_id == (
+                      "custom_" + hashlib.sha256(candidate.encode("utf-8")).hexdigest()[:16]
+                  )
               )
               growth_accepted = bool(growth["accepted"])
               diagnostics.append({
@@ -153,34 +171,42 @@ jobs:
                   "revoked": revoked,
                   "onboarding_completed": onboarding_completed,
                   "onboarding_status": onboarding["status"],
-                  "preset_binding": bool(preset_role_id),
+                  "binding_matches_meta": binding_matches_meta,
+                  "preset_binding": preset_binding,
+                  "resumed_private": resumed_private,
                   "role_mode": str((role or {}).get("mode") or ""),
-                  "shared_persona": shared_persona,
+                  "shared_persona": preset_binding,
                   "growth_accepted": growth_accepted,
               })
               if all((token_present, directory_present, not revoked,
-                      onboarding_completed, shared_persona, not growth_accepted)):
-                  available.append((candidate, token))
+                      onboarding_completed, preset_binding, not growth_accepted)):
+                  fresh_available.append((candidate, token, "shared_pending"))
+              elif all((token_present, directory_present, not revoked,
+                        onboarding_completed, resumed_private, growth_accepted)):
+                  resumed_available.append((candidate, token, "private_resumed"))
+          available = resumed_available or fresh_available
           if not available:
               raise SystemExit(json.dumps({
-                  "error": "缺少可验证共享预设私有换绑的合成用户",
+                  "error": "缺少可验证共享换绑或安全续跑的合成用户",
                   "synthetic_eligibility": diagnostics,
               }, sort_keys=True))
 
-          primary_id, primary = available[-1]
+          primary_id, primary, acceptance_mode = available[-1]
           delete_id, delete_token = primary_id, primary
           print(primary_id)
           print(primary)
           print(delete_id)
           print(delete_token)
+          print(acceptance_mode)
           PY
           REMOTE
           )
-          test "${#values[@]}" -eq 4
+          test "${#values[@]}" -eq 5
           primary_id="${values[0]}"
           primary_token="${values[1]}"
           delete_id="${values[2]}"
           delete_token="${values[3]}"
+          acceptance_mode="${values[4]}"
           case "$primary_id" in
             p6_e2e_current|p6_load_a|p6_load_b|p6_load_c) ;;
             *) echo "登录验收用户不在合成白名单" >&2; exit 1 ;;
@@ -191,6 +217,10 @@ jobs:
             *) echo "删除验收用户不在合成白名单" >&2; exit 1 ;;
           esac
           test -n "$delete_token"
+          case "$acceptance_mode" in
+            shared_pending|private_resumed) ;;
+            *) echo "合成用户验收模式非法" >&2; exit 1 ;;
+          esac
           primary_token_b64="$(printf '%s' "$primary_token" | base64 -w0)"
           delete_token_b64="$(printf '%s' "$delete_token" | base64 -w0)"
           echo "::add-mask::$primary_token"
@@ -202,8 +232,9 @@ jobs:
             printf 'D050_PRIMARY_TOKEN_B64=%s\n' "$primary_token_b64"
             printf 'D050_DELETE_ID=%s\n' "$delete_id"
             printf 'D050_DELETE_TOKEN_B64=%s\n' "$delete_token_b64"
+            printf 'D050_ACCEPTANCE_MODE=%s\n' "$acceptance_mode"
           } >> "$GITHUB_ENV"
-          echo "已选择合成验收用户：$primary_id；删除用户：$delete_id"
+          echo "已选择合成验收用户：$primary_id；模式：$acceptance_mode；删除用户：$delete_id"
 
       - name: 运行生产真实 Chromium 全链
         env:
