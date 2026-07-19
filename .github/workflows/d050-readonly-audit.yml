@@ -63,6 +63,7 @@ jobs:
           import subprocess
           from pathlib import Path
 
+          from brain.persona import PERSONAS_DIR
           from brain.workspace.p6_config import (
               load_user_config,
               persona_growth_consent_status,
@@ -78,6 +79,7 @@ jobs:
           meta = load_user_meta(paths)
           persona_path = Path(str(meta.get("persona_path") or "")).resolve()
           user_root = (data_dir / "users" / persist_id).resolve()
+          shared_root = Path(PERSONAS_DIR).resolve()
 
           def journal(unit):
               result = subprocess.run(
@@ -118,6 +120,9 @@ jobs:
               "role_mode": str(role.get("mode") or ""),
               "persona_id_is_private": str(role.get("persona_id") or "").startswith("custom_"),
               "meta_matches_role": str(meta.get("persona") or "") == str(role.get("persona_id") or ""),
+              "meta_persona_path_exists": persona_path.is_file(),
+              "meta_persona_path_is_current_shared": persona_path.is_relative_to(shared_root),
+              "meta_persona_filename_matches_preset": persona_path.stem == str(role.get("preset_role_id") or ""),
               "private_persona_exists": persona_path.is_file() and persona_path.is_relative_to(user_root),
               "growth_transaction_exists": (Path(paths.user_dir) / "persona_calibration.txn.json").exists(),
               "gateway_marker_counts": {marker: gateway_log.count(marker) for marker in markers},
