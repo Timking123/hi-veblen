@@ -154,8 +154,17 @@ async function verifyDesktop(browser: Browser, evidence: Record<string, unknown>
   }
   await persistEvidence(evidence)
 
+  const growthResponse = page.waitForResponse(
+    response =>
+      response.request().method() === 'GET' &&
+      new URL(response.url()).pathname === '/api/persona/growth',
+    { timeout: 60_000 }
+  )
   await page.getByRole('button', { name: '角色档案' }).click()
-  await expect(page.getByRole('heading', { name: '自主成长记录' })).toBeVisible()
+  expect((await growthResponse).ok()).toBe(true)
+  await expect(page.getByRole('heading', { name: '自主成长记录' })).toBeVisible({
+    timeout: 60_000,
+  })
   await expect(page.getByText('成长没有审批、否决或人格回滚入口。')).toBeVisible()
   const growthConsent = page.getByText('已接受自主成长')
   const consentAttempts: Array<{ status: number; detail: string }> = []
@@ -305,8 +314,17 @@ async function verifyMobile(browser: Browser, evidence: Record<string, unknown>)
   await expect(page.getByRole('textbox', { name: '输入消息' })).toBeEnabled({ timeout: 60_000 })
   const geometry = await viewportGeometry(page)
   expect(geometry.overflow).toBeLessThanOrEqual(1)
+  const growthResponse = page.waitForResponse(
+    response =>
+      response.request().method() === 'GET' &&
+      new URL(response.url()).pathname === '/api/persona/growth',
+    { timeout: 60_000 }
+  )
   await page.getByRole('button', { name: '角色档案' }).click()
-  await expect(page.getByRole('heading', { name: '自主成长记录' })).toBeVisible()
+  expect((await growthResponse).ok()).toBe(true)
+  await expect(page.getByRole('heading', { name: '自主成长记录' })).toBeVisible({
+    timeout: 60_000,
+  })
   const growthGeometry = await viewportGeometry(page)
   expect(growthGeometry.overflow).toBeLessThanOrEqual(1)
   await page.screenshot({ path: 'd050-mobile.png', fullPage: true })
