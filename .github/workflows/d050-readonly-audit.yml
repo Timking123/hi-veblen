@@ -10,7 +10,7 @@ permissions:
 
 jobs:
   audit:
-    name: 只读复核成长同意现场
+    name: 固定 ultra readiness 与成长同意现场
     if: github.repository == 'Timking123/hi-veblen' && github.actor == 'Timking123'
     runs-on: ubuntu-latest
     timeout-minutes: 10
@@ -50,6 +50,21 @@ jobs:
             > "$HOME/.ssh/config"
           chmod 0600 "$HOME/.ssh/config" "$HOME/.ssh/known_hosts"
           ssh hi-veblen-production true
+
+      - name: 运行固定无用户数据 ultra readiness
+        run: |
+          set -u
+          readiness_exit=0
+          ssh hi-veblen-production 'bash -se' <<'REMOTE' || readiness_exit=$?
+          set -eu
+          cd /opt/myagent/d050-eval-d989a3f
+          python=/opt/myagent/backend-current/.venv/bin/python
+          test -x "$python"
+          test -f d050_growth_provider_long_probe.py
+          PYTHONUTF8=1 HF_HUB_OFFLINE=1 BRAIN_LLM_TIMEOUT=300 \
+            "$python" -u d050_growth_provider_long_probe.py
+          REMOTE
+          printf 'D050_READINESS_EXIT=%s\n' "$readiness_exit"
 
       - name: 读取非敏感成长状态与异常计数
         run: |
