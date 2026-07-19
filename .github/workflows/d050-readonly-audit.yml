@@ -53,12 +53,18 @@ jobs:
           chmod 0600 "$HOME/.ssh/config" "$HOME/.ssh/known_hosts"
           ssh hi-veblen-production true
 
+      - name: 校验跨仓库只读凭据
+        env:
+          LINGXI_REPO_TOKEN: ${{ secrets.LINGXI_REPO_TOKEN }}
+        run: test -n "$LINGXI_REPO_TOKEN"
+
       - name: 检出固定 Lingxi 候选
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
         with:
           repository: Timking123/Lingxi
           ref: ${{ env.LINGXI_SHA }}
           path: lingxi-candidate
+          token: ${{ secrets.LINGXI_REPO_TOKEN }}
           persist-credentials: false
 
       - name: 上传不可覆盖的只读候选
