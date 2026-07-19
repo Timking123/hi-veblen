@@ -9,6 +9,7 @@ const deleteId = required('D050_DELETE_ID')
 const expectedPortalRevision = required('D050_EXPECTED_PORTAL_REVISION')
 const expectedBackendRevision = required('D050_EXPECTED_BACKEND_REVISION')
 const prompt = 'D050 生产验收：请用一句话确认你会继续陪伴我，并保持当前角色口吻。'
+const postRebindPrompt = 'D050 私有角色换绑验收：请继续用当前角色口吻回应一句。'
 
 test('D050 生产桌面、移动、导出与整用户删除全链', async ({ browser }) => {
   const evidence: Record<string, unknown> = {
@@ -21,7 +22,7 @@ test('D050 生产桌面、移动、导出与整用户删除全链', async ({ bro
     growth_phase: '',
     desktop: {},
     mobile: {},
-    conversation: { user: prompt, agent: '' },
+    conversation: { pre_rebind: { user: prompt, agent: '' }, post_rebind: {} },
     export: {},
     deletion: {},
   }
@@ -80,6 +81,10 @@ async function verifyDesktop(browser: Browser, evidence: Record<string, unknown>
   const me = await login(page, primaryToken, primaryId)
   await acceptGeneralConsentIfNeeded(page)
   expect(me.onboarding?.completed).toBe(true)
+  const initialPersonaId = String(me.persona_id || '')
+  expect(initialPersonaId).not.toBe('')
+  expect(initialPersonaId).not.toMatch(/^custom_/)
+  expect(String(me.role_choice?.preset_role_id || '')).not.toBe('')
   const retiredControls = await probeRetiredControls(page, primaryId)
   const input = page.getByRole('textbox', { name: '输入消息' })
   await expect(input).toBeEnabled({ timeout: 60_000 })
@@ -151,17 +156,85 @@ async function verifyDesktop(browser: Browser, evidence: Record<string, unknown>
     await expect(growthConsent).toBeVisible({ timeout: 60_000 })
   }
   evidence.growth_consent_attempts = consentAttempts
+
+  let privatePersonaId = ''
+  await expect
+    .poll(
+      async () => {
+        return page.evaluate(async () => {
+          const response = await fetch('/api/me', { cache: 'no-store' })
+          if (!response.ok) return ''
+          const payload = await response.json()
+          return String(payload.persona_id || '')
+        })
+      },
+      { timeout: 60_000 }
+    )
+    .toMatch(/^custom_/)
+  const reboundIdentity = await page.evaluate(async () => {
+    const response = await fetch('/api/me', { cache: 'no-store' })
+    return response.json()
+  })
+  privatePersonaId = String(reboundIdentity.persona_id || '')
+  expect(privatePersonaId).not.toBe(initialPersonaId)
+  expect(reboundIdentity.persist_id).toBe(primaryId)
+  expect(reboundIdentity.persona_rebind).toBeNull()
+  evidence.persona_handoff = {
+    source_persona_id: initialPersonaId,
+    private_persona_id: privatePersonaId,
+    effective: true,
+  }
+
+  const notificationToggle = page.locator(
+    '.persona-growth__notification-setting input[type="checkbox"]'
+  )
+  await expect(notificationToggle).toBeVisible()
+  const initialNotifications = await notificationToggle.isChecked()
+  for (const enabled of [!initialNotifications, initialNotifications]) {
+    const settingsResponse = page.waitForResponse(
+      response =>
+        response.request().method() === 'PUT' &&
+        new URL(response.url()).pathname === '/api/persona/growth/settings'
+    )
+    await notificationToggle.setChecked(enabled)
+    expect((await settingsResponse).ok()).toBe(true)
+    expect(await notificationToggle.isChecked()).toBe(enabled)
+  }
+  evidence.growth_notifications = {
+    restored_to_initial: true,
+    initial_enabled: initialNotifications,
+  }
   await expect(page.getByRole('button', { name: /审批|否决|人格回滚/ })).toHaveCount(0)
   const growthGeometry = await viewportGeometry(page)
   expect(growthGeometry.overflow).toBeLessThanOrEqual(1)
   await page.screenshot({ path: 'd050-desktop.png', fullPage: true })
+
+  await page.getByRole('button', { name: '对话' }).click()
+  await expect(input).toBeEnabled({ timeout: 60_000 })
+  const postRebindBefore = await liveAgents.count()
+  await input.fill(postRebindPrompt)
+  await page.getByRole('button', { name: '发送消息' }).click()
+  await expect
+    .poll(() => liveAgents.count(), { timeout: 5 * 60 * 1000 })
+    .toBeGreaterThan(postRebindBefore)
+  await expect(page.locator('.typing-bubble')).toHaveCount(0, { timeout: 5 * 60 * 1000 })
+  const postRebindReply = (
+    await liveAgents.last().locator('.bubble:not(.typing-bubble)').allTextContents()
+  )
+    .map(item => item.trim())
+    .filter(Boolean)
+    .join('\n')
+  expect(postRebindReply.length).toBeGreaterThan(0)
 
   evidence.desktop = {
     chat_viewport: geometry,
     growth_viewport: growthGeometry,
     console_error_count: consoleErrors.length,
   }
-  evidence.conversation = { user: prompt, agent: reply }
+  evidence.conversation = {
+    pre_rebind: { user: prompt, agent: reply },
+    post_rebind: { user: postRebindPrompt, agent: postRebindReply },
+  }
   evidence.export = { ok: true, path_returned: Boolean(exportResult.path) }
   evidence.retired_persona_controls = retiredControls
   expect(typeof exportResult.path).toBe('string')

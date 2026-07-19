@@ -30,7 +30,7 @@ jobs:
 
       - name: 等待最终生产 revision
         env:
-          EXPECTED_PORTAL_REVISION: 073ed4f1e1d42956637a0a20882cef3b6198b348
+          EXPECTED_PORTAL_REVISION: 94679aff56277a09e7d8b235b5e013565c03eaf0
         run: |
           set -euo pipefail
           if ! printf '%s' "$EXPECTED_PORTAL_REVISION" | grep -Eq '^[0-9a-f]{40}$'; then
@@ -108,18 +108,37 @@ jobs:
           from pathlib import Path
 
           from dotenv import dotenv_values
-          from brain.workspace.p6_config import is_gateway_token_revoked, token_hash
+          from brain.workspace.p6_config import (
+              is_gateway_token_revoked,
+              load_user_config,
+              persona_growth_consent_status,
+              token_hash,
+          )
 
           values = dotenv_values("/opt/myagent/.env")
           mapping = json.loads(values.get("BRAIN_GATEWAY_USER_TOKENS") or "{}")
           available = []
-          for candidate in ("p6_e2e_current", "p6_load_a", "p6_load_b", "p6_load_c"):
+          for candidate in ("p6_load_b",):
               token = str(mapping.get(candidate) or "")
-              if (token and (Path("/opt/myagent/data/users") / candidate).is_dir()
-                      and not is_gateway_token_revoked("/opt/myagent/data", token_hash(token))):
+              user_dir = Path("/opt/myagent/data/users") / candidate
+              if not token or not user_dir.is_dir():
+                  continue
+              if is_gateway_token_revoked("/opt/myagent/data", token_hash(token)):
+                  continue
+              config = load_user_config("/opt/myagent/data", candidate)
+              role = config.get("role_choice") if isinstance(config, dict) else {}
+              persona_id = str((role or {}).get("persona_id") or "")
+              onboarding = config.get("onboarding") if isinstance(config, dict) else {}
+              growth = persona_growth_consent_status(config)
+              if (
+                  bool((onboarding or {}).get("completed"))
+                  and persona_id
+                  and not persona_id.startswith("custom_")
+                  and not growth["accepted"]
+              ):
                   available.append((candidate, token))
           if not available:
-              raise SystemExit("缺少可用的合成用户凭证")
+              raise SystemExit("缺少可验证共享预设私有换绑的合成用户")
 
           primary_id, primary = available[-1]
           delete_id, delete_token = primary_id, primary
@@ -162,8 +181,8 @@ jobs:
       - name: 运行生产真实 Chromium 全链
         env:
           D050_BASE_URL: https://lingxi.hi-veblen.com
-          D050_EXPECTED_PORTAL_REVISION: 073ed4f1e1d42956637a0a20882cef3b6198b348
-          D050_EXPECTED_BACKEND_REVISION: 84a9659ba1e1ac369135983bff9938d384d0a6c6
+          D050_EXPECTED_PORTAL_REVISION: 94679aff56277a09e7d8b235b5e013565c03eaf0
+          D050_EXPECTED_BACKEND_REVISION: 07c8fdb75c696837f98697f547d316e5c6dbc6d6
         run: npx playwright test e2e/d050-production-acceptance.spec.ts --config=e2e/d050-production-acceptance.config.ts
 
       - name: 清除 Runner 合成凭证
