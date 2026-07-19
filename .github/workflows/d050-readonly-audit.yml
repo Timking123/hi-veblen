@@ -1,4 +1,4 @@
-name: D051 固定 max 候选 readiness
+name: D051 固定 max growth judge 脚本审计
 
 on:
   push:
@@ -10,7 +10,7 @@ permissions:
 
 jobs:
   audit:
-    name: 固定 max 候选无用户数据 readiness
+    name: 固定 max 候选 growth judge 脚本审计
     if: github.repository == 'Timking123/hi-veblen' && github.actor == 'Timking123'
     runs-on: ubuntu-latest
     timeout-minutes: 10
@@ -18,6 +18,7 @@ jobs:
       name: production
     env:
       LINGXI_SHA: 80e5abe8ddd6956d22956d09df71348330e9548a
+      CANDIDATE_DIR: /opt/myagent/d050-eval-80e5abe8ddd6-29698373552-1
 
     steps:
       - name: 配置受信 SSH
@@ -58,83 +59,22 @@ jobs:
           LINGXI_REPO_TOKEN: ${{ secrets.LINGXI_REPO_TOKEN }}
         run: test -n "$LINGXI_REPO_TOKEN"
 
-      - name: 检出固定 Lingxi 候选
-        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
-        with:
-          repository: Timking123/Lingxi
-          ref: ${{ env.LINGXI_SHA }}
-          path: lingxi-candidate
-          token: ${{ secrets.LINGXI_REPO_TOKEN }}
-          persist-credentials: false
-
-      - name: 上传不可覆盖的只读候选
+      - name: 校验固定候选与 max 导入来源
         run: |
           set -euo pipefail
-          repo="$GITHUB_WORKSPACE/lingxi-candidate"
-          actual_sha="$(git -C "$repo" rev-parse HEAD)"
-          test "$actual_sha" = "$LINGXI_SHA"
-          archive="$RUNNER_TEMP/lingxi-$LINGXI_SHA.tar"
-          git -C "$repo" archive --format=tar --output="$archive" "$LINGXI_SHA"
-          archive_sha="$(sha256sum "$archive" | cut -d' ' -f1)"
-          remote_archive="/tmp/lingxi-$LINGXI_SHA-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT.tar"
-          scp -q "$archive" "hi-veblen-production:$remote_archive"
           ssh hi-veblen-production 'bash -se --' \
-            "$LINGXI_SHA" "$archive_sha" "$remote_archive" \
-            "$GITHUB_RUN_ID" "$GITHUB_RUN_ATTEMPT" <<'REMOTE'
+            "$LINGXI_SHA" "$CANDIDATE_DIR" <<'REMOTE'
           set -euo pipefail
           sha="$1"
-          expected_archive_sha="$2"
-          uploaded_archive="$3"
-          run_id="$4"
-          run_attempt="$5"
-          case "$sha" in ''|*[!0-9a-f]*) echo "Lingxi SHA 格式无效" >&2; exit 1 ;; esac
-          test "${#sha}" -eq 40
-          case "$expected_archive_sha" in ''|*[!0-9a-f]*) echo "归档摘要格式无效" >&2; exit 1 ;; esac
-          test "${#expected_archive_sha}" -eq 64
-          case "$run_id" in ''|*[!0-9]*) echo "GitHub run id 格式无效" >&2; exit 1 ;; esac
-          case "$run_attempt" in ''|*[!0-9]*) echo "GitHub run attempt 格式无效" >&2; exit 1 ;; esac
-          trap 'rm -f -- "$uploaded_archive"' EXIT
-          test -f "$uploaded_archive"
-          actual_archive_sha="$(sha256sum "$uploaded_archive" | cut -d' ' -f1)"
-          test "$actual_archive_sha" = "$expected_archive_sha"
-          candidate="/opt/myagent/d050-eval-${sha:0:12}-$run_id-$run_attempt"
-          mkdir -m 0700 "$candidate"
-          tar --no-same-owner --no-same-permissions -xf "$uploaded_archive" -C "$candidate"
-          printf '%s\n' "$sha" > "$candidate/release.txt"
-          printf '%s\n' "$expected_archive_sha" > "$candidate/archive.sha256"
-          find "$candidate" -type f -exec chmod 0400 {} +
-          find "$candidate" -type d -exec chmod 0500 {} +
+          candidate="$2"
+          test "$candidate" = "/opt/myagent/d050-eval-${sha:0:12}-29698373552-1"
           test "$(cat "$candidate/release.txt")" = "$sha"
-          printf 'D051_CANDIDATE=%s\n' "$candidate"
-          REMOTE
-
-      - name: 运行固定 max 无用户数据 readiness
-        run: |
-          set -euo pipefail
-          output="$RUNNER_TEMP/d051-readiness.txt"
-          ssh hi-veblen-production 'bash -se --' \
-            "$LINGXI_SHA" "$GITHUB_RUN_ID" "$GITHUB_RUN_ATTEMPT" \
-            <<'REMOTE' | tee "$output"
-          set -euo pipefail
-          sha="$1"
-          run_id="$2"
-          run_attempt="$3"
-          candidate="/opt/myagent/d050-eval-${sha:0:12}-$run_id-$run_attempt"
-          test "$(cat "$candidate/release.txt")" = "$sha"
-          cd /opt/myagent/d050-eval-d989a3f
           python=/opt/myagent/backend-current/.venv/bin/python
-          test -x "$python"
-          test -f d050_growth_provider_long_probe.py
-          command -v flock >/dev/null
-          exec 9>/run/hi-veblen-release.lock
-          flock -s -n 9
-          CANDIDATE="$candidate" EXPECTED_SHA="$sha" \
-            PYTHONUTF8=1 HF_HUB_OFFLINE=1 BRAIN_LLM_TIMEOUT=300 \
-            "$python" -B -u - <<'PY'
+          CANDIDATE="$candidate" EXPECTED_SHA="$sha" PYTHONUTF8=1 \
+            "$python" -B - <<'PY'
           import importlib
           import json
           import os
-          import runpy
           import sys
           from pathlib import Path
 
@@ -142,7 +82,6 @@ jobs:
           expected_sha = os.environ["EXPECTED_SHA"]
           if (candidate / "release.txt").read_text(encoding="ascii").strip() != expected_sha:
               raise SystemExit("候选 revision 不匹配")
-
           sys.path.insert(0, str(candidate))
           config = importlib.import_module("brain.persona.import_config")
           importer = importlib.import_module("brain.persona.importer")
@@ -154,19 +93,6 @@ jobs:
               raise SystemExit("模型发生变化")
           if config.IMPORT_REASONING_EFFORT != "max":
               raise SystemExit("reasoning_effort 不是 max")
-
-          probe_state = {"calls": 0}
-          request_chat = importer._request_chat
-
-          def tracked_request_chat(*args, **kwargs):
-              body = args[0] if args else kwargs.get("body")
-              if not isinstance(body, dict) or body.get("reasoning_effort") != "max":
-                  raise SystemExit("探针请求未使用固定 max")
-              probe_state["calls"] += 1
-              return request_chat(*args, **kwargs)
-
-          importer._request_chat = tracked_request_chat
-
           print(json.dumps({
               "candidate_sha": expected_sha,
               "import_config": str(Path(config.__file__).resolve()),
@@ -174,15 +100,22 @@ jobs:
               "model": config.IMPORT_MODEL,
               "reasoning_effort": config.IMPORT_REASONING_EFFORT,
           }, ensure_ascii=False, sort_keys=True))
-          runpy.run_path(
-              "/opt/myagent/d050-eval-d989a3f/d050_growth_provider_long_probe.py",
-              run_name="__main__",
-          )
-          if probe_state["calls"] < 1:
-              raise SystemExit("旧探针没有调用候选请求链")
-          print(json.dumps({
-              "candidate_provider_request_calls": probe_state["calls"],
-          }, ensure_ascii=False, sort_keys=True))
           PY
           REMOTE
-          grep -Fq "'ok': True" "$output"
+
+      - name: 获取远端 growth judge 脚本
+        run: |
+          set -euo pipefail
+          scp -q \
+            hi-veblen-production:/opt/myagent/d050-eval-d989a3f/d050_remote_growth_judge.py \
+            "$RUNNER_TEMP/d050_remote_growth_judge.py"
+          test -s "$RUNNER_TEMP/d050_remote_growth_judge.py"
+          sha256sum "$RUNNER_TEMP/d050_remote_growth_judge.py"
+
+      - name: 上传脚本审计证据
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: d051-growth-judge-script
+          path: ${{ runner.temp }}/d050_remote_growth_judge.py
+          if-no-files-found: error
+          retention-days: 1
