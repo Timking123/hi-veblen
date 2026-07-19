@@ -111,6 +111,7 @@ jobs:
           from brain.workspace.p6_config import (
               is_gateway_token_revoked,
               load_user_config,
+              onboarding_status,
               persona_growth_consent_status,
               token_hash,
           )
@@ -134,10 +135,16 @@ jobs:
               )
               role = config.get("role_choice") if isinstance(config, dict) else {}
               persona_id = str((role or {}).get("persona_id") or "")
-              onboarding = config.get("onboarding") if isinstance(config, dict) else {}
+              preset_role_id = str((role or {}).get("preset_role_id") or "")
               growth = persona_growth_consent_status(config)
-              onboarding_completed = bool((onboarding or {}).get("completed"))
-              shared_persona = bool(persona_id) and not persona_id.startswith("custom_")
+              onboarding = onboarding_status(config)
+              onboarding_completed = bool(onboarding["completed"])
+              shared_persona = (
+                  (role or {}).get("mode") == "preset"
+                  and bool(preset_role_id)
+                  and bool(persona_id)
+                  and not persona_id.startswith("custom_")
+              )
               growth_accepted = bool(growth["accepted"])
               diagnostics.append({
                   "persist_id": candidate,
@@ -145,6 +152,9 @@ jobs:
                   "directory_present": directory_present,
                   "revoked": revoked,
                   "onboarding_completed": onboarding_completed,
+                  "onboarding_status": onboarding["status"],
+                  "preset_binding": bool(preset_role_id),
+                  "role_mode": str((role or {}).get("mode") or ""),
                   "shared_persona": shared_persona,
                   "growth_accepted": growth_accepted,
               })

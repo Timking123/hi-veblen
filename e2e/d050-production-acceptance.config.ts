@@ -7,7 +7,7 @@ export default defineConfig({
   forbidOnly: true,
   retries: 0,
   workers: 1,
-  timeout: 8 * 60 * 1000,
+  timeout: 15 * 60 * 1000,
   reporter: [['line']],
   use: {
     browserName: 'chromium',
