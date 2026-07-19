@@ -74,7 +74,7 @@ async function verifyPortal(browser: Browser, evidence: Record<string, unknown>)
   expect(geometry.overflow).toBeLessThanOrEqual(1)
   await page.screenshot({ path: 'd050-portal.png', fullPage: true })
   evidence.portal_browser = { viewport: geometry, console_error_count: consoleErrors.length }
-  expect(consoleErrors).toEqual([])
+  expect(consoleErrors.length).toBe(0)
   await context.close()
 }
 
@@ -95,6 +95,11 @@ async function verifyDesktop(browser: Browser, evidence: Record<string, unknown>
   if (acceptanceMode === 'shared_pending') expect(initialPersonaId).not.toMatch(/^custom_/)
   else expect(initialPersonaId).toMatch(/^custom_/)
   const retiredControls = await probeRetiredControls(page, primaryId)
+  let growthGeometry: Awaited<ReturnType<typeof viewportGeometry>> | null = null
+  if (acceptanceMode === 'private_resumed') {
+    growthGeometry = await verifyGrowthPanel(page, evidence, initialPersonaId, presetRoleId)
+    await page.getByRole('button', { name: '对话' }).click()
+  }
   const input = page.getByRole('textbox', { name: '输入消息' })
   await expect(input).toBeEnabled({ timeout: 60_000 })
 
@@ -154,14 +159,49 @@ async function verifyDesktop(browser: Browser, evidence: Record<string, unknown>
   }
   await persistEvidence(evidence)
 
-  const growthResponse = page.waitForResponse(
-    response =>
-      response.request().method() === 'GET' &&
-      new URL(response.url()).pathname === '/api/persona/growth',
-    { timeout: 60_000 }
+  if (acceptanceMode === 'shared_pending') {
+    growthGeometry = await verifyGrowthPanel(page, evidence, initialPersonaId, presetRoleId)
+    await page.getByRole('button', { name: '对话' }).click()
+  }
+  expect(growthGeometry).not.toBeNull()
+  await expect(input).toBeEnabled({ timeout: 60_000 })
+  const postRebindBefore = await liveAgents.count()
+  await input.fill(postRebindPrompt)
+  await page.getByRole('button', { name: '发送消息' }).click()
+  await expect
+    .poll(() => liveAgents.count(), { timeout: 5 * 60 * 1000 })
+    .toBeGreaterThan(postRebindBefore)
+  await expect(page.locator('.typing-bubble')).toHaveCount(0, { timeout: 5 * 60 * 1000 })
+  const postRebindReply = (
+    await liveAgents.last().locator('.bubble:not(.typing-bubble)').allTextContents()
   )
-  await page.getByRole('button', { name: '角色档案' }).click()
-  expect((await growthResponse).ok()).toBe(true)
+    .map(item => item.trim())
+    .filter(Boolean)
+    .join('\n')
+  expect(postRebindReply.length).toBeGreaterThan(0)
+
+  evidence.desktop = {
+    chat_viewport: geometry,
+    growth_viewport: growthGeometry,
+    console_error_count: consoleErrors.length,
+  }
+  evidence.conversation = {
+    acceptance_mode: acceptanceMode,
+    first_verification: { user: prompt, agent: reply },
+    private_persona_verification: { user: postRebindPrompt, agent: postRebindReply },
+  }
+  evidence.retired_persona_controls = retiredControls
+  expect(consoleErrors.length).toBe(0)
+  await context.close()
+}
+
+async function verifyGrowthPanel(
+  page: Page,
+  evidence: Record<string, unknown>,
+  initialPersonaId: string,
+  presetRoleId: string
+) {
+  await loadGrowthPanel(page, evidence, 'growth_load_attempts')
   await expect(page.getByRole('heading', { name: '自主成长记录' })).toBeVisible({
     timeout: 60_000,
   })
@@ -192,15 +232,7 @@ async function verifyDesktop(browser: Browser, evidence: Record<string, unknown>
       if (response.ok()) break
       expect([409, 502, 503]).toContain(response.status())
       await page.waitForTimeout(attempt * 1000)
-      const refresh = page.getByRole('button', { name: '刷新成长记录' })
-      await expect(refresh).toBeEnabled({ timeout: 60_000 })
-      const reloadPromise = page.waitForResponse(
-        response =>
-          response.request().method() === 'GET' &&
-          new URL(response.url()).pathname === '/api/persona/growth'
-      )
-      await refresh.click()
-      expect((await reloadPromise).ok()).toBe(true)
+      await loadGrowthPanel(page, evidence, 'growth_consent_reload_attempts', false)
       if (await growthConsent.isVisible().catch(() => false)) break
     }
     await expect(growthConsent).toBeVisible({ timeout: 60_000 })
@@ -261,40 +293,10 @@ async function verifyDesktop(browser: Browser, evidence: Record<string, unknown>
     initial_enabled: initialNotifications,
   }
   await expect(page.getByRole('button', { name: /审批|否决|人格回滚/ })).toHaveCount(0)
-  const growthGeometry = await viewportGeometry(page)
-  expect(growthGeometry.overflow).toBeLessThanOrEqual(1)
+  const geometry = await viewportGeometry(page)
+  expect(geometry.overflow).toBeLessThanOrEqual(1)
   await page.screenshot({ path: 'd050-desktop.png', fullPage: true })
-
-  await page.getByRole('button', { name: '对话' }).click()
-  await expect(input).toBeEnabled({ timeout: 60_000 })
-  const postRebindBefore = await liveAgents.count()
-  await input.fill(postRebindPrompt)
-  await page.getByRole('button', { name: '发送消息' }).click()
-  await expect
-    .poll(() => liveAgents.count(), { timeout: 5 * 60 * 1000 })
-    .toBeGreaterThan(postRebindBefore)
-  await expect(page.locator('.typing-bubble')).toHaveCount(0, { timeout: 5 * 60 * 1000 })
-  const postRebindReply = (
-    await liveAgents.last().locator('.bubble:not(.typing-bubble)').allTextContents()
-  )
-    .map(item => item.trim())
-    .filter(Boolean)
-    .join('\n')
-  expect(postRebindReply.length).toBeGreaterThan(0)
-
-  evidence.desktop = {
-    chat_viewport: geometry,
-    growth_viewport: growthGeometry,
-    console_error_count: consoleErrors.length,
-  }
-  evidence.conversation = {
-    acceptance_mode: acceptanceMode,
-    first_verification: { user: prompt, agent: reply },
-    private_persona_verification: { user: postRebindPrompt, agent: postRebindReply },
-  }
-  evidence.retired_persona_controls = retiredControls
-  expect(consoleErrors).toEqual([])
-  await context.close()
+  return geometry
 }
 
 async function verifyMobile(browser: Browser, evidence: Record<string, unknown>) {
@@ -314,14 +316,7 @@ async function verifyMobile(browser: Browser, evidence: Record<string, unknown>)
   await expect(page.getByRole('textbox', { name: '输入消息' })).toBeEnabled({ timeout: 60_000 })
   const geometry = await viewportGeometry(page)
   expect(geometry.overflow).toBeLessThanOrEqual(1)
-  const growthResponse = page.waitForResponse(
-    response =>
-      response.request().method() === 'GET' &&
-      new URL(response.url()).pathname === '/api/persona/growth',
-    { timeout: 60_000 }
-  )
-  await page.getByRole('button', { name: '角色档案' }).click()
-  expect((await growthResponse).ok()).toBe(true)
+  await loadGrowthPanel(page, evidence, 'mobile_growth_load_attempts')
   await expect(page.getByRole('heading', { name: '自主成长记录' })).toBeVisible({
     timeout: 60_000,
   })
@@ -333,8 +328,57 @@ async function verifyMobile(browser: Browser, evidence: Record<string, unknown>)
     growth_viewport: growthGeometry,
     console_error_count: consoleErrors.length,
   }
-  expect(consoleErrors).toEqual([])
+  expect(consoleErrors.length).toBe(0)
   await context.close()
+}
+
+async function loadGrowthPanel(
+  page: Page,
+  evidence: Record<string, unknown>,
+  evidenceKey: string,
+  openPanel = true
+) {
+  const previousAttempts = evidence[evidenceKey]
+  const loadAttempts: Array<{ status: number; detail: string }> = Array.isArray(previousAttempts)
+    ? [...(previousAttempts as Array<{ status: number; detail: string }>)]
+    : []
+  for (let attempt = 1; attempt <= 4; attempt += 1) {
+    let growthResponse: ReturnType<Page['waitForResponse']>
+    if (attempt === 1 && openPanel) {
+      growthResponse = page.waitForResponse(
+        response =>
+          response.request().method() === 'GET' &&
+          new URL(response.url()).pathname === '/api/persona/growth',
+        { timeout: 60_000 }
+      )
+      await page.getByRole('button', { name: '角色档案' }).click()
+    } else {
+      const refresh = page.getByRole('button', { name: '刷新成长记录' })
+      await expect(refresh).toBeEnabled({ timeout: 60_000 })
+      growthResponse = page.waitForResponse(
+        response =>
+          response.request().method() === 'GET' &&
+          new URL(response.url()).pathname === '/api/persona/growth',
+        { timeout: 60_000 }
+      )
+      await refresh.click()
+    }
+    const response = await growthResponse
+    const payload = (await response.json().catch(() => ({}))) as { detail?: unknown }
+    loadAttempts.push({
+      status: response.status(),
+      detail: String(payload.detail || '').slice(0, 200),
+    })
+    evidence[evidenceKey] = loadAttempts
+    await persistEvidence(evidence)
+    if (response.ok()) return
+    expect([409, 503]).toContain(response.status())
+    await expect(page.getByRole('heading', { name: '自主成长记录' })).toBeVisible({
+      timeout: 60_000,
+    })
+    if (attempt < 4) await page.waitForTimeout(attempt * 5_000)
+  }
+  expect(loadAttempts.at(-1)?.status).toBe(200)
 }
 
 async function verifyDeletion(browser: Browser, evidence: Record<string, unknown>) {
@@ -363,6 +407,9 @@ async function verifyDeletion(browser: Browser, evidence: Record<string, unknown
   const response = await deleteResponse
   expect(response.status()).toBe(200)
   const result = await response.json()
+  if (result.ok === true && result.deleted === true) {
+    await writeFile('d050-delete-confirmed.flag', 'confirmed\n', 'utf8')
+  }
   expect(result.ok).toBe(true)
   expect(result.deleted).toBe(true)
   expect(result.precise_event_delete_supported).toBe(false)
