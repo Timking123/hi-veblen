@@ -64,6 +64,8 @@ jobs:
           from pathlib import Path
 
           from brain.persona import PERSONAS_DIR
+          from brain.persona.loader import PersonaSpec
+          from brain.persona.studio import normalize_intent_contract_v2
           from brain.workspace.p6_config import (
               load_user_config,
               persona_growth_consent_status,
@@ -80,6 +82,21 @@ jobs:
           persona_path = Path(str(meta.get("persona_path") or "")).resolve()
           user_root = (data_dir / "users" / persist_id).resolve()
           shared_root = Path(PERSONAS_DIR).resolve()
+          persona_schema_valid = False
+          normalized_persona_schema_valid = False
+          try:
+              persona = json.loads(persona_path.read_text(encoding="utf-8"))
+              checked = PersonaSpec.model_validate(persona).model_dump(
+                  mode="json", by_alias=True,
+              )
+              persona_schema_valid = True
+              checked["intent_contract"] = normalize_intent_contract_v2(
+                  checked.get("intent_contract")
+              )
+              PersonaSpec.model_validate(checked)
+              normalized_persona_schema_valid = True
+          except (OSError, ValueError, json.JSONDecodeError):
+              pass
 
           def journal(unit):
               result = subprocess.run(
@@ -123,6 +140,8 @@ jobs:
               "meta_persona_path_exists": persona_path.is_file(),
               "meta_persona_path_is_current_shared": persona_path.is_relative_to(shared_root),
               "meta_persona_filename_matches_preset": persona_path.stem == str(role.get("preset_role_id") or ""),
+              "persona_schema_valid": persona_schema_valid,
+              "normalized_persona_schema_valid": normalized_persona_schema_valid,
               "private_persona_exists": persona_path.is_file() and persona_path.is_relative_to(user_root),
               "growth_transaction_exists": (Path(paths.user_dir) / "persona_calibration.txn.json").exists(),
               "gateway_marker_counts": {marker: gateway_log.count(marker) for marker in markers},
