@@ -1,0 +1,128 @@
+name: D050 只读失败现场审计
+
+on:
+  push:
+    branches:
+      - codex/d050-readonly-audit
+
+permissions:
+  contents: read
+
+jobs:
+  audit:
+    name: 只读复核成长同意现场
+    if: github.repository == 'Timking123/hi-veblen' && github.actor == 'Timking123'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment:
+      name: production
+
+    steps:
+      - name: 配置受信 SSH
+        env:
+          SERVER_HOST: ${{ secrets.SERVER_HOST }}
+          SERVER_USER: ${{ secrets.SERVER_USER }}
+          SERVER_SSH_KEY: ${{ secrets.SERVER_SSH_KEY }}
+        run: |
+          set -eu
+          case "$SERVER_HOST" in
+            ''|*[!A-Za-z0-9.:-]*) echo "SERVER_HOST 格式无效" >&2; exit 1 ;;
+          esac
+          case "$SERVER_USER" in
+            ''|*[!A-Za-z0-9._-]*) echo "SERVER_USER 格式无效" >&2; exit 1 ;;
+          esac
+          install -d -m 0700 "$HOME/.ssh"
+          printf '%s\n' "$SERVER_SSH_KEY" | tr -d '\r' > "$HOME/.ssh/hi-veblen-deploy"
+          chmod 0600 "$HOME/.ssh/hi-veblen-deploy"
+          printf '%s\n' \
+            'hi-veblen-production ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIM4IhOSWQcIioXavkJYcZ1WbE682kGvQF+rTAgnBRNif' \
+            > "$HOME/.ssh/known_hosts"
+          printf '%s\n' \
+            'Host hi-veblen-production' \
+            "  HostName $SERVER_HOST" \
+            "  User $SERVER_USER" \
+            '  HostKeyAlias hi-veblen-production' \
+            '  IdentityFile ~/.ssh/hi-veblen-deploy' \
+            '  IdentitiesOnly yes' \
+            '  BatchMode yes' \
+            '  StrictHostKeyChecking yes' \
+            '  ConnectTimeout 10' \
+            > "$HOME/.ssh/config"
+          chmod 0600 "$HOME/.ssh/config" "$HOME/.ssh/known_hosts"
+          ssh hi-veblen-production true
+
+      - name: 读取非敏感成长状态与异常计数
+        run: |
+          ssh hi-veblen-production 'bash -se' <<'REMOTE'
+          set -eu
+          cd /opt/myagent/backend-current
+          python=/opt/myagent/backend-current/.venv/bin/python
+          test -x "$python"
+          "$python" - <<'PY'
+          import json
+          import subprocess
+          from pathlib import Path
+
+          from brain.workspace.p6_config import (
+              load_user_config,
+              persona_growth_consent_status,
+          )
+          from brain.workspace.user_paths import load_user_meta, user_storage_paths
+
+          data_dir = Path("/opt/myagent/data")
+          persist_id = "p6_load_b"
+          paths = user_storage_paths(data_dir, persist_id)
+          config = load_user_config(data_dir, persist_id)
+          status = persona_growth_consent_status(config)
+          role = config.get("role_choice") if isinstance(config.get("role_choice"), dict) else {}
+          meta = load_user_meta(paths)
+          persona_path = Path(str(meta.get("persona_path") or "")).resolve()
+          user_root = (data_dir / "users" / persist_id).resolve()
+
+          def journal(unit):
+              result = subprocess.run(
+                  [
+                      "journalctl",
+                      "-u",
+                      unit,
+                      "--since",
+                      "2026-07-19 02:27:00 UTC",
+                      "--until",
+                      "2026-07-19 02:31:30 UTC",
+                      "--no-pager",
+                      "-o",
+                      "cat",
+                  ],
+                  check=False,
+                  capture_output=True,
+                  text=True,
+              )
+              return result.stdout
+
+          gateway_log = journal("myagent-gateway")
+          world_log = journal("myagent-world")
+          markers = (
+              "Traceback",
+              "Exception",
+              "PersonaHandoffPendingError",
+              "宿主未确认角色已进入安全身份换绑",
+              "rebind",
+          )
+          result = {
+              "user_dir_exists": Path(paths.user_dir).is_dir(),
+              "onboarding_ready": str((config.get("onboarding") or {}).get("status") or "") == "ready",
+              "consent_accepted": bool(status.get("accepted")),
+              "settings_revision": int(status.get("settings_revision") or 0),
+              "processing_enabled": bool(status.get("processing_enabled")),
+              "growth_phase": str(status.get("phase") or ""),
+              "role_mode": str(role.get("mode") or ""),
+              "persona_id_is_private": str(role.get("persona_id") or "").startswith("custom_"),
+              "meta_matches_role": str(meta.get("persona") or "") == str(role.get("persona_id") or ""),
+              "private_persona_exists": persona_path.is_file() and persona_path.is_relative_to(user_root),
+              "growth_transaction_exists": (Path(paths.user_dir) / "persona_calibration.txn.json").exists(),
+              "gateway_marker_counts": {marker: gateway_log.count(marker) for marker in markers},
+              "world_marker_counts": {marker: world_log.count(marker) for marker in markers},
+          }
+          print(json.dumps(result, ensure_ascii=False, sort_keys=True))
+          PY
+          REMOTE
