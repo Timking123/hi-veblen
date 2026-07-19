@@ -152,8 +152,10 @@ jobs:
                       onboarding_completed, shared_persona, not growth_accepted)):
                   available.append((candidate, token))
           if not available:
-              print(json.dumps({"synthetic_eligibility": diagnostics}, sort_keys=True))
-              raise SystemExit("缺少可验证共享预设私有换绑的合成用户")
+              raise SystemExit(json.dumps({
+                  "error": "缺少可验证共享预设私有换绑的合成用户",
+                  "synthetic_eligibility": diagnostics,
+              }, sort_keys=True))
 
           primary_id, primary = available[-1]
           delete_id, delete_token = primary_id, primary
