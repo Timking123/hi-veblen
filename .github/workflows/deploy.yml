@@ -8,7 +8,7 @@ concurrency:
   cancel-in-progress: false
 
 env:
-  LINGXI_SHA: a1a04d7d9c928aa69cddfb2cc7f29fe742dc16c5
+  LINGXI_SHA: 84a9659ba1e1ac369135983bff9938d384d0a6c6
   EXPECTED_PERSONA_SCHEMA_PHASE: active
   EXPECTED_PERSONA_GROWTH_PHASE: active
 
