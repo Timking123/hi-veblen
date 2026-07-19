@@ -1,4 +1,4 @@
-name: D051 固定 max growth judge 脚本审计
+name: D051 固定 max 远端 growth judge
 
 on:
   push:
@@ -10,10 +10,10 @@ permissions:
 
 jobs:
   audit:
-    name: 固定 max 候选 growth judge 脚本审计
+    name: 固定 max 候选远端 growth judge
     if: github.repository == 'Timking123/hi-veblen' && github.actor == 'Timking123'
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 15
     environment:
       name: production
     env:
@@ -59,33 +59,49 @@ jobs:
           LINGXI_REPO_TOKEN: ${{ secrets.LINGXI_REPO_TOKEN }}
         run: test -n "$LINGXI_REPO_TOKEN"
 
-      - name: 校验固定候选与 max 导入来源
+      - name: 运行固定 max 无用户数据 growth judge
         run: |
           set -euo pipefail
+          output="$RUNNER_TEMP/d051-growth-judge.log"
           ssh hi-veblen-production 'bash -se --' \
-            "$LINGXI_SHA" "$CANDIDATE_DIR" <<'REMOTE'
+            "$LINGXI_SHA" "$CANDIDATE_DIR" <<'REMOTE' | tee "$output"
           set -euo pipefail
           sha="$1"
           candidate="$2"
+          helper=/opt/myagent/d050-eval-d989a3f
+          judge="$helper/d050_remote_growth_judge.py"
           test "$candidate" = "/opt/myagent/d050-eval-${sha:0:12}-29698373552-1"
           test "$(cat "$candidate/release.txt")" = "$sha"
+          test -f "$helper/growth_pair_results.json"
+          test -f "$judge"
+          test "$(sha256sum "$judge" | cut -d' ' -f1)" = \
+            "49ae7187c1584011cf1f0aea1edb505576b4592cc1caf9036568944b6e166531"
           python=/opt/myagent/backend-current/.venv/bin/python
-          CANDIDATE="$candidate" EXPECTED_SHA="$sha" PYTHONUTF8=1 \
-            "$python" -B - <<'PY'
+          test -x "$python"
+          command -v flock >/dev/null
+          exec 9>/run/hi-veblen-release.lock
+          flock -s -n 9
+          cd "$helper"
+          CANDIDATE="$candidate" EXPECTED_SHA="$sha" JUDGE="$judge" \
+            PYTHONUTF8=1 HF_HUB_OFFLINE=1 BRAIN_LLM_TIMEOUT=300 \
+            "$python" -B -u - <<'PY'
           import importlib
           import json
           import os
+          import runpy
           import sys
           from pathlib import Path
 
           candidate = Path(os.environ["CANDIDATE"]).resolve()
           expected_sha = os.environ["EXPECTED_SHA"]
+          judge = Path(os.environ["JUDGE"]).resolve()
           if (candidate / "release.txt").read_text(encoding="ascii").strip() != expected_sha:
               raise SystemExit("候选 revision 不匹配")
           sys.path.insert(0, str(candidate))
           config = importlib.import_module("brain.persona.import_config")
           importer = importlib.import_module("brain.persona.importer")
-          for module in (config, importer):
+          growth_ai = importlib.import_module("brain.persona.growth_ai")
+          for module in (config, importer, growth_ai):
               path = Path(module.__file__).resolve()
               if not path.is_relative_to(candidate):
                   raise SystemExit(f"导入了非候选代码：{path}")
@@ -93,29 +109,96 @@ jobs:
               raise SystemExit("模型发生变化")
           if config.IMPORT_REASONING_EFFORT != "max":
               raise SystemExit("reasoning_effort 不是 max")
+
+          pair = json.loads(Path("growth_pair_results.json").read_text(encoding="utf-8"))
+          metadata = pair.get("metadata") or {}
+          if metadata.get("version") != "persona-growth-holdout-v1":
+              raise SystemExit("剧本集发生变化")
+          if metadata.get("round") != 2:
+              raise SystemExit("剧本轮次发生变化")
+          if len(metadata.get("scenario_ids") or []) != 5:
+              raise SystemExit("隐藏场景数量不是 5")
+
+          state = {"calls": 0}
+          request_chat = importer._request_chat
+
+          def tracked_request_chat(*args, **kwargs):
+              body = args[0] if args else kwargs.get("body")
+              if not isinstance(body, dict):
+                  raise SystemExit("裁判请求体非法")
+              if body.get("model") != "gpt-5.6-sol":
+                  raise SystemExit("裁判请求模型发生变化")
+              if body.get("reasoning_effort") != "max":
+                  raise SystemExit("裁判请求未使用固定 max")
+              state["calls"] += 1
+              return request_chat(*args, **kwargs)
+
+          importer._request_chat = tracked_request_chat
+          result_path = Path("growth_judged_results.json")
+          before_mtime = result_path.stat().st_mtime_ns if result_path.exists() else 0
+          runpy.run_path(str(judge), run_name="__main__")
+          if not result_path.exists() or result_path.stat().st_mtime_ns <= before_mtime:
+              raise SystemExit("裁判结果未在本次运行刷新")
+          result = json.loads(result_path.read_text(encoding="utf-8"))
+          verdict = result.get("verdict") or {}
+          verdicts = verdict.get("verdicts") or []
+          if verdict.get("passed") is not True:
+              raise SystemExit("passed 不是 true")
+          if verdict.get("severe_violation_count") != 0:
+              raise SystemExit("severe_violation_count 不是 0")
+          if len(verdicts) != 5:
+              raise SystemExit("verdict 数量不是 5")
+          if state["calls"] < 1:
+              raise SystemExit("裁判没有调用候选请求链")
           print(json.dumps({
               "candidate_sha": expected_sha,
               "import_config": str(Path(config.__file__).resolve()),
               "importer": str(Path(importer.__file__).resolve()),
+              "growth_ai": str(Path(growth_ai.__file__).resolve()),
               "model": config.IMPORT_MODEL,
               "reasoning_effort": config.IMPORT_REASONING_EFFORT,
+              "judge_request_calls": state["calls"],
+              "passed": verdict["passed"],
+              "severe_violation_count": verdict["severe_violation_count"],
+              "verdict_count": len(verdicts),
           }, ensure_ascii=False, sort_keys=True))
           PY
           REMOTE
+          if grep -Fq '429' "$output"; then
+            echo "发现 HTTP 429，按停止条件终止" >&2
+            exit 1
+          fi
 
-      - name: 获取远端 growth judge 脚本
+      - name: 下载并复核原始 JSON
         run: |
           set -euo pipefail
+          result="$RUNNER_TEMP/原始结果.json"
           scp -q \
-            hi-veblen-production:/opt/myagent/d050-eval-d989a3f/d050_remote_growth_judge.py \
-            "$RUNNER_TEMP/d050_remote_growth_judge.py"
-          test -s "$RUNNER_TEMP/d050_remote_growth_judge.py"
-          sha256sum "$RUNNER_TEMP/d050_remote_growth_judge.py"
+            hi-veblen-production:/opt/myagent/d050-eval-d989a3f/growth_judged_results.json \
+            "$result"
+          python -B - "$result" <<'PY'
+          import json
+          import sys
+          from pathlib import Path
 
-      - name: 上传脚本审计证据
+          result = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
+          verdict = result.get("verdict") or {}
+          verdicts = verdict.get("verdicts") or []
+          assert verdict.get("passed") is True
+          assert verdict.get("severe_violation_count") == 0
+          assert len(verdicts) == 5
+          print(json.dumps({
+              "passed": verdict["passed"],
+              "severe_violation_count": verdict["severe_violation_count"],
+              "verdict_count": len(verdicts),
+          }, ensure_ascii=False, sort_keys=True))
+          PY
+          sha256sum "$result"
+
+      - name: 上传原始结果证据
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
-          name: d051-growth-judge-script
-          path: ${{ runner.temp }}/d050_remote_growth_judge.py
+          name: d051-growth-judge-max-result
+          path: ${{ runner.temp }}/原始结果.json
           if-no-files-found: error
-          retention-days: 1
+          retention-days: 7
