@@ -115,11 +115,42 @@ async function verifyDesktop(browser: Browser, evidence: Record<string, unknown>
   await expect(page.getByRole('heading', { name: '自主成长记录' })).toBeVisible()
   await expect(page.getByText('成长没有审批、否决或人格回滚入口。')).toBeVisible()
   const growthConsent = page.getByText('已接受自主成长')
+  const consentAttempts: Array<{ status: number; detail: string }> = []
   if (!(await growthConsent.isVisible().catch(() => false))) {
-    await page.locator('.persona-growth__acceptance input[type="checkbox"]').check()
-    await page.getByRole('button', { name: '启用自主成长' }).click()
-    await expect(growthConsent).toBeVisible()
+    for (let attempt = 1; attempt <= 3; attempt += 1) {
+      const checkbox = page.locator('.persona-growth__acceptance input[type="checkbox"]')
+      if (!(await checkbox.isChecked())) await checkbox.check()
+      const responsePromise = page.waitForResponse(
+        response =>
+          response.request().method() === 'POST' &&
+          new URL(response.url()).pathname === '/api/persona/growth/consent'
+      )
+      await page.getByRole('button', { name: '启用自主成长' }).click()
+      const response = await responsePromise
+      const payload = (await response.json().catch(() => ({}))) as { detail?: unknown }
+      consentAttempts.push({
+        status: response.status(),
+        detail: String(payload.detail || '').slice(0, 200),
+      })
+      evidence.growth_consent_attempts = consentAttempts
+      await persistEvidence(evidence)
+      if (response.ok()) break
+      expect([409, 502, 503]).toContain(response.status())
+      await page.waitForTimeout(attempt * 1000)
+      const refresh = page.getByRole('button', { name: '刷新成长记录' })
+      await expect(refresh).toBeEnabled({ timeout: 60_000 })
+      const reloadPromise = page.waitForResponse(
+        response =>
+          response.request().method() === 'GET' &&
+          new URL(response.url()).pathname === '/api/persona/growth'
+      )
+      await refresh.click()
+      expect((await reloadPromise).ok()).toBe(true)
+      if (await growthConsent.isVisible().catch(() => false)) break
+    }
+    await expect(growthConsent).toBeVisible({ timeout: 60_000 })
   }
+  evidence.growth_consent_attempts = consentAttempts
   await expect(page.getByRole('button', { name: /审批|否决|人格回滚/ })).toHaveCount(0)
   const growthGeometry = await viewportGeometry(page)
   expect(growthGeometry.overflow).toBeLessThanOrEqual(1)

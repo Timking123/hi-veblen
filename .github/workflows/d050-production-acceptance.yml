@@ -1,12 +1,9 @@
 name: D050 生产浏览器与删除链验收
 
 on:
-  workflow_dispatch:
-    inputs:
-      expected_portal_revision:
-        description: 等待并验收的最终 Portal 完整提交 SHA
-        required: true
-        type: string
+  push:
+    branches:
+      - codex/d050-acceptance-retry
 
 permissions:
   contents: read
@@ -33,7 +30,7 @@ jobs:
 
       - name: 等待最终生产 revision
         env:
-          EXPECTED_PORTAL_REVISION: ${{ inputs.expected_portal_revision }}
+          EXPECTED_PORTAL_REVISION: 073ed4f1e1d42956637a0a20882cef3b6198b348
         run: |
           set -euo pipefail
           if ! printf '%s' "$EXPECTED_PORTAL_REVISION" | grep -Eq '^[0-9a-f]{40}$'; then
@@ -165,7 +162,7 @@ jobs:
       - name: 运行生产真实 Chromium 全链
         env:
           D050_BASE_URL: https://lingxi.hi-veblen.com
-          D050_EXPECTED_PORTAL_REVISION: ${{ inputs.expected_portal_revision }}
+          D050_EXPECTED_PORTAL_REVISION: 073ed4f1e1d42956637a0a20882cef3b6198b348
           D050_EXPECTED_BACKEND_REVISION: 84a9659ba1e1ac369135983bff9938d384d0a6c6
         run: npx playwright test e2e/d050-production-acceptance.spec.ts --config=e2e/d050-production-acceptance.config.ts
 
