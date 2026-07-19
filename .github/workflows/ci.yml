@@ -77,7 +77,7 @@ jobs:
           assert build_package.index(installer_capability_guard) < build_package.index(
               'tar -C release-package -czf portal-dist.tar.gz'
           )
-          assert "EXPECTED_PERSONA_SCHEMA_PHASE: compat" in workflow
+          assert "EXPECTED_PERSONA_SCHEMA_PHASE: active" in workflow
           assert "EXPECTED_PERSONA_GROWTH_PHASE: shadow" in workflow
           assert "vars.LINGXI_PERSONA_GROWTH_CANARY_HASHES" in workflow
           assert "systemctl is-enabled --quiet myagent-world.service" in workflow
