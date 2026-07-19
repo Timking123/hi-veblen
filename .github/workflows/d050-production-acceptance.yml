@@ -261,6 +261,133 @@ jobs:
             printf 'D050_DELETE_TOKEN_B64=\n'
           } >> "$GITHUB_ENV"
 
+      - name: 诊断持续成长锁
+        if: ${{ failure() }}
+        run: |
+          set -euo pipefail
+          ssh hi-veblen-production 'bash -se --' "$D050_PRIMARY_ID" \
+            > d050-growth-lock-diagnostic.json <<'REMOTE'
+          set -eu
+          persist_id="$1"
+          test "$persist_id" = "p6_load_b"
+          python=/opt/myagent/backend-current/.venv/bin/python
+          cd /opt/myagent/backend-current
+          "$python" -B - "$persist_id" <<'PY'
+          import fcntl
+          import json
+          import os
+          from pathlib import Path
+          import re
+          import subprocess
+          import sys
+
+          from brain.persona.growth_runtime import (
+              GrowthRuntimeCoordinator,
+              _user_change_lock_path,
+          )
+          from brain.workspace.user_paths import (
+              runtime_persist_lock_path,
+              user_storage_paths,
+          )
+
+          data_dir = "/opt/myagent/data"
+          persist_id = sys.argv[1]
+          paths = user_storage_paths(data_dir, persist_id)
+
+          def process_summary(pid: int) -> dict:
+              root = Path("/proc") / str(pid)
+              if not root.is_dir():
+                  return {"pid": pid, "exists": False}
+              comm = (root / "comm").read_text(encoding="utf-8").strip()
+              cgroup = (root / "cgroup").read_text(encoding="utf-8").splitlines()
+              units = sorted({
+                  match.group(0)
+                  for line in cgroup
+                  for match in [re.search(r"myagent-(?:world|gateway)\.service", line)]
+                  if match is not None
+              })
+              return {"pid": pid, "exists": True, "comm": comm, "units": units}
+
+          def lock_summary(path_value: str) -> dict:
+              path = Path(path_value)
+              summary = {"path": str(path), "exists": path.is_file()}
+              if not path.is_file():
+                  return summary
+              stat = path.stat()
+              content = path.read_text(encoding="utf-8", errors="replace")[:64].strip()
+              holder = re.fullmatch(r"pid=(\\d+)", content)
+              summary.update({
+                  "mtime_ns": stat.st_mtime_ns,
+                  "holder": process_summary(int(holder.group(1))) if holder else None,
+              })
+              with path.open("r", encoding="utf-8") as handle:
+                  try:
+                      fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                  except BlockingIOError:
+                      summary["held"] = True
+                  else:
+                      summary["held"] = False
+                      fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+              return summary
+
+          def json_summary(path: Path, keys: tuple[str, ...]) -> dict:
+              result = {"path": str(path), "exists": path.is_file()}
+              if not path.is_file():
+                  return result
+              try:
+                  payload = json.loads(path.read_text(encoding="utf-8"))
+                  result["fields"] = {
+                      key: payload.get(key)
+                      for key in keys
+                      if key in payload and not isinstance(payload.get(key), (dict, list))
+                  }
+                  pending = payload.get("pending_candidate")
+                  if isinstance(pending, dict):
+                      result["pending_candidate"] = {
+                          key: pending.get(key)
+                          for key in ("status", "retry_reason", "next_retry_at")
+                      }
+              except Exception as exc:
+                  result["error_type"] = type(exc).__name__
+              return result
+
+          service_pids = {}
+          for unit in ("myagent-world.service", "myagent-gateway.service"):
+              raw = subprocess.check_output(
+                  ["systemctl", "show", unit, "-p", "MainPID", "--value"],
+                  text=True,
+              ).strip()
+              service_pids[unit] = int(raw or "0")
+
+          user_dir = Path(paths.user_dir)
+          coordinator = GrowthRuntimeCoordinator(data_dir)
+          result = {
+              "persist_id": persist_id,
+              "service_pids": service_pids,
+              "locks": {
+                  "gateway_user": lock_summary(
+                      str(_user_change_lock_path(data_dir, persist_id))
+                  ),
+                  "runtime": lock_summary(
+                      runtime_persist_lock_path(data_dir, persist_id)
+                  ),
+              },
+              "growth_transaction": json_summary(
+                  coordinator._journal_path(persist_id),
+                  (
+                      "schema_version", "status", "persist_id", "persona_id",
+                      "revision_id", "created_at", "updated_at",
+                  ),
+              ),
+              "growth_envelope": json_summary(
+                  user_dir / "persona_calibration.json",
+                  ("schema_version", "persona_id", "revision", "updated_at"),
+              ),
+          }
+          print(json.dumps(result, ensure_ascii=False, sort_keys=True, indent=2))
+          PY
+          REMOTE
+
       - name: 复核整用户磁盘删除
         if: ${{ always() }}
         run: |
@@ -293,5 +420,6 @@ jobs:
             d050-mobile.png
             d050-delete-complete.png
             d050-delete-confirmed.flag
+            d050-growth-lock-diagnostic.json
           if-no-files-found: warn
           retention-days: 3
