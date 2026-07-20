@@ -11,6 +11,13 @@ const expectedPortalRevision = required('D050_EXPECTED_PORTAL_REVISION')
 const expectedBackendRevision = required('D050_EXPECTED_BACKEND_REVISION')
 const prompt = 'D050 生产验收：请用一句话确认你会继续陪伴我，并保持当前角色口吻。'
 const postRebindPrompt = 'D050 私有角色换绑验收：请继续用当前角色口吻回应一句。'
+const BOOTSTRAP_HTTP_ERRORS = [{ status: 401, path: '/api/me' }]
+const RETIRED_HTTP_ERRORS = [
+  { status: 410, path: '/api/persona/calibration' },
+  { status: 410, path: '/api/persona/calibration/rollback' },
+  { status: 410, path: '/api/persona/drift/proposal' },
+  { status: 410, path: '/api/persona/learning/restore' },
+]
 
 test('D050 生产桌面、移动、导出与整用户删除全链', async ({ browser }) => {
   expect(['shared_pending', 'private_resumed']).toContain(acceptanceMode)
@@ -54,10 +61,7 @@ test('D050 生产桌面、移动、导出与整用户删除全链', async ({ bro
 async function verifyPortal(browser: Browser, evidence: Record<string, unknown>) {
   const context = await browser.newContext({ viewport: { width: 1280, height: 720 } })
   const page = await context.newPage()
-  const consoleErrors: string[] = []
-  page.on('console', message => {
-    if (message.type() === 'error') consoleErrors.push(message.text())
-  })
+  const consoleErrors = trackConsoleErrors(page, [])
   await page.goto('https://hi-veblen.com', { waitUntil: 'domcontentloaded' })
   await expect(page.getByRole('link', { name: 'ENTER LINGXI' })).toHaveAttribute(
     'href',
@@ -67,18 +71,19 @@ async function verifyPortal(browser: Browser, evidence: Record<string, unknown>)
   const geometry = await viewportGeometry(page)
   expect(geometry.overflow).toBeLessThanOrEqual(1)
   await page.screenshot({ path: 'd050-portal.png', fullPage: true })
-  evidence.portal_browser = { viewport: geometry, console_error_count: consoleErrors.length }
-  expect(consoleErrors.length).toBe(0)
+  evidence.portal_browser = {
+    viewport: geometry,
+    console_error_count: consoleErrors.unexpected.length,
+    expected_http_console_error_count: consoleErrors.expected.length,
+  }
+  expect(consoleErrors.unexpected).toEqual([])
   await context.close()
 }
 
 async function verifyDesktop(browser: Browser, evidence: Record<string, unknown>) {
   const context = await browser.newContext({ viewport: { width: 1440, height: 900 } })
   const page = await context.newPage()
-  const consoleErrors: string[] = []
-  page.on('console', message => {
-    if (message.type() === 'error') consoleErrors.push(message.text())
-  })
+  const consoleErrors = trackConsoleErrors(page, [...BOOTSTRAP_HTTP_ERRORS, ...RETIRED_HTTP_ERRORS])
   const me = await login(page, primaryToken, primaryId)
   await acceptGeneralConsentIfNeeded(page)
   expect(me.onboarding?.completed).toBe(true)
@@ -177,7 +182,9 @@ async function verifyDesktop(browser: Browser, evidence: Record<string, unknown>
   evidence.desktop = {
     chat_viewport: geometry,
     growth_viewport: growthGeometry,
-    console_error_count: consoleErrors.length,
+    console_error_count: consoleErrors.unexpected.length,
+    expected_http_console_error_count: consoleErrors.expected.length,
+    expected_http_console_errors: consoleErrors.expected,
   }
   evidence.conversation = {
     acceptance_mode: acceptanceMode,
@@ -185,7 +192,7 @@ async function verifyDesktop(browser: Browser, evidence: Record<string, unknown>
     private_persona_verification: { user: postRebindPrompt, agent: postRebindReply },
   }
   evidence.retired_persona_controls = retiredControls
-  expect(consoleErrors.length).toBe(0)
+  expect(consoleErrors.unexpected).toEqual([])
   await context.close()
 }
 
@@ -301,10 +308,7 @@ async function verifyMobile(browser: Browser, evidence: Record<string, unknown>)
     deviceScaleFactor: 2,
   })
   const page = await context.newPage()
-  const consoleErrors: string[] = []
-  page.on('console', message => {
-    if (message.type() === 'error') consoleErrors.push(message.text())
-  })
+  const consoleErrors = trackConsoleErrors(page, BOOTSTRAP_HTTP_ERRORS)
   await login(page, primaryToken, primaryId)
   await acceptGeneralConsentIfNeeded(page)
   await expect(page.getByRole('textbox', { name: '输入消息' })).toBeEnabled({ timeout: 60_000 })
@@ -320,9 +324,11 @@ async function verifyMobile(browser: Browser, evidence: Record<string, unknown>)
   evidence.mobile = {
     chat_viewport: geometry,
     growth_viewport: growthGeometry,
-    console_error_count: consoleErrors.length,
+    console_error_count: consoleErrors.unexpected.length,
+    expected_http_console_error_count: consoleErrors.expected.length,
+    expected_http_console_errors: consoleErrors.expected,
   }
-  expect(consoleErrors.length).toBe(0)
+  expect(consoleErrors.unexpected).toEqual([])
   await context.close()
 }
 
@@ -496,6 +502,37 @@ async function viewportGeometry(page: Page) {
     scroll_width: document.documentElement.scrollWidth,
     overflow: Math.max(0, document.documentElement.scrollWidth - window.innerWidth),
   }))
+}
+
+function trackConsoleErrors(
+  page: Page,
+  allowedHttpErrors: Array<{ status: number; path: string }>
+) {
+  const expected: Array<{ status: number; path: string }> = []
+  const unexpected: Array<{ text: string; url: string }> = []
+  page.on('console', message => {
+    if (message.type() !== 'error') return
+    const text = message.text()
+    const url = message.location().url
+    const status = Number(
+      /^Failed to load resource: the server responded with a status of (\d{3})/.exec(text)?.[1]
+    )
+    let path = ''
+    try {
+      path = new URL(url).pathname
+    } catch {
+      // 非 URL 的 console 来源继续按非预期错误处理。
+    }
+    if (allowedHttpErrors.some(item => item.status === status && item.path === path)) {
+      expected.push({ status, path })
+      return
+    }
+    unexpected.push({ text, url })
+  })
+  page.on('pageerror', error => {
+    unexpected.push({ text: `pageerror: ${error.message}`, url: page.url() })
+  })
+  return { expected, unexpected }
 }
 
 async function probeRetiredControls(page: Page, persistId: string) {
