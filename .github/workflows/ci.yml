@@ -80,6 +80,27 @@ jobs:
           ]
           assert prepare_job.count("'  ServerAliveInterval 30'") == 2
           assert prepare_job.count("'  ServerAliveCountMax 10'") == 2
+          def minute_constant(name):
+              match = re.search(
+                  rf"^{name} = ([0-9]+) \* 60$", recovery, re.MULTILINE
+              )
+              assert match is not None
+              return int(match.group(1))
+          audition_timeout = minute_constant("AUDITION_TIMEOUT_SECONDS")
+          operation_timeout = minute_constant("OPERATION_TIMEOUT_SECONDS")
+          lease_ttl = minute_constant("LEASE_TTL_SECONDS")
+          prepare_header = acceptance[
+              acceptance.index("  prepare-synthetic-user:"):
+              acceptance.index("    steps:", acceptance.index("  prepare-synthetic-user:"))
+          ]
+          prepare_job_timeout = re.search(
+              r"^    timeout-minutes: ([0-9]+)$", prepare_header, re.MULTILINE
+          )
+          assert prepare_job_timeout is not None
+          assert audition_timeout * 60 >= 15 * 305 + 10 * 60
+          assert operation_timeout >= audition_timeout + 15
+          assert int(prepare_job_timeout.group(1)) >= operation_timeout + 30
+          assert lease_ttl >= operation_timeout + 75
           restart_world = recovery[
               recovery.index("def _restart_world("):
               recovery.index("def _install_watchdog(")
