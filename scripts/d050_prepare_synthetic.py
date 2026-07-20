@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import fcntl
 import hashlib
 import json
 import os
 import re
 import signal
+import stat
 import subprocess
 import sys
 import time
@@ -35,6 +37,7 @@ from brain.workspace.user_paths import ProcessFileLock, load_user_meta, user_sto
 
 DATA_DIR = "/opt/myagent/data"
 TARGET_PERSIST_ID = "p6_load_c"
+STUCK_PERSIST_ID = "p6_load_b"
 PUBLIC_BASE_URL = "https://lingxi.hi-veblen.com"
 OPS_DIR = Path("/opt/myagent/d050-recovery/p6-load-c")
 STATE_PATH = OPS_DIR / "setup.json"
@@ -44,6 +47,10 @@ WATCHDOG_CRON_PATH = Path("/etc/cron.d/d050-p6-load-c")
 LOCK_DIR = Path("/run/myagent-d050-p6-load-c-locks")
 LEASE_LOCK_PATH = LOCK_DIR / "lease.lock"
 API_WINDOW_LOCK_PATH = LOCK_DIR / "api.lock"
+RELEASE_LOCK_PATH = Path("/run/hi-veblen-release.lock")
+RELEASE_LEASE_DIR = Path("/run/hi-veblen-release-lease")
+MAINTENANCE_MARKER_PATH = Path("/run/myagent-release-maintenance")
+PRESERVE_MARKER_PATH = Path("/run/hi-veblen-release-preserve")
 FLOCK_PATH = Path("/usr/bin/flock")
 BACKEND_PYTHON_PATH = Path("/opt/myagent/backend-current/.venv/bin/python")
 AUDITION_TIMEOUT_SECONDS = 30 * 60
@@ -74,6 +81,7 @@ from dotenv import dotenv_values
 from brain.workspace.p6_config import (
     atomic_write_json,
     is_gateway_token_revoked,
+    parse_user_token_map,
     revoke_gateway_tokens,
     token_hash,
 )
@@ -86,6 +94,9 @@ LOCK_DIR = Path("/run/myagent-d050-p6-load-c-locks")
 LOCK_PATH = LOCK_DIR / "lease.lock"
 API_LOCK_PATH = LOCK_DIR / "api.lock"
 CRON_PATH = Path("/etc/cron.d/d050-p6-load-c")
+RELEASE_LEASE_DIR = Path("/run/hi-veblen-release-lease")
+MAINTENANCE_MARKER_PATH = Path("/run/myagent-release-maintenance")
+PRESERVE_MARKER_PATH = Path("/run/hi-veblen-release-preserve")
 
 
 def remove_own_cron(operation_id: str) -> None:
@@ -114,6 +125,15 @@ def ensure_lock_dir() -> None:
 
 def main() -> int:
     operation_id = sys.argv[1]
+    if any(
+        path.exists() or path.is_symlink()
+        for path in (
+            RELEASE_LEASE_DIR,
+            MAINTENANCE_MARKER_PATH,
+            PRESERVE_MARKER_PATH,
+        )
+    ):
+        return 1
     if not LEASE_PATH.is_file() or LEASE_PATH.is_symlink():
         remove_own_cron(operation_id)
         return 0
@@ -145,7 +165,9 @@ def main() -> int:
             if time.time() < float(lease.get("watchdog_after_epoch") or 0):
                 return 0
             values = dotenv_values("/opt/myagent/.env")
-            mapping = json.loads(values.get("BRAIN_GATEWAY_USER_TOKENS") or "{}")
+            mapping = parse_user_token_map(
+                values.get("BRAIN_GATEWAY_USER_TOKENS") or ""
+            )
             token = str(mapping.get(TARGET_PERSIST_ID) or "")
             if not token or lease.get("token_hash") != token_hash(token):
                 return 1
@@ -192,7 +214,9 @@ def _values() -> dict[str, Any]:
 
 
 def _target_token(values: dict[str, Any]) -> str:
-    mapping = json.loads(values.get("BRAIN_GATEWAY_USER_TOKENS") or "{}")
+    mapping = p6_config.parse_user_token_map(
+        str(values.get("BRAIN_GATEWAY_USER_TOKENS") or "")
+    )
     token = str(mapping.get(TARGET_PERSIST_ID) or "")
     if not token:
         raise RuntimeError("合成用户邀请映射不存在")
@@ -421,39 +445,82 @@ def _restart_gateway() -> None:
 
 
 def _restart_world(values: dict[str, Any]) -> None:
+    expected_revision = Path("/opt/myagent/backend-current/release.txt").read_text(
+        encoding="ascii"
+    ).strip()
+    if not re.fullmatch(r"[0-9a-f]{40}", expected_revision):
+        raise RuntimeError("当前 backend revision 无效")
     subprocess.run(
-        ["systemctl", "restart", "myagent-world.service"],
+        [
+            "systemctl",
+            "restart",
+            "myagent-world.service",
+            "myagent-gateway.service",
+        ],
         check=True,
         timeout=180,
     )
-    for action in ("is-active", "is-enabled"):
-        subprocess.run(
-            ["systemctl", action, "--quiet", "myagent-world.service"],
+    for unit in ("myagent-world.service", "myagent-gateway.service"):
+        for action in ("is-active", "is-enabled"):
+            subprocess.run(
+                ["systemctl", action, "--quiet", unit],
+                check=True,
+                timeout=30,
+            )
+        drop_ins = subprocess.run(
+            ["systemctl", "show", unit, "-p", "DropInPaths", "--value"],
             check=True,
+            capture_output=True,
+            text=True,
             timeout=30,
-        )
-    drop_ins = subprocess.run(
-        ["systemctl", "show", "myagent-world.service", "-p", "DropInPaths", "--value"],
-        check=True,
-        capture_output=True,
-        text=True,
-        timeout=30,
-    ).stdout.strip()
-    if drop_ins:
-        raise RuntimeError("world 服务存在临时 DropInPaths")
+        ).stdout.strip()
+        if drop_ins:
+            raise RuntimeError(f"{unit} 存在临时 DropInPaths")
     host_port = int(values.get("BRAIN_HOST_PORT") or 8765)
+    gateway_port = int(values.get("BRAIN_GATEWAY_PORT") or 8000)
     deadline = time.monotonic() + 180
+    stable_samples = 0
     while time.monotonic() < deadline:
         try:
             with request.urlopen(
                 f"http://127.0.0.1:{host_port}/host/health", timeout=10
             ) as response:
-                if response.status == 200:
-                    return
-        except (OSError, error.URLError):
-            pass
+                payload = json.loads(_read_response(response, label="world 健康检查"))
+            host = payload.get("host") or payload
+            heartbeat = host.get("heartbeat") or {}
+            with request.urlopen(
+                f"http://127.0.0.1:{gateway_port}/api/health", timeout=10
+            ) as gateway_response:
+                gateway_payload = json.loads(
+                    _read_response(gateway_response, label="gateway 健康检查")
+                )
+            gateway_host = gateway_payload.get("host") or {}
+            stable = bool(
+                response.status == 200
+                and gateway_response.status == 200
+                and host.get("ok") is True
+                and host.get("ready") is True
+                and host.get("backend_revision") == expected_revision
+                and host.get("audition_isolation_ok") is True
+                and heartbeat.get("running") is True
+                and heartbeat.get("first_fire_completed") is True
+                and heartbeat.get("first_fire_ok") is True
+                and heartbeat.get("in_flight") is False
+                and heartbeat.get("in_flight_timed_out") is False
+                and int(heartbeat.get("consecutive_failures") or 0) == 0
+                and gateway_payload.get("ok") is True
+                and gateway_payload.get("backend_revision") == expected_revision
+                and gateway_host.get("ok") is True
+                and gateway_host.get("ready") is True
+                and gateway_host.get("backend_revision") == expected_revision
+            )
+            stable_samples = stable_samples + 1 if stable else 0
+            if stable_samples >= 2:
+                return
+        except (OSError, ValueError, error.URLError):
+            stable_samples = 0
         time.sleep(2)
-    raise RuntimeError("world 服务重启后未恢复健康入口")
+    raise RuntimeError("world 服务重启后未进入连续两次稳定就绪")
 
 
 def _install_watchdog(operation_id: str) -> None:
@@ -472,6 +539,7 @@ def _install_watchdog(operation_id: str) -> None:
     _atomic_write_text(WATCHDOG_PATH, WATCHDOG_SOURCE, 0o700)
     cron_line = (
         "* * * * * root cd /opt/myagent/backend-current && "
+        f"{FLOCK_PATH} -n {RELEASE_LOCK_PATH} "
         f"{FLOCK_PATH} -n /run/d050-p6-load-c-watchdog.lock "
         f"{BACKEND_PYTHON_PATH} -B "
         "/opt/myagent/d050-recovery/p6-load-c/watchdog.py "
@@ -511,15 +579,51 @@ def _assert_recovery_artifacts_removed() -> None:
         raise RuntimeError("合成用户临时恢复文件尚未清零")
 
 
+@contextmanager
+def _release_guard():
+    if RELEASE_LOCK_PATH.is_symlink():
+        raise RuntimeError("生产发布锁不能是符号链接")
+    flags = os.O_RDWR | os.O_CREAT | getattr(os, "O_CLOEXEC", 0)
+    flags |= getattr(os, "O_NOFOLLOW", 0)
+    fd = os.open(RELEASE_LOCK_PATH, flags, 0o600)
+    try:
+        info = os.fstat(fd)
+        if not stat.S_ISREG(info.st_mode) or info.st_uid != os.geteuid():
+            raise RuntimeError("生产发布锁 owner 或类型无效")
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError as exc:
+            raise RuntimeError("生产发布事务正在运行") from exc
+        yield
+    finally:
+        try:
+            fcntl.flock(fd, fcntl.LOCK_UN)
+        finally:
+            os.close(fd)
+
+
+def _require_release_idle() -> None:
+    for path in (
+        RELEASE_LEASE_DIR,
+        MAINTENANCE_MARKER_PATH,
+        PRESERVE_MARKER_PATH,
+    ):
+        if path.exists() or path.is_symlink():
+            raise RuntimeError(f"检测到生产发布保护现场：{path}")
+
+
 def _require_stuck_host(values: dict[str, Any]) -> None:
-    host_port = int(values.get("BRAIN_HOST_PORT") or 8765)
-    with request.urlopen(
-        f"http://127.0.0.1:{host_port}/host/health", timeout=30
-    ) as response:
-        payload = json.loads(response.read().decode("utf-8"))
-    host = payload.get("host") or payload
-    if host.get("continuity_ok") is not False:
-        raise RuntimeError("旧宿主连续性状态与删除失败现场不一致")
+    mapping = p6_config.parse_user_token_map(
+        str(values.get("BRAIN_GATEWAY_USER_TOKENS") or "")
+    )
+    token = str(mapping.get(STUCK_PERSIST_ID) or "")
+    user_dir = Path(user_storage_paths(DATA_DIR, STUCK_PERSIST_ID).user_dir)
+    if not token:
+        raise RuntimeError("旧删除失败现场的邀请映射不存在")
+    if not is_gateway_token_revoked(DATA_DIR, token_hash(token)):
+        raise RuntimeError("旧删除失败现场的邀请尚未撤销")
+    if user_dir.is_symlink() or not user_dir.is_dir():
+        raise RuntimeError("旧删除失败现场的用户目录不存在")
 
 
 def _draft(catalog: dict[str, Any]) -> dict[str, Any]:
@@ -858,8 +962,8 @@ def _seal_lease(operation_id: str, token: str, digest: str) -> None:
 def prepare(operation_id: str) -> None:
     global _CURRENT_MODE, _CURRENT_OPERATION_ID, _CURRENT_TOKEN_HASH
     values = _values()
-    _restart_world(values)
     _require_stuck_host(values)
+    _restart_world(values)
     token = _target_token(values)
     digest = token_hash(token)
     _CURRENT_MODE = "prepare"
@@ -1209,19 +1313,23 @@ def main() -> int:
 
     if mode != "cleanup":
         _OPERATION_DEADLINE = time.monotonic() + OPERATION_TIMEOUT_SECONDS
-    try:
-        {"prepare": prepare, "confirm": confirm, "cleanup": cleanup}[
-            mode
-        ](operation_id)
-    except BaseException:
-        if mode != "cleanup":
-            for candidate in handled_signals:
-                signal.signal(candidate, signal.SIG_IGN)
-            try:
-                cleanup(operation_id)
-            except BaseException as cleanup_exc:
-                raise RuntimeError("合成用户主操作失败且自动清理未完成") from cleanup_exc
-        raise
+    with _release_guard():
+        _require_release_idle()
+        try:
+            {"prepare": prepare, "confirm": confirm, "cleanup": cleanup}[
+                mode
+            ](operation_id)
+        except BaseException:
+            if mode != "cleanup":
+                for candidate in handled_signals:
+                    signal.signal(candidate, signal.SIG_IGN)
+                try:
+                    cleanup(operation_id)
+                except BaseException as cleanup_exc:
+                    raise RuntimeError(
+                        "合成用户主操作失败且自动清理未完成"
+                    ) from cleanup_exc
+            raise
     return 0
 
 
