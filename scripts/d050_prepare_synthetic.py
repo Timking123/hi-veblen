@@ -58,7 +58,7 @@ OPERATION_TIMEOUT_SECONDS = 105 * 60
 LEASE_TTL_SECONDS = 180 * 60
 WATCHDOG_GRACE_SECONDS = 10 * 60
 MAX_API_RESPONSE_BYTES = 4 * 1024 * 1024
-APPROVED_AUDITION_SHA256 = ""
+APPROVED_AUDITION_SHA256 = "6816b805a0520abae9cf480a3e0aad1db6de47f8b1ec569e3aec90fc6fe2747d"
 _OPERATION_DEADLINE: float | None = None
 _CURRENT_OPERATION_ID = ""
 _CURRENT_TOKEN_HASH = ""
@@ -1150,6 +1150,8 @@ def confirm(operation_id: str) -> None:
         ).get("audition")
         or {}
     )
+    if audition != state.get("audition"):
+        raise RuntimeError("线上出生试镜与人工批准证据不一致")
     if audition.get("status") != "main_ready":
         raise RuntimeError("出生试镜不在可确认状态")
     holdout_results = audition.get("holdout_results") or []

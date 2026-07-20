@@ -139,6 +139,7 @@ jobs:
           assert prepare.index("_require_stuck_host(values)") < prepare.index(
               "_restart_world(values)"
           )
+          assert 'if audition != state.get("audition"):' in recovery
           main = recovery[recovery.index("def main() -> int:"):]
           assert "with _release_guard():" in main
           assert main.index("_require_release_idle()") < main.index(
