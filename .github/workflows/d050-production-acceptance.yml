@@ -1,0 +1,488 @@
+name: D050 生产浏览器与删除链验收
+
+on:
+  workflow_dispatch:
+    inputs:
+      target_persist_id:
+        description: 本次唯一允许验收并删除的合成用户
+        required: true
+        default: p6_load_b
+        type: string
+      expected_head_sha:
+        description: 必须与本次 workflow 实际检出的完整提交 SHA 一致
+        required: true
+        type: string
+      expected_portal_revision:
+        description: 本次已经部署并等待验收的 Portal 完整 revision
+        required: true
+        type: string
+      expected_backend_revision:
+        description: 本次已经部署并等待验收的 Lingxi 完整 revision
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: hi-veblen-production
+  cancel-in-progress: false
+
+jobs:
+  acceptance:
+    name: 生产桌面移动全链
+    if: >-
+      github.repository == 'Timking123/hi-veblen' &&
+      github.actor == 'Timking123' &&
+      github.triggering_actor == 'Timking123'
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    environment:
+      name: production
+
+    steps:
+      - name: 检出验收脚本
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          persist-credentials: false
+          ref: ${{ github.sha }}
+
+      - name: 校验人工触发目标
+        env:
+          TARGET_PERSIST_ID: ${{ inputs.target_persist_id }}
+          EXPECTED_HEAD_SHA: ${{ inputs.expected_head_sha }}
+          EXPECTED_PORTAL_REVISION: ${{ inputs.expected_portal_revision }}
+          EXPECTED_BACKEND_REVISION: ${{ inputs.expected_backend_revision }}
+        run: |
+          set -euo pipefail
+          test "$TARGET_PERSIST_ID" = "p6_load_b"
+          printf '%s' "$EXPECTED_HEAD_SHA" | grep -Eq '^[0-9a-f]{40}$'
+          printf '%s' "$EXPECTED_PORTAL_REVISION" | grep -Eq '^[0-9a-f]{40}$'
+          printf '%s' "$EXPECTED_BACKEND_REVISION" | grep -Eq '^[0-9a-f]{40}$'
+          test "$EXPECTED_HEAD_SHA" = "$GITHUB_SHA"
+          test "$EXPECTED_PORTAL_REVISION" = "$EXPECTED_HEAD_SHA"
+          locked_backend_revision="$(
+            sed -n 's/^  LINGXI_SHA: \([0-9a-f]\{40\}\)$/\1/p' .github/workflows/deploy.yml
+          )"
+          test "$EXPECTED_BACKEND_REVISION" = "$locked_backend_revision"
+
+      - name: 等待最终生产 revision
+        env:
+          EXPECTED_PORTAL_REVISION: ${{ inputs.expected_portal_revision }}
+        run: |
+          set -euo pipefail
+          if ! printf '%s' "$EXPECTED_PORTAL_REVISION" | grep -Eq '^[0-9a-f]{40}$'; then
+            echo "目标 Portal revision 格式无效" >&2
+            exit 1
+          fi
+          deadline=$((SECONDS + 1500))
+          while test "$SECONDS" -lt "$deadline"; do
+            current="$(curl --connect-timeout 10 --max-time 30 \
+              --fail --silent --show-error https://hi-veblen.com/release.txt || true)"
+            if test "$current" = "$EXPECTED_PORTAL_REVISION"; then
+              echo "目标生产 revision 已就绪"
+              exit 0
+            fi
+            sleep 15
+          done
+          echo "等待目标生产 revision 超时" >&2
+          exit 1
+
+      - name: 设置 Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: '22'
+          cache: npm
+
+      - name: 安装浏览器依赖
+        run: |
+          npm ci
+          npx playwright install --with-deps chromium
+
+      - name: 配置受信 SSH
+        env:
+          SERVER_HOST: ${{ secrets.SERVER_HOST }}
+          SERVER_USER: ${{ secrets.SERVER_USER }}
+          SERVER_SSH_KEY: ${{ secrets.SERVER_SSH_KEY }}
+        run: |
+          set -eu
+          case "$SERVER_HOST" in
+            ''|*[!A-Za-z0-9.:-]*) echo "SERVER_HOST 格式无效" >&2; exit 1 ;;
+          esac
+          case "$SERVER_USER" in
+            ''|*[!A-Za-z0-9._-]*) echo "SERVER_USER 格式无效" >&2; exit 1 ;;
+          esac
+          install -d -m 0700 "$HOME/.ssh"
+          printf '%s\n' "$SERVER_SSH_KEY" | tr -d '\r' > "$HOME/.ssh/hi-veblen-deploy"
+          chmod 0600 "$HOME/.ssh/hi-veblen-deploy"
+          printf '%s\n' \
+            'hi-veblen-production ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIM4IhOSWQcIioXavkJYcZ1WbE682kGvQF+rTAgnBRNif' \
+            > "$HOME/.ssh/known_hosts"
+          printf '%s\n' \
+            'Host hi-veblen-production' \
+            "  HostName $SERVER_HOST" \
+            "  User $SERVER_USER" \
+            '  HostKeyAlias hi-veblen-production' \
+            '  IdentityFile ~/.ssh/hi-veblen-deploy' \
+            '  IdentitiesOnly yes' \
+            '  BatchMode yes' \
+            '  StrictHostKeyChecking yes' \
+            '  ConnectTimeout 10' \
+            > "$HOME/.ssh/config"
+          chmod 0600 "$HOME/.ssh/config" "$HOME/.ssh/known_hosts"
+          ssh hi-veblen-production true
+
+      - name: 读取并掩码合成用户凭证
+        id: read-credentials
+        env:
+          TARGET_PERSIST_ID: ${{ inputs.target_persist_id }}
+        run: |
+          set -euo pipefail
+          case "$TARGET_PERSIST_ID" in
+            p6_load_b) ;;
+            *) echo "本次验收目标不是已批准的合成用户" >&2; exit 1 ;;
+          esac
+          mapfile -t values < <(
+            ssh hi-veblen-production 'bash -se --' "$TARGET_PERSIST_ID" <<'REMOTE'
+          set -eu
+          target_persist_id="$1"
+          test "$target_persist_id" = "p6_load_b"
+          python=/opt/myagent/backend-current/.venv/bin/python
+          test -x "$python"
+          cd /opt/myagent/backend-current
+          TARGET_PERSIST_ID="$target_persist_id" "$python" - <<'PY'
+          import json
+          import hashlib
+          import os
+          from pathlib import Path
+
+          from dotenv import dotenv_values
+          from brain.persona import DEFAULT_PERSONA_ID
+          from brain.workspace.p6_config import (
+              is_gateway_token_revoked,
+              load_user_config,
+              onboarding_status,
+              persona_growth_consent_status,
+              token_hash,
+          )
+          from brain.workspace.user_paths import load_user_meta, user_storage_paths
+
+          values = dotenv_values("/opt/myagent/.env")
+          mapping = json.loads(values.get("BRAIN_GATEWAY_USER_TOKENS") or "{}")
+          diagnostics = []
+          candidate = os.environ["TARGET_PERSIST_ID"]
+          if candidate != "p6_load_b":
+              raise SystemExit("本次验收目标不是已批准的合成用户")
+          token = str(mapping.get(candidate) or "")
+          user_dir = Path("/opt/myagent/data/users") / candidate
+          token_present = bool(token)
+          directory_present = user_dir.is_dir()
+          revoked = token_present and is_gateway_token_revoked(
+              "/opt/myagent/data", token_hash(token)
+          )
+          config = (
+              load_user_config("/opt/myagent/data", candidate)
+              if directory_present
+              else {}
+          )
+          try:
+              meta = load_user_meta(user_storage_paths("/opt/myagent/data", candidate))
+          except Exception:
+              meta = {}
+          role = config.get("role_choice") if isinstance(config, dict) else {}
+          persona_id = str((role or {}).get("persona_id") or "")
+          binding_matches_meta = bool(persona_id) and meta.get("persona") == persona_id
+          preset_role_id = str((role or {}).get("preset_role_id") or "")
+          growth = persona_growth_consent_status(config)
+          onboarding = onboarding_status(config)
+          onboarding_completed = bool(onboarding["completed"])
+          resumed_private = (
+              (role or {}).get("mode") == "wizard"
+              and preset_role_id == DEFAULT_PERSONA_ID
+              and binding_matches_meta
+              and persona_id == (
+                  "custom_" + hashlib.sha256(candidate.encode("utf-8")).hexdigest()[:16]
+              )
+          )
+          growth_accepted = bool(growth["accepted"])
+          diagnostics.append({
+              "persist_id": candidate,
+              "token_present": token_present,
+              "directory_present": directory_present,
+              "revoked": revoked,
+              "onboarding_completed": onboarding_completed,
+              "onboarding_status": onboarding["status"],
+              "binding_matches_meta": binding_matches_meta,
+              "resumed_private": resumed_private,
+              "role_mode": str((role or {}).get("mode") or ""),
+              "growth_accepted": growth_accepted,
+          })
+          if not all((token_present, directory_present, not revoked,
+                      onboarding_completed, resumed_private, growth_accepted)):
+              raise SystemExit(json.dumps({
+                  "error": "指定合成用户不满足安全续跑条件",
+                  "synthetic_eligibility": diagnostics,
+              }, sort_keys=True))
+
+          print(candidate)
+          print(token)
+          print(candidate)
+          print(token)
+          print("private_resumed")
+          PY
+          REMOTE
+          )
+          test "${#values[@]}" -eq 5
+          primary_id="${values[0]}"
+          primary_token="${values[1]}"
+          delete_id="${values[2]}"
+          delete_token="${values[3]}"
+          acceptance_mode="${values[4]}"
+          case "$primary_id" in
+            p6_e2e_current|p6_load_a|p6_load_b|p6_load_c) ;;
+            *) echo "登录验收用户不在合成白名单" >&2; exit 1 ;;
+          esac
+          test -n "$primary_token"
+          case "$delete_id" in
+            p6_e2e_current|p6_load_a|p6_load_b|p6_load_c) ;;
+            *) echo "删除验收用户不在合成白名单" >&2; exit 1 ;;
+          esac
+          test -n "$delete_token"
+          case "$acceptance_mode" in
+            shared_pending|private_resumed) ;;
+            *) echo "合成用户验收模式非法" >&2; exit 1 ;;
+          esac
+          primary_token_b64="$(printf '%s' "$primary_token" | base64 -w0)"
+          delete_token_b64="$(printf '%s' "$delete_token" | base64 -w0)"
+          echo "::add-mask::$primary_token"
+          echo "::add-mask::$delete_token"
+          echo "::add-mask::$primary_token_b64"
+          echo "::add-mask::$delete_token_b64"
+          {
+            printf 'D050_PRIMARY_ID=%s\n' "$primary_id"
+            printf 'D050_PRIMARY_TOKEN_B64=%s\n' "$primary_token_b64"
+            printf 'D050_DELETE_ID=%s\n' "$delete_id"
+            printf 'D050_DELETE_TOKEN_B64=%s\n' "$delete_token_b64"
+            printf 'D050_ACCEPTANCE_MODE=%s\n' "$acceptance_mode"
+          } >> "$GITHUB_ENV"
+          echo "已选择合成验收用户：$primary_id；模式：$acceptance_mode；删除用户：$delete_id"
+
+      - name: 在浏览器执行前清除生产 SSH 凭据
+        if: ${{ always() }}
+        run: rm -f "$HOME/.ssh/hi-veblen-deploy" "$HOME/.ssh/config" "$HOME/.ssh/known_hosts"
+
+      - name: 运行生产真实 Chromium 全链
+        env:
+          D050_BASE_URL: https://lingxi.hi-veblen.com
+          D050_EXPECTED_PORTAL_REVISION: ${{ inputs.expected_portal_revision }}
+          D050_EXPECTED_BACKEND_REVISION: ${{ inputs.expected_backend_revision }}
+        run: npx playwright test e2e/d050-production-acceptance.spec.ts --config=e2e/d050-production-acceptance.config.ts
+
+      - name: 清除 Runner 合成凭证
+        if: ${{ always() }}
+        run: |
+          {
+            printf 'D050_PRIMARY_TOKEN_B64=\n'
+            printf 'D050_DELETE_TOKEN_B64=\n'
+          } >> "$GITHUB_ENV"
+
+      - name: 为后置复核重新配置受信 SSH
+        id: post-ssh
+        if: ${{ always() && steps.read-credentials.outcome == 'success' }}
+        env:
+          SERVER_HOST: ${{ secrets.SERVER_HOST }}
+          SERVER_USER: ${{ secrets.SERVER_USER }}
+          SERVER_SSH_KEY: ${{ secrets.SERVER_SSH_KEY }}
+        run: |
+          set -eu
+          case "$SERVER_HOST" in
+            ''|*[!A-Za-z0-9.:-]*) echo "SERVER_HOST 格式无效" >&2; exit 1 ;;
+          esac
+          case "$SERVER_USER" in
+            ''|*[!A-Za-z0-9._-]*) echo "SERVER_USER 格式无效" >&2; exit 1 ;;
+          esac
+          install -d -m 0700 "$HOME/.ssh"
+          printf '%s\n' "$SERVER_SSH_KEY" | tr -d '\r' > "$HOME/.ssh/hi-veblen-deploy"
+          chmod 0600 "$HOME/.ssh/hi-veblen-deploy"
+          printf '%s\n' \
+            'hi-veblen-production ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIM4IhOSWQcIioXavkJYcZ1WbE682kGvQF+rTAgnBRNif' \
+            > "$HOME/.ssh/known_hosts"
+          printf '%s\n' \
+            'Host hi-veblen-production' \
+            "  HostName $SERVER_HOST" \
+            "  User $SERVER_USER" \
+            '  HostKeyAlias hi-veblen-production' \
+            '  IdentityFile ~/.ssh/hi-veblen-deploy' \
+            '  IdentitiesOnly yes' \
+            '  BatchMode yes' \
+            '  StrictHostKeyChecking yes' \
+            '  ConnectTimeout 10' \
+            > "$HOME/.ssh/config"
+          chmod 0600 "$HOME/.ssh/config" "$HOME/.ssh/known_hosts"
+          ssh hi-veblen-production true
+
+      - name: 诊断持续成长锁
+        if: ${{ failure() && steps.post-ssh.outcome == 'success' }}
+        run: |
+          set -euo pipefail
+          ssh hi-veblen-production 'bash -se --' "$D050_PRIMARY_ID" \
+            > d050-growth-lock-diagnostic.json <<'REMOTE'
+          set -eu
+          persist_id="$1"
+          test "$persist_id" = "p6_load_b"
+          python=/opt/myagent/backend-current/.venv/bin/python
+          cd /opt/myagent/backend-current
+          "$python" -B - "$persist_id" <<'PY'
+          import fcntl
+          import json
+          import os
+          from pathlib import Path
+          import re
+          import subprocess
+          import sys
+
+          from brain.persona.growth_runtime import (
+              GrowthRuntimeCoordinator,
+              _user_change_lock_path,
+          )
+          from brain.workspace.user_paths import (
+              runtime_persist_lock_path,
+              user_storage_paths,
+          )
+
+          data_dir = "/opt/myagent/data"
+          persist_id = sys.argv[1]
+          paths = user_storage_paths(data_dir, persist_id)
+
+          def process_summary(pid: int) -> dict:
+              root = Path("/proc") / str(pid)
+              if not root.is_dir():
+                  return {"pid": pid, "exists": False}
+              comm = (root / "comm").read_text(encoding="utf-8").strip()
+              cgroup = (root / "cgroup").read_text(encoding="utf-8").splitlines()
+              units = sorted({
+                  match.group(0)
+                  for line in cgroup
+                  for match in [re.search(r"myagent-(?:world|gateway)\.service", line)]
+                  if match is not None
+              })
+              return {"pid": pid, "exists": True, "comm": comm, "units": units}
+
+          def lock_summary(path_value: str) -> dict:
+              path = Path(path_value)
+              summary = {"path": str(path), "exists": path.is_file()}
+              if not path.is_file():
+                  return summary
+              stat = path.stat()
+              content = path.read_text(encoding="utf-8", errors="replace")[:64].strip()
+              holder = re.fullmatch(r"pid=(\\d+)", content)
+              summary.update({
+                  "mtime_ns": stat.st_mtime_ns,
+                  "holder": process_summary(int(holder.group(1))) if holder else None,
+              })
+              with path.open("r", encoding="utf-8") as handle:
+                  try:
+                      fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                  except BlockingIOError:
+                      summary["held"] = True
+                  else:
+                      summary["held"] = False
+                      fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+              return summary
+
+          def json_summary(path: Path, keys: tuple[str, ...]) -> dict:
+              result = {"path": str(path), "exists": path.is_file()}
+              if not path.is_file():
+                  return result
+              try:
+                  payload = json.loads(path.read_text(encoding="utf-8"))
+                  result["fields"] = {
+                      key: payload.get(key)
+                      for key in keys
+                      if key in payload and not isinstance(payload.get(key), (dict, list))
+                  }
+                  pending = payload.get("pending_candidate")
+                  if isinstance(pending, dict):
+                      result["pending_candidate"] = {
+                          key: pending.get(key)
+                          for key in ("status", "retry_reason", "next_retry_at")
+                      }
+              except Exception as exc:
+                  result["error_type"] = type(exc).__name__
+              return result
+
+          service_pids = {}
+          for unit in ("myagent-world.service", "myagent-gateway.service"):
+              raw = subprocess.check_output(
+                  ["systemctl", "show", unit, "-p", "MainPID", "--value"],
+                  text=True,
+              ).strip()
+              service_pids[unit] = int(raw or "0")
+
+          user_dir = Path(paths.user_dir)
+          coordinator = GrowthRuntimeCoordinator(data_dir)
+          result = {
+              "persist_id": persist_id,
+              "service_pids": service_pids,
+              "locks": {
+                  "gateway_user": lock_summary(
+                      str(_user_change_lock_path(data_dir, persist_id))
+                  ),
+                  "runtime": lock_summary(
+                      runtime_persist_lock_path(data_dir, persist_id)
+                  ),
+              },
+              "growth_transaction": json_summary(
+                  coordinator._journal_path(persist_id),
+                  (
+                      "schema_version", "status", "persist_id", "persona_id",
+                      "revision_id", "created_at", "updated_at",
+                  ),
+              ),
+              "growth_envelope": json_summary(
+                  user_dir / "persona_calibration.json",
+                  ("schema_version", "persona_id", "revision", "updated_at"),
+              ),
+          }
+          print(json.dumps(result, ensure_ascii=False, sort_keys=True, indent=2))
+          PY
+          REMOTE
+
+      - name: 复核整用户磁盘删除
+        if: ${{ always() && steps.post-ssh.outcome == 'success' }}
+        run: |
+          set -euo pipefail
+          if ! test -f d050-delete-confirmed.flag; then
+            echo "浏览器链未确认 DELETE 成功，跳过磁盘删除复核"
+            exit 0
+          fi
+          ssh hi-veblen-production 'bash -se --' "$D050_DELETE_ID" <<'REMOTE'
+          set -eu
+          persist_id="$1"
+          case "$persist_id" in
+            p6_e2e_current|p6_load_a|p6_load_b|p6_load_c) ;;
+            *) echo "删除验收用户不在合成白名单" >&2; exit 1 ;;
+          esac
+          test ! -e "/opt/myagent/data/users/$persist_id"
+          test ! -L "/opt/myagent/data/users/$persist_id"
+          echo "整用户磁盘删除 OK"
+          REMOTE
+
+      - name: 清除后置生产 SSH 凭据
+        if: ${{ always() }}
+        run: rm -f "$HOME/.ssh/hi-veblen-deploy" "$HOME/.ssh/config" "$HOME/.ssh/known_hosts"
+
+      - name: 保存非敏感验收证据
+        if: ${{ success() }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: d050-production-acceptance-${{ github.sha }}
+          path: |
+            d050-production-evidence.json
+            d050-portal.png
+            d050-desktop.png
+            d050-mobile.png
+            d050-delete-complete.png
+            d050-delete-confirmed.flag
+          if-no-files-found: error
+          retention-days: 3

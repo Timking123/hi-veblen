@@ -27,6 +27,42 @@ jobs:
           import re
 
           workflow = Path(".github/workflows/deploy.yml").read_text(encoding="utf-8")
+          acceptance = Path(
+              ".github/workflows/d050-production-acceptance.yml"
+          ).read_text(encoding="utf-8")
+          acceptance_spec = Path(
+              "e2e/d050-production-acceptance.spec.ts"
+          ).read_text(encoding="utf-8")
+          assert "group: hi-veblen-production" in workflow
+          assert "group: hi-veblen-production" in acceptance
+          assert "github.triggering_actor == 'Timking123'" in acceptance
+          assert 'test "$EXPECTED_PORTAL_REVISION" = "$EXPECTED_HEAD_SHA"' in acceptance
+          assert (
+              'test "$EXPECTED_BACKEND_REVISION" = "$locked_backend_revision"'
+              in acceptance
+          )
+          browser_step = acceptance.index("      - name: 运行生产真实 Chromium 全链")
+          first_ssh_cleanup = acceptance.index(
+              "      - name: 在浏览器执行前清除生产 SSH 凭据"
+          )
+          post_ssh_config = acceptance.index(
+              "      - name: 为后置复核重新配置受信 SSH"
+          )
+          final_ssh_cleanup = acceptance.index(
+              "      - name: 清除后置生产 SSH 凭据"
+          )
+          artifact_upload = acceptance.index("      - name: 保存非敏感验收证据")
+          assert first_ssh_cleanup < browser_step < post_ssh_config
+          assert post_ssh_config < final_ssh_cleanup < artifact_upload
+          assert acceptance.count('rm -f "$HOME/.ssh/hi-veblen-deploy"') == 2
+          artifact = acceptance[artifact_upload:]
+          assert "if: $" + "{{ success() }}" in artifact
+          assert "d050-growth-lock-diagnostic.json" not in artifact
+          for stage in ("initial", "before_delete", "after_delete"):
+              assert f"recordRevisionCheck(evidence, '{stage}')" in acceptance_spec
+          assert "expect(lingxiRevision).toBe(expectedBackendRevision)" in acceptance_spec
+          assert "expect(observerBeforeDelete.status()).toBe(200)" in acceptance_spec
+          assert "expect(priorSessionStatus.status()).toBe(401)" in acceptance_spec
           deploy_header = workflow[
               workflow.index("  deploy:"):
               workflow.index("    steps:", workflow.index("  deploy:"))
