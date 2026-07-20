@@ -382,13 +382,11 @@ async function loadGrowthPanel(
 }
 
 async function verifyDeletion(browser: Browser, evidence: Record<string, unknown>) {
-  const observerContext = await browser.newContext({ viewport: { width: 1280, height: 800 } })
-  const observerPage = await observerContext.newPage()
-  await login(observerPage, deleteToken, deleteId)
-
   const context = await browser.newContext({ viewport: { width: 1280, height: 800 } })
   const page = await context.newPage()
   await login(page, deleteToken, deleteId)
+  const observerContext = await browser.newContext({ viewport: { width: 1280, height: 800 } })
+  await observerContext.addCookies(await context.cookies())
   const observerBeforeDelete = await observerContext.request.get(`${baseURL}/api/me`)
   expect(observerBeforeDelete.status()).toBe(200)
   expect((await observerBeforeDelete.json()).persist_id).toBe(deleteId)
