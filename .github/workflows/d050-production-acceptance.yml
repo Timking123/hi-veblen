@@ -6,7 +6,7 @@ on:
       target_persist_id:
         description: 本次唯一允许验收并删除的合成用户
         required: true
-        default: p6_load_b
+        default: p6_load_c
         type: string
       expected_head_sha:
         description: 必须与本次 workflow 实际检出的完整提交 SHA 一致
@@ -55,7 +55,7 @@ jobs:
           EXPECTED_BACKEND_REVISION: ${{ inputs.expected_backend_revision }}
         run: |
           set -euo pipefail
-          test "$TARGET_PERSIST_ID" = "p6_load_b"
+          test "$TARGET_PERSIST_ID" = "p6_load_c"
           printf '%s' "$EXPECTED_HEAD_SHA" | grep -Eq '^[0-9a-f]{40}$'
           printf '%s' "$EXPECTED_PORTAL_REVISION" | grep -Eq '^[0-9a-f]{40}$'
           printf '%s' "$EXPECTED_BACKEND_REVISION" | grep -Eq '^[0-9a-f]{40}$'
@@ -139,14 +139,14 @@ jobs:
         run: |
           set -euo pipefail
           case "$TARGET_PERSIST_ID" in
-            p6_load_b) ;;
+            p6_load_c) ;;
             *) echo "本次验收目标不是已批准的合成用户" >&2; exit 1 ;;
           esac
           mapfile -t values < <(
             ssh hi-veblen-production 'bash -se --' "$TARGET_PERSIST_ID" <<'REMOTE'
           set -eu
           target_persist_id="$1"
-          test "$target_persist_id" = "p6_load_b"
+          test "$target_persist_id" = "p6_load_c"
           python=/opt/myagent/backend-current/.venv/bin/python
           test -x "$python"
           cd /opt/myagent/backend-current
@@ -171,7 +171,7 @@ jobs:
           mapping = json.loads(values.get("BRAIN_GATEWAY_USER_TOKENS") or "{}")
           diagnostics = []
           candidate = os.environ["TARGET_PERSIST_ID"]
-          if candidate != "p6_load_b":
+          if candidate != "p6_load_c":
               raise SystemExit("本次验收目标不是已批准的合成用户")
           token = str(mapping.get(candidate) or "")
           user_dir = Path("/opt/myagent/data/users") / candidate
@@ -329,7 +329,7 @@ jobs:
             > d050-growth-lock-diagnostic.json <<'REMOTE'
           set -eu
           persist_id="$1"
-          test "$persist_id" = "p6_load_b"
+          test "$persist_id" = "p6_load_c"
           python=/opt/myagent/backend-current/.venv/bin/python
           cd /opt/myagent/backend-current
           "$python" -B - "$persist_id" <<'PY'
