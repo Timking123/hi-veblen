@@ -23,6 +23,7 @@ test('D050 生产桌面、移动、导出与整用户删除全链', async ({ bro
     backend_revision: '',
     schema_phase: '',
     growth_phase: '',
+    revision_checks: [],
     desktop: {},
     mobile: {},
     conversation: {
@@ -34,14 +35,7 @@ test('D050 生产桌面、移动、导出与整用户删除全链', async ({ bro
     deletion: {},
   }
 
-  const health = await fetchJson(`${baseURL}/api/health`)
-  expect(health.backend_revision).toBe(expectedBackendRevision)
-  expect(health.persona_schema_phase).toBe('active')
-  expect(health.persona_growth?.phase).toBe('active')
-  expect(health.persona_growth?.ready).toBe(true)
-  expect(health.host?.heartbeat?.first_fire_ok).toBe(true)
-  const portalRevision = (await fetch('https://hi-veblen.com/release.txt')).text()
-  expect((await portalRevision).trim()).toBe(expectedPortalRevision)
+  const health = await recordRevisionCheck(evidence, 'initial')
   evidence.portal_revision = expectedPortalRevision
   evidence.backend_revision = health.backend_revision
   evidence.schema_phase = health.persona_schema_phase
@@ -382,9 +376,16 @@ async function loadGrowthPanel(
 }
 
 async function verifyDeletion(browser: Browser, evidence: Record<string, unknown>) {
+  const observerContext = await browser.newContext({ viewport: { width: 1280, height: 800 } })
+  const observerPage = await observerContext.newPage()
+  await login(observerPage, deleteToken, deleteId)
+
   const context = await browser.newContext({ viewport: { width: 1280, height: 800 } })
   const page = await context.newPage()
   await login(page, deleteToken, deleteId)
+  const observerBeforeDelete = await observerContext.request.get(`${baseURL}/api/me`)
+  expect(observerBeforeDelete.status()).toBe(200)
+  expect((await observerBeforeDelete.json()).persist_id).toBe(deleteId)
 
   const decline = page.getByRole('button', { name: '拒绝并删除数据' })
   let confirmText = '删除我的全部数据'
@@ -399,6 +400,8 @@ async function verifyDeletion(browser: Browser, evidence: Record<string, unknown
   }
 
   await page.locator('.delete-confirm input, .consent-delete input').fill(confirmText)
+  await recordRevisionCheck(evidence, 'before_delete')
+  await persistEvidence(evidence)
   const deleteResponse = page.waitForResponse(
     response =>
       response.request().method() === 'DELETE' && new URL(response.url()).pathname === '/api/me'
@@ -427,6 +430,7 @@ async function verifyDeletion(browser: Browser, evidence: Record<string, unknown
     precise_event_delete_supported: false,
     audit_retained: true,
     relogin_status: 0,
+    prior_session_status: 0,
   }
   evidence.deletion = deletionEvidence
   await persistEvidence(evidence)
@@ -443,9 +447,14 @@ async function verifyDeletion(browser: Browser, evidence: Record<string, unknown
   await expect(page.getByText('token 无效或已关闭')).toBeVisible()
   await tokenInput.fill('')
   deletionEvidence.relogin_status = 401
+  const priorSessionStatus = await observerContext.request.get(`${baseURL}/api/me`)
+  expect(priorSessionStatus.status()).toBe(401)
+  deletionEvidence.prior_session_status = priorSessionStatus.status()
+  await recordRevisionCheck(evidence, 'after_delete')
   await persistEvidence(evidence)
   await page.screenshot({ path: 'd050-delete-complete.png', fullPage: true })
   await context.close()
+  await observerContext.close()
 }
 
 async function login(page: Page, token: string, expectedId: string) {
@@ -530,6 +539,37 @@ async function fetchJson(url: string) {
   const response = await fetch(url, { headers: { Accept: 'application/json' } })
   expect(response.ok).toBe(true)
   return response.json()
+}
+
+async function recordRevisionCheck(evidence: Record<string, unknown>, stage: string) {
+  const health = await fetchJson(`${baseURL}/api/health`)
+  expect(health.backend_revision).toBe(expectedBackendRevision)
+  expect(health.persona_schema_phase).toBe('active')
+  expect(health.persona_growth?.phase).toBe('active')
+  expect(health.persona_growth?.ready).toBe(true)
+  expect(health.host?.heartbeat?.first_fire_ok).toBe(true)
+  const [portalResponse, lingxiResponse] = await Promise.all([
+    fetch('https://hi-veblen.com/release.txt', { cache: 'no-store' }),
+    fetch(`${baseURL}/release.txt`, { cache: 'no-store' }),
+  ])
+  expect(portalResponse.ok).toBe(true)
+  expect(lingxiResponse.ok).toBe(true)
+  const portalRevision = (await portalResponse.text()).trim()
+  const lingxiRevision = (await lingxiResponse.text()).trim()
+  expect(portalRevision).toBe(expectedPortalRevision)
+  expect(lingxiRevision).toBe(expectedBackendRevision)
+  const checks = Array.isArray(evidence.revision_checks)
+    ? [...(evidence.revision_checks as Array<Record<string, unknown>>)]
+    : []
+  checks.push({
+    stage,
+    checked_at: new Date().toISOString(),
+    portal_revision: portalRevision,
+    lingxi_revision: lingxiRevision,
+    backend_revision: health.backend_revision,
+  })
+  evidence.revision_checks = checks
+  return health
 }
 
 async function persistEvidence(evidence: Record<string, unknown>) {

@@ -12,43 +12,63 @@ on:
         description: 必须与本次 workflow 实际检出的完整提交 SHA 一致
         required: true
         type: string
+      expected_portal_revision:
+        description: 本次已经部署并等待验收的 Portal 完整 revision
+        required: true
+        type: string
+      expected_backend_revision:
+        description: 本次已经部署并等待验收的 Lingxi 完整 revision
+        required: true
+        type: string
 
 permissions:
   contents: read
 
 concurrency:
-  group: d050-production-acceptance
+  group: hi-veblen-production
   cancel-in-progress: false
 
 jobs:
   acceptance:
     name: 生产桌面移动全链
-    if: github.repository == 'Timking123/hi-veblen' && github.actor == 'Timking123'
+    if: >-
+      github.repository == 'Timking123/hi-veblen' &&
+      github.actor == 'Timking123' &&
+      github.triggering_actor == 'Timking123'
     runs-on: ubuntu-latest
     timeout-minutes: 40
     environment:
       name: production
 
     steps:
-      - name: 校验人工触发目标
-        env:
-          TARGET_PERSIST_ID: ${{ inputs.target_persist_id }}
-          EXPECTED_HEAD_SHA: ${{ inputs.expected_head_sha }}
-        run: |
-          set -euo pipefail
-          test "$TARGET_PERSIST_ID" = "p6_load_b"
-          printf '%s' "$EXPECTED_HEAD_SHA" | grep -Eq '^[0-9a-f]{40}$'
-          test "$EXPECTED_HEAD_SHA" = "$GITHUB_SHA"
-
       - name: 检出验收脚本
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
           persist-credentials: false
           ref: ${{ github.sha }}
 
+      - name: 校验人工触发目标
+        env:
+          TARGET_PERSIST_ID: ${{ inputs.target_persist_id }}
+          EXPECTED_HEAD_SHA: ${{ inputs.expected_head_sha }}
+          EXPECTED_PORTAL_REVISION: ${{ inputs.expected_portal_revision }}
+          EXPECTED_BACKEND_REVISION: ${{ inputs.expected_backend_revision }}
+        run: |
+          set -euo pipefail
+          test "$TARGET_PERSIST_ID" = "p6_load_b"
+          printf '%s' "$EXPECTED_HEAD_SHA" | grep -Eq '^[0-9a-f]{40}$'
+          printf '%s' "$EXPECTED_PORTAL_REVISION" | grep -Eq '^[0-9a-f]{40}$'
+          printf '%s' "$EXPECTED_BACKEND_REVISION" | grep -Eq '^[0-9a-f]{40}$'
+          test "$EXPECTED_HEAD_SHA" = "$GITHUB_SHA"
+          test "$EXPECTED_PORTAL_REVISION" = "$EXPECTED_HEAD_SHA"
+          locked_backend_revision="$(
+            sed -n 's/^  LINGXI_SHA: \([0-9a-f]\{40\}\)$/\1/p' .github/workflows/deploy.yml
+          )"
+          test "$EXPECTED_BACKEND_REVISION" = "$locked_backend_revision"
+
       - name: 等待最终生产 revision
         env:
-          EXPECTED_PORTAL_REVISION: 94679aff56277a09e7d8b235b5e013565c03eaf0
+          EXPECTED_PORTAL_REVISION: ${{ inputs.expected_portal_revision }}
         run: |
           set -euo pipefail
           if ! printf '%s' "$EXPECTED_PORTAL_REVISION" | grep -Eq '^[0-9a-f]{40}$'; then
@@ -113,6 +133,7 @@ jobs:
           ssh hi-veblen-production true
 
       - name: 读取并掩码合成用户凭证
+        id: read-credentials
         env:
           TARGET_PERSIST_ID: ${{ inputs.target_persist_id }}
         run: |
@@ -246,11 +267,15 @@ jobs:
           } >> "$GITHUB_ENV"
           echo "已选择合成验收用户：$primary_id；模式：$acceptance_mode；删除用户：$delete_id"
 
+      - name: 在浏览器执行前清除生产 SSH 凭据
+        if: ${{ always() }}
+        run: rm -f "$HOME/.ssh/hi-veblen-deploy" "$HOME/.ssh/config" "$HOME/.ssh/known_hosts"
+
       - name: 运行生产真实 Chromium 全链
         env:
           D050_BASE_URL: https://lingxi.hi-veblen.com
-          D050_EXPECTED_PORTAL_REVISION: 94679aff56277a09e7d8b235b5e013565c03eaf0
-          D050_EXPECTED_BACKEND_REVISION: 07c8fdb75c696837f98697f547d316e5c6dbc6d6
+          D050_EXPECTED_PORTAL_REVISION: ${{ inputs.expected_portal_revision }}
+          D050_EXPECTED_BACKEND_REVISION: ${{ inputs.expected_backend_revision }}
         run: npx playwright test e2e/d050-production-acceptance.spec.ts --config=e2e/d050-production-acceptance.config.ts
 
       - name: 清除 Runner 合成凭证
@@ -261,8 +286,43 @@ jobs:
             printf 'D050_DELETE_TOKEN_B64=\n'
           } >> "$GITHUB_ENV"
 
+      - name: 为后置复核重新配置受信 SSH
+        id: post-ssh
+        if: ${{ always() && steps.read-credentials.outcome == 'success' }}
+        env:
+          SERVER_HOST: ${{ secrets.SERVER_HOST }}
+          SERVER_USER: ${{ secrets.SERVER_USER }}
+          SERVER_SSH_KEY: ${{ secrets.SERVER_SSH_KEY }}
+        run: |
+          set -eu
+          case "$SERVER_HOST" in
+            ''|*[!A-Za-z0-9.:-]*) echo "SERVER_HOST 格式无效" >&2; exit 1 ;;
+          esac
+          case "$SERVER_USER" in
+            ''|*[!A-Za-z0-9._-]*) echo "SERVER_USER 格式无效" >&2; exit 1 ;;
+          esac
+          install -d -m 0700 "$HOME/.ssh"
+          printf '%s\n' "$SERVER_SSH_KEY" | tr -d '\r' > "$HOME/.ssh/hi-veblen-deploy"
+          chmod 0600 "$HOME/.ssh/hi-veblen-deploy"
+          printf '%s\n' \
+            'hi-veblen-production ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIM4IhOSWQcIioXavkJYcZ1WbE682kGvQF+rTAgnBRNif' \
+            > "$HOME/.ssh/known_hosts"
+          printf '%s\n' \
+            'Host hi-veblen-production' \
+            "  HostName $SERVER_HOST" \
+            "  User $SERVER_USER" \
+            '  HostKeyAlias hi-veblen-production' \
+            '  IdentityFile ~/.ssh/hi-veblen-deploy' \
+            '  IdentitiesOnly yes' \
+            '  BatchMode yes' \
+            '  StrictHostKeyChecking yes' \
+            '  ConnectTimeout 10' \
+            > "$HOME/.ssh/config"
+          chmod 0600 "$HOME/.ssh/config" "$HOME/.ssh/known_hosts"
+          ssh hi-veblen-production true
+
       - name: 诊断持续成长锁
-        if: ${{ failure() }}
+        if: ${{ failure() && steps.post-ssh.outcome == 'success' }}
         run: |
           set -euo pipefail
           ssh hi-veblen-production 'bash -se --' "$D050_PRIMARY_ID" \
@@ -389,7 +449,7 @@ jobs:
           REMOTE
 
       - name: 复核整用户磁盘删除
-        if: ${{ always() }}
+        if: ${{ always() && steps.post-ssh.outcome == 'success' }}
         run: |
           set -euo pipefail
           if ! test -f d050-delete-confirmed.flag; then
@@ -408,8 +468,12 @@ jobs:
           echo "整用户磁盘删除 OK"
           REMOTE
 
-      - name: 保存非敏感验收证据
+      - name: 清除后置生产 SSH 凭据
         if: ${{ always() }}
+        run: rm -f "$HOME/.ssh/hi-veblen-deploy" "$HOME/.ssh/config" "$HOME/.ssh/known_hosts"
+
+      - name: 保存非敏感验收证据
+        if: ${{ success() }}
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: d050-production-acceptance-${{ github.sha }}
@@ -420,6 +484,5 @@ jobs:
             d050-mobile.png
             d050-delete-complete.png
             d050-delete-confirmed.flag
-            d050-growth-lock-diagnostic.json
-          if-no-files-found: warn
+          if-no-files-found: error
           retention-days: 3
