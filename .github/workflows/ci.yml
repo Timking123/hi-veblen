@@ -74,6 +74,12 @@ jobs:
           assert "inputs.target_persist_id == 'cleanup_p6_load_c'" in acceptance
           assert "cleanup_p6_load_c) mode=cleanup" in acceptance
           assert 'inputs.target_persist_id != \'cleanup_p6_load_c\'' in acceptance
+          prepare_job = acceptance[
+              acceptance.index("  prepare-synthetic-user:"):
+              acceptance.index("  recover-stuck-deletion:")
+          ]
+          assert prepare_job.count("'  ServerAliveInterval 30'") == 2
+          assert prepare_job.count("'  ServerAliveCountMax 10'") == 2
           restart_world = recovery[
               recovery.index("def _restart_world("):
               recovery.index("def _install_watchdog(")
