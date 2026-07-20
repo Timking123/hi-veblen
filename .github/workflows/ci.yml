@@ -71,6 +71,9 @@ jobs:
           assert '"release_lease_exists"' in audit_job
           assert '"world_drop_ins_empty"' in audit_job
           assert 'inputs.target_persist_id != \'audit_p6_load_c\'' in acceptance
+          assert "inputs.target_persist_id == 'cleanup_p6_load_c'" in acceptance
+          assert "cleanup_p6_load_c) mode=cleanup" in acceptance
+          assert 'inputs.target_persist_id != \'cleanup_p6_load_c\'' in acceptance
           restart_world = recovery[
               recovery.index("def _restart_world("):
               recovery.index("def _install_watchdog(")

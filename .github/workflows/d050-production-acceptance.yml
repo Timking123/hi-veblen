@@ -232,7 +232,8 @@ jobs:
     name: 准备最终验收合成用户
     if: >-
       (inputs.target_persist_id == 'prepare_p6_load_c' ||
-      inputs.target_persist_id == 'confirm_p6_load_c') &&
+      inputs.target_persist_id == 'confirm_p6_load_c' ||
+      inputs.target_persist_id == 'cleanup_p6_load_c') &&
       github.repository == 'Timking123/hi-veblen' &&
       github.actor == 'Timking123' &&
       github.triggering_actor == 'Timking123'
@@ -258,7 +259,7 @@ jobs:
         run: |
           set -euo pipefail
           case "$TARGET_PERSIST_ID" in
-            prepare_p6_load_c|confirm_p6_load_c) ;;
+            prepare_p6_load_c|confirm_p6_load_c|cleanup_p6_load_c) ;;
             *) echo "合成用户准备模式无效" >&2; exit 1 ;;
           esac
           printf '%s' "$EXPECTED_HEAD_SHA" | grep -Eq '^[0-9a-f]{40}$'
@@ -315,6 +316,7 @@ jobs:
           case "$TARGET_PERSIST_ID" in
             prepare_p6_load_c) mode=prepare ;;
             confirm_p6_load_c) mode=confirm ;;
+            cleanup_p6_load_c) mode=cleanup ;;
           esac
           ssh hi-veblen-production 'bash -se --' \
             "$EXPECTED_PORTAL_REVISION" "$EXPECTED_BACKEND_REVISION" <<'REMOTE'
@@ -734,6 +736,7 @@ jobs:
       inputs.target_persist_id != 'audit_p6_load_c' &&
       inputs.target_persist_id != 'prepare_p6_load_c' &&
       inputs.target_persist_id != 'confirm_p6_load_c' &&
+      inputs.target_persist_id != 'cleanup_p6_load_c' &&
       github.repository == 'Timking123/hi-veblen' &&
       github.actor == 'Timking123' &&
       github.triggering_actor == 'Timking123'
