@@ -63,6 +63,7 @@ jobs:
           assert "expect(lingxiRevision).toBe(expectedBackendRevision)" in acceptance_spec
           assert "expect(observerBeforeDelete.status()).toBe(200)" in acceptance_spec
           assert "expect(priorSessionStatus.status()).toBe(401)" in acceptance_spec
+          assert "await observerContext.addCookies(await context.cookies())" in acceptance_spec
           assert "const BOOTSTRAP_HTTP_ERRORS = [{ status: 401, path: '/api/me' }]" in acceptance_spec
           assert "{ status: 410, path: '/api/persona/calibration' }" in acceptance_spec
           assert "expect(consoleErrors.unexpected).toEqual([])" in acceptance_spec
