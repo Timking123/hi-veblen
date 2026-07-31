@@ -36,6 +36,9 @@ jobs:
           synthetic_helper = Path(
               "scripts/d050_prepare_synthetic.py"
           ).read_text(encoding="utf-8")
+          rotation_helper = Path(
+              "scripts/d050_rotate_synthetic_token.py"
+          ).read_text(encoding="utf-8")
           assert "group: hi-veblen-production" in workflow
           assert "group: hi-veblen-production" in acceptance
           assert "github.triggering_actor == 'Timking123'" in acceptance
@@ -43,7 +46,7 @@ jobs:
           assert "        default: auto" in acceptance
           assert "        default: prepare_review" in acceptance
           assert "recover_delete" in acceptance
-          assert 'revoked != recovery' in acceptance
+          assert "rotate_token" in acceptance
           assert acceptance.count("auto|p6_load_a") >= 2
           assert 'candidate = "p6_load_a"' in acceptance
           assert acceptance.count('test "$persist_id" = "p6_load_a"') >= 2
@@ -56,6 +59,34 @@ jobs:
           assert 'p6_load_c' not in synthetic_helper
           assert 'unrevoke' not in synthetic_helper.lower()
           assert 'BRAIN_GATEWAY_USER_TOKENS' not in synthetic_helper
+          assert 'unrevoke' not in rotation_helper.lower()
+          assert 'BRAIN_GATEWAY_USER_TOKENS' in rotation_helper
+          assert 'secrets.token_urlsafe(48)' in rotation_helper
+          assert 'old_revocation_retained' in rotation_helper
+          assert 'old_token_rejected' in rotation_helper
+          assert 'rollback_restored' in rotation_helper
+          assert 'config_backup_created' in rotation_helper
+          assert 'other_token_bindings_preserved' in rotation_helper
+          assert 'RECEIPT_SCHEMA = "d050-token-rotation-v1"' in rotation_helper
+          assert '"new_env_sha256"' in rotation_helper
+          assert '"state": "prepared"' in rotation_helper
+          assert '"rollback_pending"' in rotation_helper
+          assert '"receipt_state": "verified"' in rotation_helper
+          assert 'strict_environment=False' in rotation_helper
+          assert 'MAX_BACKUPS = 7' in rotation_helper
+          assert '["systemctl", "stop", "myagent-gateway.service"]' in rotation_helper
+          assert '"gateway_stopped_for_manual_recovery"' in rotation_helper
+          assert rotation_helper.count('_verify_login_rejected(base_url, old_token)') >= 2
+          assert '"locked_prewrite_revision_ok"' in rotation_helper
+          assert rotation_helper.index(
+              'release_file = Path("/opt/myagent/backend-current/release.txt")'
+          ) < rotation_helper.index(
+              'if receipt is not None and receipt["state"] == "rollback_pending":'
+          )
+          assert 'SESSION_COOKIE_NAME = "__Host-lingxi_session"' in rotation_helper
+          assert 'session["path"] == "/"' in rotation_helper
+          assert 'not session["domain"]' in rotation_helper
+          assert 'session["samesite"]' in rotation_helper
           assert '"/compare"' not in synthetic_helper
           assert 'presets[0]["id"] == "linxi"' in synthetic_helper
           assert 'role.get("mode") == "wizard"' in synthetic_helper
@@ -76,6 +107,7 @@ jobs:
               "      - name: 首次生产写前复核三处 backend revision"
           )
           backup_step = acceptance.index("      - name: 在首次生产写前创建并验证备份")
+          rotation_step = acceptance.index("      - name: 轮换撤销后的 p6_load_a 凭证")
           helper_step = acceptance.index("      - name: 通过产品 API 准备 p6_load_a")
           review_artifact = acceptance.index("      - name: 保存待人工审核材料")
           review_encryption = acceptance.index("      - name: 加密待人工审核材料")
@@ -95,7 +127,7 @@ jobs:
           )
           artifact_upload = acceptance.index("      - name: 保存非敏感验收证据")
           failure_artifact = acceptance.index("      - name: 保存失败诊断证据")
-          assert prewrite_revision < backup_step < helper_step
+          assert prewrite_revision < backup_step < rotation_step < helper_step
           assert helper_step < review_encryption < review_artifact < review_gate
           assert review_gate < binding_check < budget_step
           assert budget_step < first_ssh_cleanup < browser_step
@@ -117,7 +149,12 @@ jobs:
           assert "github.run_attempt" not in acceptance[helper_step:review_encryption]
           assert "exit 78" not in acceptance
           assert acceptance.count("inputs.review_phase == 'confirm_review'") >= 5
-          assert "inputs.review_phase != 'recover_delete'" in acceptance
+          browser_dependencies = acceptance[
+              acceptance.index("      - name: 设置 Node.js"):prewrite_revision
+          ]
+          assert browser_dependencies.count(
+              "inputs.review_phase == 'prepare_review' || inputs.review_phase == 'confirm_review'"
+          ) == 2
           post_ssh = acceptance[post_ssh_config:deletion_state]
           assert "inputs.review_phase == 'confirm_review'" in post_ssh
           assert "inputs.review_phase == 'recover_delete' && success()" in post_ssh
@@ -129,11 +166,43 @@ jobs:
           assert "d050-prewrite-revision-evidence.json" in failed_artifact
           assert "d050-holdout-review.tar.gz.gpg" in failed_artifact
           assert "d050-delete-state-evidence.json" in failed_artifact
-          backup = acceptance[backup_step:helper_step]
+          assert "d050-token-rotation-evidence.json" in failed_artifact
+          backup = acceptance[backup_step:rotation_step]
+          rotation = acceptance[rotation_step:helper_step]
           budget = acceptance[budget_step:first_ssh_cleanup]
           assert "systemctl start lingxi-backup.service" in backup
           assert "timeout 20m sudo systemctl start" in backup
           assert "backup_data.py" in backup and 'verify "/opt/myagent/backups/$latest"' in backup
+          assert "inputs.review_phase == 'rotate_token'" in rotation
+          assert "d050-production-backup-evidence.json" in rotation
+          assert "scripts/d050_rotate_synthetic_token.py" in rotation
+          assert "EXPECTED_CURRENT_HASH" in rotation
+          assert "d050-token-rotation-public-evidence.json" in rotation
+          assert "::add-mask::" not in rotation
+          assert "exec 9>/run/hi-veblen-release.lock" in rotation
+          assert "flock -n 9" in rotation
+          assert "/run/myagent-release-maintenance" in rotation
+          assert "/run/hi-veblen-release-lease" in rotation
+          assert "DropInPaths" in rotation
+          assert "/var/backups/myagent-d050-token-rotation" in rotation
+          assert "validate_release_health.py current" in rotation
+          assert './.venv/bin/python -P -B "$remote_script"' in rotation
+          assert rotation.count(
+              r"^/tmp/d050-rotate-token\.[A-Za-z0-9]{8}\.py$"
+          ) >= 3
+          assert 'ssh hi-veblen-production "sudo rm -f' not in rotation
+          assert 'remove_remote_script "$remote_script"' in rotation
+          assert 'evidence.get("old_token_rejected") is True' in rotation
+          assert 'evidence.get("receipt_persisted") is True' in rotation
+          assert 'evidence.get("receipt_state") == "verified"' in rotation
+          assert 'evidence.get("locked_prewrite_revision_ok") is True' in rotation
+          assert rotation.index("flock -n 9") < rotation.index(
+              'test "$(cat /opt/myagent/backend-current/release.txt)"'
+          ) < rotation.index(
+              './.venv/bin/python -P -B "$remote_script"'
+          )
+          assert '"rollback_recovery_pending": recovery_pending' in acceptance
+          assert 'receipt.get("state") == "rollback_pending"' in acceptance
           assert "100_000_000" in budget
           assert '{"budget": {"daily_token_limit": limit}}' in budget
           assert "save_user_config" in budget
@@ -147,7 +216,10 @@ jobs:
           assert "/api/users/" in deletion
           assert 'state = "retryable_ready"' in deletion
           assert '"ready_cleanup_blocked"' in deletion
-          assert '"delete_recovery" if recovery else "private_resumed"' in acceptance
+          assert '"delete_recovery"' in acceptance
+          assert '"token_rotation_ready"' in acceptance
+          assert '"token_rotation"' in acceptance
+          assert '"private_resumed"' in acceptance
           assert "d050-delete-recovery-" in acceptance
           assert 'test "$primary_token" = -' in acceptance
           assert 'test "$delete_token" = -' in acceptance
@@ -155,6 +227,12 @@ jobs:
           assert "if revoked and (user_dir.exists()" not in deletion
           assert 'gateway_report.get("deleted") is True' in deletion
           assert 'gateway_report.get("audit_retained") is True' in deletion
+          rotation_artifact = acceptance.index("      - name: 保存合成用户凭证轮换证据")
+          assert rotation_artifact < failure_artifact
+          rotation_upload = acceptance[rotation_artifact:failure_artifact]
+          assert "inputs.review_phase == 'rotate_token' && success()" in rotation_upload
+          assert "d050-token-rotation-evidence.json" in rotation_upload
+          assert "d050-token-rotation-public-evidence.json" in rotation_upload
           for stage in ("initial", "before_delete", "after_delete"):
               assert f"recordRevisionCheck(evidence, '{stage}')" in acceptance_spec
           assert "expect(lingxiRevision).toBe(expectedBackendRevision)" in acceptance_spec
@@ -609,6 +687,11 @@ jobs:
         run: |
           python3 -m py_compile scripts/d050_prepare_synthetic.py
           python3 scripts/d050_prepare_synthetic.py --self-test
+
+      - name: Validate D050 token rotation helper
+        run: |
+          python3 -m py_compile scripts/d050_rotate_synthetic_token.py
+          python3 scripts/d050_rotate_synthetic_token.py --self-test
 
       - name: Test production config backup retention
         shell: bash
