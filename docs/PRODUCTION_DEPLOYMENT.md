@@ -35,14 +35,14 @@ workflow 使用的敏感项包括跨仓库只读 token、服务器主机、部�
 ## 发布流程
 
 1. 在 `.github/workflows/deploy.yml` 更新 `LINGXI_SHA`，提交并等待 CI。
-2. 从 GitHub Actions 手动触发“发布门户与灵犀网页端”，不要在服务器上手工复制构建产物。deploy job 会在创建暂存目录前检查两个 Lingxi systemd 单元的 `DropInPaths`、全局维护标记、全局保护标记和 staging 保护现场，随后以 `run_id-run_attempt` 原子创建生命周期租约；任一检查未通过即终止。
+2. 从 GitHub Actions 手动触发“发布门户与灵犀网页端”，不要在服务器上手工复制构建产物。deploy job 会在创建暂存目录前检查两个 Lingxi systemd 单元的 `DropInPaths`、全局维护标记、全局保护标记和 staging 保护现场，随后以 `run_id-run_attempt` 原子创建生命周期租约。租约建立后、任何 release 或服务配置写入前，workflow 由 root 将 `.env`、两个 systemd unit、Nginx `sites-available`/`sites-enabled` 复制到 root-only 临时快照，并拒绝 Nginx 特殊文件、硬链接和指向非受管 `sites-available` 的启用链接，再按实际状态收集 AppArmor profile 与 `/etc/lingxi-ops/ops.env`；后二者允许合法缺失，元数据分别记录 `present` 或 `absent`。workflow 只从临时快照生成 `/var/backups/myagent-production-config/run-$run_id-$run_attempt-$GITHUB_SHA/`，写入 SHA-256 清单并复验 root-only 权限；`/var/backups` 本身也必须是 root 所有且不可被 group/other 写入。归档校验通过后，workflow 先用 `sync -f` 为备份文件系统建立持久化屏障，再轮转旧归档或进入后续生产变更；任一检查、备份或持久化失败即终止。备份成功后仅删除超过最近 30 份且权限、文件类型、目录成员和摘要均有效的旧归档；SHA-256 清单必须恰好覆盖 `config.tar.gz` 与 `metadata.txt`，删除只逐个 unlink 三个已验证文件并 `rmdir`，本次归档与按修改时间最新归档始终显式保留；异常归档跳过并留待人工核验。
 3. workflow 的 `build` job 使用 Python 3.12 和 Lingxi 的 `requirements-ci.txt` 安装确定性验证依赖，再分别构建门户和 Lingxi，将 portal、lingxi、backend 三部分写入同一发布包；锁文件缺失或为空会直接失败。
 4. 构建阶段写入 `release.txt` 和后端 revision 环境文件，对 Lingxi 提交、静态资源、必要后端文件和归档内容做一致性检查。
 5. workflow 生成 SHA-256 校验文件，并将制品短期保存为本次 run 的 artifact。
-6. 只有持有本次生命周期租约的步骤才能创建私有暂存目录；目录创建后立即写入 `PRESERVE`，再接收制品、重新校验摘要，并拒绝绝对路径、目录穿越和非普通归档成员。每个远端步骤还会独立持有服务器 `flock`，避免同一时刻执行两个发布事务。
+6. 只有持有本次生命周期租约的步骤才能创建私有暂存目录；持久配置备份完成后，目录创建会立即写入 `PRESERVE`，再接收制品、重新校验摘要，并拒绝绝对路径、目录穿越和非普通归档成员。每个远端步骤还会独立持有服务器 `flock`，避免同一时刻执行两个发布事务。
 7. 服务器创建收紧写权限的发布目录，复核后端文件清单，将持久化 `data` 与 `snapshots` 作为外部目录挂入。确认上一版三个指针后，清理无 `PRESERVE` 的旧数字 run staging 目录；回收 release 时保留按修改时间最新 5 份，并额外保护本次 release 与上一版三个指针的目标。
 8. 在停服务前使用服务器现有 `/usr/bin/python3` 3.12 为新 backend release 创建独立 `.venv`，从 `requirements-ci.txt` 安装依赖并执行 `pip check`，再以离线 dry-run 逐项复核环境与锁文件版本；安装不使用持久 pip 缓存，也不安装或升级系统包。
-9. 只有 release venv 完整、属于当前 release、通过 Python 版本和写权限检查后，workflow 才备份上一版三个指针、systemd 单元与 Nginx 配置。
+9. 持久生产配置备份在创建 staging 前完成并独立保留；只有 release venv 完整、属于当前 release、通过 Python 版本和写权限检查后，workflow 才在本次 staging 内创建供自动回滚使用的临时指针、systemd、Nginx 与 AppArmor 快照。
 10. 第一次修改 Nginx 前，workflow 再次确认本次 staging 的 `PRESERVE` 是普通文件。新配置通过语法检查、维护守卫检查并成功重载后，workflow 才创建全局维护标记，验证公网 mutation 已返回 `503`，然后停止 Lingxi 网关与宿主。
 11. 在短维护窗口内协调切换 portal、lingxi、backend 三个指针，安装 Lingxi 服务并等待同 SHA 健康；当前连续性恢复最多允许 1800 秒，deploy job 总预算为 60 分钟，并为依赖安装、生产验收和最长 300 秒自动回滚保留余量。
 12. 校验 Nginx 路由、生产协议和公网 revision 后移除维护标记，在本次 staging 写入 `DEPLOYED`，再关闭自动回滚 trap 并移除 `PRESERVE`。最终 cleanup 只有在生命周期租约仍属于本次运行时才会删除本次 staging；`DEPLOYED` 会阻止 cleanup 删除已完成但暂时未被 current 指针引用的 release。
@@ -59,6 +59,7 @@ workflow 使用的敏感项包括跨仓库只读 token、服务器主机、部�
 - 门户 `/api/health` 返回健康状态。
 - Lingxi `/api/health` 报告生产认证安全、宿主健康且 revision 一致。
 - 新 backend release 使用独立 Python 3.12 venv，归属当前 release、无 group/other 写权限且 `pip check` 通过。
+- 发布前持久配置备份包含 `.env`、两个 systemd unit、Nginx 可用/启用配置，并按元数据保存 AppArmor profile 与 `ops.env` 的 `present|absent` 状态；归档目录为 `root:root:0700`，归档、元数据和 SHA-256 清单为 `root:root:0600`，且清单复验通过。
 - staging 回收只删除无保护的旧数字 run 目录；release 回收保留最新 5 份和所有受保护目标，不跟随符号链接，也不触碰持久数据。
 - 每个远端步骤都必须获得服务器发布锁，暂存创建、切换和 cleanup 还必须持有与本次 `run_id-run_attempt` 一致的生命周期租约。
 - 发布前及服务安装后，`myagent-world.service` 与 `myagent-gateway.service` 的 `DropInPaths` 均为空。
@@ -69,11 +70,24 @@ workflow 使用的敏感项包括跨仓库只读 token、服务器主机、部�
 
 ## 回滚
 
-切换前失败时，当前三个指针和 Lingxi 服务保持不变。Nginx 已发生前置变更、但尚未进入维护时，workflow 会先恢复并重载备份配置；恢复无法通过语法、重载或活动配置核验时，本次 staging 与 release 会保留，并尽力写入 `/run/hi-veblen-release-preserve` 阻止后续发布和清理。
+切换前失败时，当前三个指针和 Lingxi 服务保持不变。持久配置归档已在切换前完成且不会被 cleanup 删除；Nginx 已发生前置变更、但尚未进入维护时，workflow 会先使用 staging 内临时快照恢复并重载配置。恢复无法通过语法、重载或活动配置核验时，本次 staging 与 release 会保留，并尽力写入 `/run/hi-veblen-release-preserve` 阻止后续发布和清理。
 
 进入维护或完成切换后失败时，workflow 会尝试恢复上一版 portal、lingxi、backend 指针与备份的 systemd/Nginx 配置，再验证旧服务、旧 revision、维护守卫和公网 `503`。全部恢复门通过后才移除维护与 `PRESERVE` 标记；任一恢复门未通过时保留标记、停止 Lingxi 服务并转入人工恢复。旧 systemd 单元仍可使用 `/opt/myagent/.venv` 共享环境，因此首次采用 release venv 的发布也能回滚到旧版。
 
-最终 cleanup 只处理属于本次生命周期租约的 staging。检测到维护或全局保护标记时，cleanup 会保留 release、staging 和租约，避免迟到步骤破坏人工恢复现场；先前 run 的迟到 cleanup 因租约 owner 不匹配只能跳过。人工恢复必须先核对三个 current 指针、两个 Lingxi 服务、Nginx 活动配置和对应 revision，再按现场结论处理保护标记与租约，不能只删除 `/run/hi-veblen-release-lease` 后重跑。
+最终 cleanup 只处理属于本次生命周期租约的 staging，不读取或删除 `/var/backups/myagent-production-config`。持久备份只由创建步骤在发布变更前轮转，源码自检同时约束本次归档和最新归档的显式保护条件。检测到维护或全局保护标记时，cleanup 会保留 release、staging 和租约，避免迟到步骤破坏人工恢复现场；先前 run 的迟到 cleanup 因租约 owner 不匹配只能跳过。人工恢复不能只删除 `/run/hi-veblen-release-lease` 后重跑。
+
+### 持久配置归档的验证与恢复边界
+
+持久归档只作为生产灾难恢复材料。workflow 在发布前调用同一处 `validate_config_backup_payload`，验证目录名与 run/revision 元数据一致、摘要清单恰好覆盖两个已知文件、metadata 字段与路径集合完整，以及 tar 成员没有越界、重复、特殊文件、硬链接或非法 Nginx 链接。当前新归档校验或其文件系统持久化屏障失败会在创建 staging 前终止发布；轮转只计算通过同一校验器的归档。
+
+本版本不提供直接写回生产的自动恢复脚本，也不把配置恢复演练或门 III 写成完成。禁止在清单内容受约束前以 root 执行 `sha256sum --check`，禁止直接把归档解包到 `/` 或 `/etc`，禁止只恢复 Nginx 或 AppArmor 后继续运行混合版本配置。
+
+真正恢复必须作为独立、已审查并已演练的生产事务执行，至少满足以下边界：
+
+1. root 持有 `/run/hi-veblen-release.lock`，建立普通文件类型的维护与全局保护标记，停止两个 Lingxi 服务，并先把当前配置保存到新的 root-only 应急目录。
+2. 从与备份格式匹配的干净 MyWeb revision 复用 `validate_config_backup_payload`；只有校验通过后，才解包到新的 root-only 隔离目录并复核成员类型、所有权与权限。
+3. `.env`、两个 systemd unit、Nginx 双树、AppArmor profile 和可选 `ops.env` 必须处于同一个带 `EXIT` 回退的事务。Nginx 使用同文件系统整树切换；`present|absent` 状态都必须显式恢复。任一步失败都从应急副本恢复全部已变更项，而不是继续启动服务。
+4. 全部恢复后执行 `systemctl daemon-reload`，复验两个服务、DropInPaths、AppArmor、Nginx、门户与 Lingxi health/revision。任一门失败时保留应急副本、维护/保护标记和失败现场，并保持 Lingxi 服务停止。
 
 release 回收不删除共享 venv。每次新 release 建立后，`prune-production-releases.sh` 保留最新 5 份，并额外保护本次 release 和切换前三个 current 指向的 release；受保护目标可能使实际保留数超过 5。该流程使用短维护窗口，不宣称无停机或跨三个文件系统路径的单指令原子性。
 
@@ -82,6 +96,8 @@ release 回收不删除共享 venv。每次新 release 建立后，`prune-produc
 ## 数据与凭据
 
 - MyWeb 数据库、Lingxi `data`、`snapshots`、上传文件和日志不进入发布制品，也不进入 Git。
+- 生产配置归档只保存在服务器的 root-only 持久目录，不上传 Actions artifact，不在日志中打印配置内容或凭据。workflow 保留最近 30 份通过权限、精确目录成员和摘要校验的完整归档，显式保护本次和最新归档；格式、权限、额外成员或摘要异常的目录不自动删除，因此实际数量可以超过 30。
+- workflow 先把活动配置复制到 root-only 临时快照，普通文件会在复制后与源文件比较，再只从快照打包，显著收窄预检到归档之间的路径竞态。发布锁只能排斥本 workflow；Nginx 目录若被另一个 root 进程同时改写，快照不具备文件系统级原子性，恢复前仍须核对归档时间、revision 与现场变更记录。
 - `.env*` 默认忽略，仅 `.env.example` 可以跟踪；示例文件只能包含无敏感性的本地默认值。
 - 从当前提交停止跟踪只能保护后续 revision。任何曾进入 Git 历史的凭据都需要立即轮换，历史净化必须由仓库所有者单独授权并安排强制同步窗口。
 - 发布日志不得输出 secret、token、用户角色正文或数据库内容。
@@ -92,6 +108,7 @@ release 回收不删除共享 venv。每次新 release 建立后，`prune-produc
 | --- | --- |
 | 构建或测试失败 | 不生成可部署制品，修复后从新提交重跑 |
 | 检测到维护、全局保护、生命周期租约或 staging `PRESERVE` 标记 | 在创建或回收 release 前拒绝发布；cleanup 保留仍受保护的现场，待人工核验 |
+| 持久生产配置备份缺失、路径类型/权限不符、复制中普通文件变化、归档、SHA-256 复验或文件系统持久化失败 | 在创建 staging 前终止；退出 trap 清理本次临时目录，已有持久归档保留，不进入生产变更 |
 | 检测到 systemd drop-in | 发布前出现则在创建暂存目录前拒绝；服务安装后仍存在则验证失败并自动回滚。恢复正式单元配置后从头重跑 |
 | 制品摘要或归档校验失败 | 拒绝解包，保留当前生产指针 |
 | 新 release venv 创建、安装、锁版本复核或 `pip check` 失败 | 在停服务前终止，当前指针、服务和旧共享 venv 均不变 |
