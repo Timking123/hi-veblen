@@ -21,7 +21,7 @@ on:
         required: true
         type: string
       review_phase:
-        description: 留出审核阶段（先准备材料，再携带人工决定确认）
+        description: 留出审核或撤销后删号续做阶段
         required: true
         default: prepare_review
         type: string
@@ -77,6 +77,7 @@ jobs:
           case "$REVIEW_PHASE" in
             prepare_review) test -z "$REVIEW_DECISION_B64" ;;
             confirm_review) test -n "$REVIEW_DECISION_B64" ;;
+            recover_delete) test -z "$REVIEW_DECISION_B64" ;;
             *) echo "留出审核阶段非法" >&2; exit 1 ;;
           esac
           test "$EXPECTED_HEAD_SHA" = "$GITHUB_SHA"
@@ -109,12 +110,14 @@ jobs:
           exit 1
 
       - name: 设置 Node.js
+        if: ${{ inputs.review_phase != 'recover_delete' }}
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: '22'
           cache: npm
 
       - name: 安装浏览器依赖
+        if: ${{ inputs.review_phase != 'recover_delete' }}
         run: |
           npm ci
           npx playwright install --with-deps chromium
@@ -208,19 +211,27 @@ jobs:
         id: read-credentials
         env:
           TARGET_PERSIST_ID: ${{ inputs.target_persist_id }}
+          REVIEW_PHASE: ${{ inputs.review_phase }}
         run: |
           set -euo pipefail
           case "$TARGET_PERSIST_ID" in auto|p6_load_a) ;; *) exit 1 ;; esac
           mapfile -t values < <(
-            ssh hi-veblen-production 'bash -se --' "$TARGET_PERSIST_ID" <<'REMOTE'
+            ssh hi-veblen-production 'bash -se --' \
+              "$TARGET_PERSIST_ID" "$REVIEW_PHASE" <<'REMOTE'
           set -eu
           target_persist_id="$1"
+          review_phase="$2"
           case "$target_persist_id" in auto|p6_load_a) ;; *) exit 1 ;; esac
+          case "$review_phase" in
+            prepare_review|confirm_review|recover_delete) ;;
+            *) exit 1 ;;
+          esac
           python=/opt/myagent/backend-current/.venv/bin/python
           test -x "$python"
           cd /opt/myagent/backend-current
-          "$python" - <<'PY'
+          "$python" - "$review_phase" <<'PY'
           import json
+          import sys
           from pathlib import Path
 
           from dotenv import dotenv_values
@@ -235,13 +246,15 @@ jobs:
               str(values.get("BRAIN_GATEWAY_USER_TOKENS") or "")
           )
           candidate = "p6_load_a"
+          review_phase = sys.argv[1]
           token = str(mapping.get(candidate) or "")
           user_dir = Path("/opt/myagent/data/users") / candidate
           invalid_path = user_dir.is_symlink() or (user_dir.exists() and not user_dir.is_dir())
           revoked = bool(token) and is_gateway_token_revoked(
               "/opt/myagent/data", token_hash(token)
           )
-          if not token or invalid_path or revoked:
+          recovery = review_phase == "recover_delete"
+          if not token or invalid_path or (revoked != recovery):
               raise SystemExit(json.dumps({
                   "error": "p6_load_a 不满足安全准备条件",
                   "token_present": bool(token),
@@ -249,12 +262,13 @@ jobs:
                       "invalid" if invalid_path else "present" if user_dir.is_dir() else "absent"
                   ),
                   "revoked": revoked,
+                  "review_phase": review_phase,
               }, sort_keys=True))
           print(candidate)
-          print(token)
+          print("-" if recovery else token)
           print(candidate)
-          print(token)
-          print("private_resumed")
+          print("-" if recovery else token)
+          print("delete_recovery" if recovery else "private_resumed")
           print(token_hash(token))
           PY
           REMOTE
@@ -270,20 +284,33 @@ jobs:
             p6_load_a) ;;
             *) echo "登录验收用户不在合成白名单" >&2; exit 1 ;;
           esac
-          test -n "$primary_token"
           case "$delete_id" in
             p6_load_a) ;;
             *) echo "删除验收用户不在合成白名单" >&2; exit 1 ;;
           esac
-          test -n "$delete_token"
-          test "$acceptance_mode" = "private_resumed"
+          case "$acceptance_mode" in
+            private_resumed)
+              test -n "$primary_token" && test "$primary_token" != -
+              test -n "$delete_token" && test "$delete_token" != -
+              ;;
+            delete_recovery)
+              test "$REVIEW_PHASE" = "recover_delete"
+              test "$primary_token" = -
+              test "$delete_token" = -
+              primary_token=""
+              delete_token=""
+              ;;
+            *) echo "合成用户验收模式非法" >&2; exit 1 ;;
+          esac
           printf '%s' "$delete_token_hash" | grep -Eq '^sha256:[0-9a-f]{64}$'
           primary_token_b64="$(printf '%s' "$primary_token" | base64 -w0)"
           delete_token_b64="$(printf '%s' "$delete_token" | base64 -w0)"
-          echo "::add-mask::$primary_token"
-          echo "::add-mask::$delete_token"
-          echo "::add-mask::$primary_token_b64"
-          echo "::add-mask::$delete_token_b64"
+          if test "$acceptance_mode" = "private_resumed"; then
+            echo "::add-mask::$primary_token"
+            echo "::add-mask::$delete_token"
+            echo "::add-mask::$primary_token_b64"
+            echo "::add-mask::$delete_token_b64"
+          fi
           echo "::add-mask::$delete_token_hash"
           {
             printf 'D050_PRIMARY_ID=%s\n' "$primary_id"
@@ -347,6 +374,7 @@ jobs:
           REMOTE
 
       - name: 通过产品 API 准备 p6_load_a
+        if: ${{ inputs.review_phase != 'recover_delete' }}
         env:
           D050_BASE_URL: https://lingxi.hi-veblen.com
           D050_EXPECTED_BACKEND_REVISION: ${{ inputs.expected_backend_revision }}
@@ -641,8 +669,9 @@ jobs:
       - name: 为后置复核重新配置受信 SSH
         id: post-ssh
         if: >-
-          ${{ always() && inputs.review_phase == 'confirm_review' &&
-              steps.read-credentials.outcome == 'success' }}
+          ${{ always() && steps.read-credentials.outcome == 'success' &&
+              (inputs.review_phase == 'confirm_review' ||
+               (inputs.review_phase == 'recover_delete' && success())) }}
         env:
           SERVER_HOST: ${{ secrets.SERVER_HOST }}
           SERVER_USER: ${{ secrets.SERVER_USER }}
@@ -857,7 +886,7 @@ jobs:
           continued_purge = False
           gateway_report = None
 
-          if revoked and (user_dir.exists() or user_dir.is_symlink()):
+          if revoked:
               values = dotenv_values("/opt/myagent/.env")
               gateway_token = str(values.get("BRAIN_GATEWAY_TOKEN") or "").strip()
               if len(gateway_token) < 32:
@@ -869,7 +898,11 @@ jobs:
               )
               with request.urlopen(req, timeout=180) as response:
                   gateway_report = json.loads(response.read().decode("utf-8"))
-              if gateway_report.get("ok") is not True:
+              if not (
+                  gateway_report.get("ok") is True
+                  and gateway_report.get("deleted") is True
+                  and gateway_report.get("audit_retained") is True
+              ):
                   raise SystemExit("网关续删未成功")
               continued_purge = True
 
@@ -893,6 +926,11 @@ jobs:
               "continued_purge": continued_purge,
               "gateway_deleted": (
                   gateway_report.get("deleted")
+                  if isinstance(gateway_report, dict)
+                  else None
+              ),
+              "gateway_audit_retained": (
+                  gateway_report.get("audit_retained")
                   if isinstance(gateway_report, dict)
                   else None
               ),
@@ -929,6 +967,18 @@ jobs:
             d050-gray-budget-evidence.json
             d050-synthetic-preparation-evidence.json
             d050-holdout-review-confirmation.json
+          if-no-files-found: error
+          retention-days: 3
+
+      - name: 保存撤销后删号续做证据
+        if: ${{ inputs.review_phase == 'recover_delete' && success() }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: d050-delete-recovery-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            d050-prewrite-revision-evidence.json
+            d050-production-backup-evidence.json
+            d050-delete-state-evidence.json
           if-no-files-found: error
           retention-days: 3
 

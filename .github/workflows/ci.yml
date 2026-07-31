@@ -42,6 +42,8 @@ jobs:
           assert "    timeout-minutes: 130" in acceptance
           assert "        default: auto" in acceptance
           assert "        default: prepare_review" in acceptance
+          assert "recover_delete" in acceptance
+          assert 'revoked != recovery' in acceptance
           assert acceptance.count("auto|p6_load_a") >= 2
           assert 'candidate = "p6_load_a"' in acceptance
           assert acceptance.count('test "$persist_id" = "p6_load_a"') >= 2
@@ -115,6 +117,10 @@ jobs:
           assert "github.run_attempt" not in acceptance[helper_step:review_encryption]
           assert "exit 78" not in acceptance
           assert acceptance.count("inputs.review_phase == 'confirm_review'") >= 5
+          assert "inputs.review_phase != 'recover_delete'" in acceptance
+          post_ssh = acceptance[post_ssh_config:deletion_state]
+          assert "inputs.review_phase == 'confirm_review'" in post_ssh
+          assert "inputs.review_phase == 'recover_delete' && success()" in post_ssh
           failed_artifact = acceptance[failure_artifact:]
           assert "d050-holdout-review-request.json" not in failed_artifact
           assert "d050-holdout-review-decision.json" not in failed_artifact
@@ -141,6 +147,14 @@ jobs:
           assert "/api/users/" in deletion
           assert 'state = "retryable_ready"' in deletion
           assert '"ready_cleanup_blocked"' in deletion
+          assert '"delete_recovery" if recovery else "private_resumed"' in acceptance
+          assert "d050-delete-recovery-" in acceptance
+          assert 'test "$primary_token" = -' in acceptance
+          assert 'test "$delete_token" = -' in acceptance
+          assert "if revoked:" in deletion
+          assert "if revoked and (user_dir.exists()" not in deletion
+          assert 'gateway_report.get("deleted") is True' in deletion
+          assert 'gateway_report.get("audit_retained") is True' in deletion
           for stage in ("initial", "before_delete", "after_delete"):
               assert f"recordRevisionCheck(evidence, '{stage}')" in acceptance_spec
           assert "expect(lingxiRevision).toBe(expectedBackendRevision)" in acceptance_spec
