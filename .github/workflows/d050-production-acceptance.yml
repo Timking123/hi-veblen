@@ -29,9 +29,718 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  audit-synthetic-recovery:
+    name: 只读审计合成用户恢复现场
+    if: >-
+      inputs.target_persist_id == 'audit_p6_load_c' &&
+      github.repository == 'Timking123/hi-veblen' &&
+      github.actor == 'Timking123' &&
+      github.triggering_actor == 'Timking123'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment:
+      name: production
+
+    steps:
+      - name: 校验只读审计参数
+        env:
+          EXPECTED_HEAD_SHA: ${{ inputs.expected_head_sha }}
+          EXPECTED_PORTAL_REVISION: ${{ inputs.expected_portal_revision }}
+          EXPECTED_BACKEND_REVISION: ${{ inputs.expected_backend_revision }}
+        run: |
+          set -euo pipefail
+          printf '%s' "$EXPECTED_HEAD_SHA" | grep -Eq '^[0-9a-f]{40}$'
+          printf '%s' "$EXPECTED_PORTAL_REVISION" | grep -Eq '^[0-9a-f]{40}$'
+          printf '%s' "$EXPECTED_BACKEND_REVISION" | grep -Eq '^[0-9a-f]{40}$'
+          test "$EXPECTED_HEAD_SHA" = "$GITHUB_SHA"
+
+      - name: 配置只读审计 SSH
+        env:
+          SERVER_HOST: ${{ secrets.SERVER_HOST }}
+          SERVER_USER: ${{ secrets.SERVER_USER }}
+          SERVER_SSH_KEY: ${{ secrets.SERVER_SSH_KEY }}
+        run: |
+          set -eu
+          case "$SERVER_HOST" in
+            ''|*[!A-Za-z0-9.:-]*) echo "SERVER_HOST 格式无效" >&2; exit 1 ;;
+          esac
+          case "$SERVER_USER" in
+            ''|*[!A-Za-z0-9._-]*) echo "SERVER_USER 格式无效" >&2; exit 1 ;;
+          esac
+          install -d -m 0700 "$HOME/.ssh"
+          printf '%s\n' "$SERVER_SSH_KEY" | tr -d '\r' > "$HOME/.ssh/hi-veblen-deploy"
+          chmod 0600 "$HOME/.ssh/hi-veblen-deploy"
+          printf '%s\n' \
+            'hi-veblen-production ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIM4IhOSWQcIioXavkJYcZ1WbE682kGvQF+rTAgnBRNif' \
+            > "$HOME/.ssh/known_hosts"
+          printf '%s\n' \
+            'Host hi-veblen-production' \
+            "  HostName $SERVER_HOST" \
+            "  User $SERVER_USER" \
+            '  HostKeyAlias hi-veblen-production' \
+            '  IdentityFile ~/.ssh/hi-veblen-deploy' \
+            '  IdentitiesOnly yes' \
+            '  BatchMode yes' \
+            '  StrictHostKeyChecking yes' \
+            '  ConnectTimeout 10' \
+            > "$HOME/.ssh/config"
+          chmod 0600 "$HOME/.ssh/config" "$HOME/.ssh/known_hosts"
+          ssh hi-veblen-production true
+
+      - name: 读取非敏感恢复状态
+        env:
+          EXPECTED_PORTAL_REVISION: ${{ inputs.expected_portal_revision }}
+          EXPECTED_BACKEND_REVISION: ${{ inputs.expected_backend_revision }}
+        run: |
+          ssh hi-veblen-production 'bash -se --' \
+            "$EXPECTED_PORTAL_REVISION" "$EXPECTED_BACKEND_REVISION" <<'REMOTE'
+          set -eu
+          test "$(cat /opt/hi-veblen/portal-current/release.txt)" = "$1"
+          test "$(cat /opt/hi-veblen/lingxi-current/release.txt)" = "$2"
+          test "$(cat /opt/myagent/backend-current/release.txt)" = "$2"
+          cd /opt/myagent/backend-current
+          exec .venv/bin/python -B - "$1" "$2" <<'PY'
+          import json
+          import subprocess
+          import sys
+          import time
+          from pathlib import Path
+          from urllib import request
+
+          from dotenv import dotenv_values
+          from brain.workspace.p6_config import (
+              is_gateway_token_revoked,
+              parse_user_token_map,
+              token_hash,
+          )
+
+          data_dir = "/opt/myagent/data"
+          ops_dir = Path("/opt/myagent/d050-recovery/p6-load-c")
+          lease_path = ops_dir / "lease.json"
+          cron_path = Path("/etc/cron.d/d050-p6-load-c")
+          values = dict(dotenv_values("/opt/myagent/.env"))
+          mapping = parse_user_token_map(
+              str(values.get("BRAIN_GATEWAY_USER_TOKENS") or "")
+          )
+
+          def target_status(persist_id):
+              token = str(mapping.get(persist_id) or "")
+              user_dir = Path(data_dir) / "users" / persist_id
+              return {
+                  "mapping_exists": bool(token),
+                  "token_revoked": bool(
+                      token and is_gateway_token_revoked(data_dir, token_hash(token))
+                  ),
+                  "user_dir_exists": user_dir.is_dir(),
+                  "user_dir_symlink": user_dir.is_symlink(),
+              }
+
+          lease = {}
+          if lease_path.is_file() and not lease_path.is_symlink():
+              lease = json.loads(lease_path.read_text(encoding="utf-8"))
+          host_port = int(values.get("BRAIN_HOST_PORT") or 8765)
+          with request.urlopen(
+              f"http://127.0.0.1:{host_port}/host/health", timeout=30
+          ) as response:
+              health = json.loads(response.read().decode("utf-8"))
+          host = health.get("host") or health
+          heartbeat = host.get("heartbeat") or {}
+
+          def systemctl(action, unit):
+              return subprocess.run(
+                  ["systemctl", action, "--quiet", unit], check=False
+              ).returncode == 0
+
+          def drop_ins(unit):
+              return subprocess.run(
+                  ["systemctl", "show", unit, "-p", "DropInPaths", "--value"],
+                  check=True,
+                  capture_output=True,
+                  text=True,
+              ).stdout.strip()
+
+          print(json.dumps({
+              "revisions": {
+                  "portal": sys.argv[1],
+                  "lingxi": sys.argv[2],
+                  "backend": sys.argv[2],
+              },
+              "p6_load_b": target_status("p6_load_b"),
+              "p6_load_c": target_status("p6_load_c"),
+              "lease": {
+                  "exists": lease_path.exists(),
+                  "symlink": lease_path.is_symlink(),
+                  "status": str(lease.get("status") or ""),
+                  "owner_present": bool(lease.get("owner")),
+                  "expired": bool(
+                      lease and time.time() >= float(lease.get("expires_at_epoch") or 0)
+                  ),
+              },
+              "artifacts": {
+                  "ops_dir_exists": ops_dir.exists(),
+                  "ops_dir_symlink": ops_dir.is_symlink(),
+                  "setup_exists": (ops_dir / "setup.json").exists(),
+                  "watchdog_exists": (ops_dir / "watchdog.py").exists(),
+                  "cron_exists": cron_path.exists(),
+                  "cron_symlink": cron_path.is_symlink(),
+                  "release_lease_exists": Path(
+                      "/run/hi-veblen-release-lease"
+                  ).exists(),
+                  "release_lease_symlink": Path(
+                      "/run/hi-veblen-release-lease"
+                  ).is_symlink(),
+                  "maintenance_marker_exists": Path(
+                      "/run/myagent-release-maintenance"
+                  ).exists(),
+                  "maintenance_marker_symlink": Path(
+                      "/run/myagent-release-maintenance"
+                  ).is_symlink(),
+                  "preserve_marker_exists": Path(
+                      "/run/hi-veblen-release-preserve"
+                  ).exists(),
+                  "preserve_marker_symlink": Path(
+                      "/run/hi-veblen-release-preserve"
+                  ).is_symlink(),
+              },
+              "services": {
+                  "world_active": systemctl("is-active", "myagent-world.service"),
+                  "world_enabled": systemctl("is-enabled", "myagent-world.service"),
+                  "gateway_active": systemctl("is-active", "myagent-gateway.service"),
+                  "gateway_enabled": systemctl("is-enabled", "myagent-gateway.service"),
+                  "world_drop_ins_empty": not drop_ins("myagent-world.service"),
+                  "gateway_drop_ins_empty": not drop_ins("myagent-gateway.service"),
+              },
+              "host": {
+                  "ready": host.get("ready") is True,
+                  "continuity_ok": host.get("continuity_ok") is True,
+                  "audition_isolation_ok": host.get("audition_isolation_ok") is True,
+                  "first_fire_completed": heartbeat.get("first_fire_completed") is True,
+                  "first_fire_ok": heartbeat.get("first_fire_ok") is True,
+                  "consecutive_failures": int(
+                      heartbeat.get("consecutive_failures") or 0
+                  ),
+              },
+          }, ensure_ascii=False, sort_keys=True))
+          PY
+          REMOTE
+
+      - name: 清除只读审计 SSH 凭据
+        if: ${{ always() }}
+        run: rm -f -- "$HOME/.ssh/hi-veblen-deploy" "$HOME/.ssh/config" "$HOME/.ssh/known_hosts"
+
+  prepare-synthetic-user:
+    name: 准备最终验收合成用户
+    if: >-
+      (inputs.target_persist_id == 'prepare_p6_load_c' ||
+      inputs.target_persist_id == 'confirm_p6_load_c' ||
+      inputs.target_persist_id == 'cleanup_p6_load_c') &&
+      github.repository == 'Timking123/hi-veblen' &&
+      github.actor == 'Timking123' &&
+      github.triggering_actor == 'Timking123'
+    runs-on: ubuntu-latest
+    timeout-minutes: 135
+    environment:
+      name: production
+
+    steps:
+      - name: 检出合成用户准备脚本
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          persist-credentials: false
+          ref: ${{ github.sha }}
+
+      - name: 校验准备参数
+        id: synthetic-operation-id
+        env:
+          TARGET_PERSIST_ID: ${{ inputs.target_persist_id }}
+          EXPECTED_HEAD_SHA: ${{ inputs.expected_head_sha }}
+          EXPECTED_PORTAL_REVISION: ${{ inputs.expected_portal_revision }}
+          EXPECTED_BACKEND_REVISION: ${{ inputs.expected_backend_revision }}
+        run: |
+          set -euo pipefail
+          case "$TARGET_PERSIST_ID" in
+            prepare_p6_load_c|confirm_p6_load_c|cleanup_p6_load_c) ;;
+            *) echo "合成用户准备模式无效" >&2; exit 1 ;;
+          esac
+          printf '%s' "$EXPECTED_HEAD_SHA" | grep -Eq '^[0-9a-f]{40}$'
+          printf '%s' "$EXPECTED_PORTAL_REVISION" | grep -Eq '^[0-9a-f]{40}$'
+          printf '%s' "$EXPECTED_BACKEND_REVISION" | grep -Eq '^[0-9a-f]{40}$'
+          test "$EXPECTED_HEAD_SHA" = "$GITHUB_SHA"
+          operation_id="$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT-$GITHUB_SHA"
+          printf '%s' "$operation_id" | grep -Eq '^[0-9]+-[0-9]+-[0-9a-f]{40}$'
+          echo "operation_id=$operation_id" >> "$GITHUB_OUTPUT"
+
+      - name: 配置合成用户准备 SSH
+        id: prepare-ssh
+        env:
+          SERVER_HOST: ${{ secrets.SERVER_HOST }}
+          SERVER_USER: ${{ secrets.SERVER_USER }}
+          SERVER_SSH_KEY: ${{ secrets.SERVER_SSH_KEY }}
+        run: |
+          set -eu
+          case "$SERVER_HOST" in
+            ''|*[!A-Za-z0-9.:-]*) echo "SERVER_HOST 格式无效" >&2; exit 1 ;;
+          esac
+          case "$SERVER_USER" in
+            ''|*[!A-Za-z0-9._-]*) echo "SERVER_USER 格式无效" >&2; exit 1 ;;
+          esac
+          install -d -m 0700 "$HOME/.ssh"
+          printf '%s\n' "$SERVER_SSH_KEY" | tr -d '\r' > "$HOME/.ssh/hi-veblen-deploy"
+          chmod 0600 "$HOME/.ssh/hi-veblen-deploy"
+          printf '%s\n' \
+            'hi-veblen-production ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIM4IhOSWQcIioXavkJYcZ1WbE682kGvQF+rTAgnBRNif' \
+            > "$HOME/.ssh/known_hosts"
+          printf '%s\n' \
+            'Host hi-veblen-production' \
+            "  HostName $SERVER_HOST" \
+            "  User $SERVER_USER" \
+            '  HostKeyAlias hi-veblen-production' \
+            '  IdentityFile ~/.ssh/hi-veblen-deploy' \
+            '  IdentitiesOnly yes' \
+            '  BatchMode yes' \
+            '  StrictHostKeyChecking yes' \
+            '  ConnectTimeout 10' \
+            '  ServerAliveInterval 30' \
+            '  ServerAliveCountMax 10' \
+            > "$HOME/.ssh/config"
+          chmod 0600 "$HOME/.ssh/config" "$HOME/.ssh/known_hosts"
+          ssh hi-veblen-production true
+
+      - name: 运行合成用户出生准备或确认
+        id: synthetic-operation
+        env:
+          TARGET_PERSIST_ID: ${{ inputs.target_persist_id }}
+          EXPECTED_PORTAL_REVISION: ${{ inputs.expected_portal_revision }}
+          EXPECTED_BACKEND_REVISION: ${{ inputs.expected_backend_revision }}
+          OPERATION_ID: ${{ steps.synthetic-operation-id.outputs.operation_id }}
+        run: |
+          set -euo pipefail
+          case "$TARGET_PERSIST_ID" in
+            prepare_p6_load_c) mode=prepare ;;
+            confirm_p6_load_c) mode=confirm ;;
+            cleanup_p6_load_c) mode=cleanup ;;
+          esac
+          ssh hi-veblen-production 'bash -se --' \
+            "$EXPECTED_PORTAL_REVISION" "$EXPECTED_BACKEND_REVISION" <<'REMOTE'
+          set -eu
+          test "$(cat /opt/hi-veblen/portal-current/release.txt)" = "$1"
+          test "$(cat /opt/hi-veblen/lingxi-current/release.txt)" = "$2"
+          test "$(cat /opt/myagent/backend-current/release.txt)" = "$2"
+          REMOTE
+          ssh hi-veblen-production \
+            "cd /opt/myagent/backend-current && exec .venv/bin/python -B - $mode $OPERATION_ID" \
+            < scripts/d050_prepare_synthetic.py
+          if test "$mode" = "prepare"; then
+            ssh hi-veblen-production \
+              'cat /opt/myagent/d050-recovery/p6-load-c/setup.json' \
+              > d050-synthetic-setup-audition.json
+          fi
+
+      - name: 清除合成用户准备 SSH 凭据
+        id: clear-prepare-ssh
+        if: ${{ always() }}
+        run: rm -f -- "$HOME/.ssh/hi-veblen-deploy" "$HOME/.ssh/config" "$HOME/.ssh/known_hosts"
+
+      - name: 保存完整出生试镜证据
+        id: upload-audition
+        if: ${{ success() && inputs.target_persist_id == 'prepare_p6_load_c' }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: d050-synthetic-setup-audition-${{ github.sha }}
+          path: d050-synthetic-setup-audition.json
+          if-no-files-found: error
+          retention-days: 3
+
+      - name: 失败或取消时按本次租约回滚
+        if: >-
+          ${{ always() && steps.prepare-ssh.outcome == 'success' &&
+          (steps.synthetic-operation.outcome != 'success' ||
+          (inputs.target_persist_id == 'prepare_p6_load_c' &&
+          steps.upload-audition.outcome != 'success')) }}
+        env:
+          SERVER_HOST: ${{ secrets.SERVER_HOST }}
+          SERVER_USER: ${{ secrets.SERVER_USER }}
+          SERVER_SSH_KEY: ${{ secrets.SERVER_SSH_KEY }}
+          OPERATION_ID: ${{ steps.synthetic-operation-id.outputs.operation_id }}
+        run: |
+          set -euo pipefail
+          case "$SERVER_HOST" in
+            ''|*[!A-Za-z0-9.:-]*) echo "SERVER_HOST 格式无效" >&2; exit 1 ;;
+          esac
+          case "$SERVER_USER" in
+            ''|*[!A-Za-z0-9._-]*) echo "SERVER_USER 格式无效" >&2; exit 1 ;;
+          esac
+          printf '%s' "$OPERATION_ID" | grep -Eq '^[0-9]+-[0-9]+-[0-9a-f]{40}$'
+          install -d -m 0700 "$HOME/.ssh"
+          printf '%s\n' "$SERVER_SSH_KEY" | tr -d '\r' > "$HOME/.ssh/hi-veblen-deploy"
+          chmod 0600 "$HOME/.ssh/hi-veblen-deploy"
+          printf '%s\n' \
+            'hi-veblen-production ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIM4IhOSWQcIioXavkJYcZ1WbE682kGvQF+rTAgnBRNif' \
+            > "$HOME/.ssh/known_hosts"
+          printf '%s\n' \
+            'Host hi-veblen-production' \
+            "  HostName $SERVER_HOST" \
+            "  User $SERVER_USER" \
+            '  HostKeyAlias hi-veblen-production' \
+            '  IdentityFile ~/.ssh/hi-veblen-deploy' \
+            '  IdentitiesOnly yes' \
+            '  BatchMode yes' \
+            '  StrictHostKeyChecking yes' \
+            '  ConnectTimeout 10' \
+            '  ServerAliveInterval 30' \
+            '  ServerAliveCountMax 10' \
+            > "$HOME/.ssh/config"
+          chmod 0600 "$HOME/.ssh/config" "$HOME/.ssh/known_hosts"
+          ssh hi-veblen-production \
+            "cd /opt/myagent/backend-current && exec .venv/bin/python -B - cleanup $OPERATION_ID" \
+            < scripts/d050_prepare_synthetic.py
+          rm -f -- "$HOME/.ssh/hi-veblen-deploy" "$HOME/.ssh/config" "$HOME/.ssh/known_hosts"
+
+  recover-stuck-deletion:
+    name: 恢复旧整用户删除现场
+    if: >-
+      inputs.target_persist_id == 'recover_p6_load_b' &&
+      github.repository == 'Timking123/hi-veblen' &&
+      github.actor == 'Timking123' &&
+      github.triggering_actor == 'Timking123'
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    environment:
+      name: production
+
+    steps:
+      - name: 检出恢复脚本
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          persist-credentials: false
+          ref: ${{ github.sha }}
+
+      - name: 校验恢复参数
+        env:
+          EXPECTED_HEAD_SHA: ${{ inputs.expected_head_sha }}
+          EXPECTED_PORTAL_REVISION: ${{ inputs.expected_portal_revision }}
+          EXPECTED_BACKEND_REVISION: ${{ inputs.expected_backend_revision }}
+        run: |
+          set -euo pipefail
+          printf '%s' "$EXPECTED_HEAD_SHA" | grep -Eq '^[0-9a-f]{40}$'
+          printf '%s' "$EXPECTED_PORTAL_REVISION" | grep -Eq '^[0-9a-f]{40}$'
+          printf '%s' "$EXPECTED_BACKEND_REVISION" | grep -Eq '^[0-9a-f]{40}$'
+          test "$EXPECTED_HEAD_SHA" = "$GITHUB_SHA"
+
+      - name: 配置受信 SSH
+        env:
+          SERVER_HOST: ${{ secrets.SERVER_HOST }}
+          SERVER_USER: ${{ secrets.SERVER_USER }}
+          SERVER_SSH_KEY: ${{ secrets.SERVER_SSH_KEY }}
+        run: |
+          set -eu
+          case "$SERVER_HOST" in
+            ''|*[!A-Za-z0-9.:-]*) echo "SERVER_HOST 格式无效" >&2; exit 1 ;;
+          esac
+          case "$SERVER_USER" in
+            ''|*[!A-Za-z0-9._-]*) echo "SERVER_USER 格式无效" >&2; exit 1 ;;
+          esac
+          install -d -m 0700 "$HOME/.ssh"
+          printf '%s\n' "$SERVER_SSH_KEY" | tr -d '\r' > "$HOME/.ssh/hi-veblen-deploy"
+          chmod 0600 "$HOME/.ssh/hi-veblen-deploy"
+          printf '%s\n' \
+            'hi-veblen-production ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIM4IhOSWQcIioXavkJYcZ1WbE682kGvQF+rTAgnBRNif' \
+            > "$HOME/.ssh/known_hosts"
+          printf '%s\n' \
+            'Host hi-veblen-production' \
+            "  HostName $SERVER_HOST" \
+            "  User $SERVER_USER" \
+            '  HostKeyAlias hi-veblen-production' \
+            '  IdentityFile ~/.ssh/hi-veblen-deploy' \
+            '  IdentitiesOnly yes' \
+            '  BatchMode yes' \
+            '  StrictHostKeyChecking yes' \
+            '  ConnectTimeout 10' \
+            > "$HOME/.ssh/config"
+          chmod 0600 "$HOME/.ssh/config" "$HOME/.ssh/known_hosts"
+          ssh hi-veblen-production true
+
+      - name: 验证替代用户、重启网关并幂等完成旧删除
+        env:
+          EXPECTED_PORTAL_REVISION: ${{ inputs.expected_portal_revision }}
+          EXPECTED_BACKEND_REVISION: ${{ inputs.expected_backend_revision }}
+        run: |
+          set -euo pipefail
+          ssh hi-veblen-production 'bash -se --' \
+            "$EXPECTED_PORTAL_REVISION" "$EXPECTED_BACKEND_REVISION" <<'REMOTE'
+          set -eu
+          expected_portal_revision="$1"
+          expected_backend_revision="$2"
+          exec 9>/run/hi-veblen-release.lock
+          flock -x -n 9
+          for path in \
+            /run/hi-veblen-release-lease \
+            /run/myagent-release-maintenance \
+            /run/hi-veblen-release-preserve; do
+            test ! -e "$path"
+            test ! -L "$path"
+          done
+          test "$(cat /opt/hi-veblen/portal-current/release.txt)" = "$expected_portal_revision"
+          test "$(cat /opt/hi-veblen/lingxi-current/release.txt)" = "$expected_backend_revision"
+          test "$(cat /opt/myagent/backend-current/release.txt)" = "$expected_backend_revision"
+          python=/opt/myagent/backend-current/.venv/bin/python
+          test -x "$python"
+          cd /opt/myagent/backend-current
+          "$python" -B - <<'PY'
+          import hashlib
+          import json
+          import subprocess
+          from pathlib import Path
+          from urllib import request
+
+          from dotenv import dotenv_values
+          from brain.persona import DEFAULT_PERSONA_ID
+          from brain.workspace.p6_config import (
+              is_gateway_token_revoked,
+              load_user_config,
+              onboarding_status,
+              parse_user_token_map,
+              persona_growth_consent_status,
+              token_hash,
+          )
+          from brain.workspace.user_paths import load_user_meta, user_storage_paths
+
+          data_dir = "/opt/myagent/data"
+          values = dotenv_values("/opt/myagent/.env")
+          mapping = parse_user_token_map(
+              values.get("BRAIN_GATEWAY_USER_TOKENS") or ""
+          )
+
+          def eligibility(candidate: str) -> dict[str, bool | str]:
+              token = str(mapping.get(candidate) or "")
+              user_dir = Path(data_dir) / "users" / candidate
+              directory_present = user_dir.is_dir()
+              config = load_user_config(data_dir, candidate) if directory_present else {}
+              try:
+                  meta = load_user_meta(user_storage_paths(data_dir, candidate))
+              except Exception:
+                  meta = {}
+              role = config.get("role_choice") if isinstance(config, dict) else {}
+              persona_id = str((role or {}).get("persona_id") or "")
+              preset_role_id = str((role or {}).get("preset_role_id") or "")
+              token_present = bool(token)
+              token_active = token_present and not is_gateway_token_revoked(
+                  data_dir, token_hash(token)
+              )
+              onboarding_completed = bool(onboarding_status(config)["completed"])
+              binding_matches_meta = bool(persona_id) and meta.get("persona") == persona_id
+              private_binding = (
+                  (role or {}).get("mode") == "wizard"
+                  and preset_role_id == DEFAULT_PERSONA_ID
+                  and persona_id == (
+                      "custom_"
+                      + hashlib.sha256(candidate.encode("utf-8")).hexdigest()[:16]
+                  )
+              )
+              growth_accepted = bool(persona_growth_consent_status(config)["accepted"])
+              shared_pending = (
+                  bool(persona_id)
+                  and not persona_id.startswith("custom_")
+                  and binding_matches_meta
+                  and not growth_accepted
+              )
+              private_resumed = (
+                  private_binding and binding_matches_meta and growth_accepted
+              )
+              acceptance_mode = (
+                  "private_resumed"
+                  if private_resumed
+                  else "shared_pending"
+                  if shared_pending
+                  else ""
+              )
+              checks = {
+                  "persist_id": candidate,
+                  "token_present": token_present,
+                  "directory_present": directory_present,
+                  "token_active": token_active,
+                  "onboarding_completed": onboarding_completed,
+                  "binding_matches_meta": binding_matches_meta,
+                  "private_binding": private_binding,
+                  "growth_accepted": growth_accepted,
+                  "shared_pending": shared_pending,
+                  "private_resumed": private_resumed,
+                  "acceptance_mode": acceptance_mode,
+              }
+              checks["eligible"] = all(
+                  checks[key]
+                  for key in (
+                      "token_present",
+                      "directory_present",
+                      "token_active",
+                      "onboarding_completed",
+                      "binding_matches_meta",
+                  )
+              ) and bool(acceptance_mode)
+              return checks
+
+          candidates = [
+              eligibility(candidate)
+              for candidate in ("p6_load_c", "p6_load_a", "p6_e2e_current")
+          ]
+          selected = next(
+              (item["persist_id"] for item in candidates if item["eligible"]), ""
+          )
+          print(json.dumps({
+              "synthetic_eligibility": candidates,
+              "selected_candidate": selected,
+          }, ensure_ascii=False, sort_keys=True))
+          if not selected:
+              raise SystemExit("没有可用于最终验收的合格替代合成用户")
+
+          target = "p6_load_b"
+          target_token = str(mapping.get(target) or "")
+          target_token_revoked = bool(target_token) and is_gateway_token_revoked(
+              data_dir, token_hash(target_token)
+          )
+          target_dir = Path(data_dir) / "users" / target
+          target_directory_present = target_dir.is_dir()
+          print(json.dumps({
+              "stuck_deletion_preflight": {
+                  "persist_id": target,
+                  "token_present": bool(target_token),
+                  "token_revoked": target_token_revoked,
+                  "directory_present": target_directory_present,
+              }
+          }, ensure_ascii=False, sort_keys=True))
+          if not target_token_revoked or not target_directory_present:
+              raise SystemExit("旧删除目标的凭证或目录状态与事故现场不一致")
+
+          subprocess.run(
+              ["systemctl", "restart", "myagent-gateway.service"],
+              check=True,
+              timeout=120,
+          )
+          for action in ("is-active", "is-enabled"):
+              subprocess.run(
+                  ["systemctl", action, "--quiet", "myagent-gateway.service"],
+                  check=True,
+                  timeout=30,
+              )
+          drop_ins = subprocess.run(
+              [
+                  "systemctl", "show", "myagent-gateway.service",
+                  "-p", "DropInPaths", "--value",
+              ],
+              check=True,
+              capture_output=True,
+              text=True,
+              timeout=30,
+          ).stdout.strip()
+          if drop_ins:
+              raise SystemExit("gateway 服务存在临时 DropInPaths")
+
+          host_token = str(
+              values.get("BRAIN_HOST_TOKEN")
+              or values.get("BRAIN_GATEWAY_TOKEN")
+              or ""
+          ).strip()
+          if not host_token:
+              raise SystemExit("宿主内部认证不可用")
+          host_port = int(values.get("BRAIN_HOST_PORT") or 8765)
+          with request.urlopen(
+              f"http://127.0.0.1:{host_port}/host/health", timeout=30
+          ) as response:
+              host_health = json.loads(response.read().decode("utf-8"))
+          host = host_health.get("host") or host_health
+          if (
+              host.get("ready") is not True
+              or host.get("audition_isolation_ok") is not True
+          ):
+              raise SystemExit("旧删除恢复前宿主未就绪")
+          body = json.dumps({"persist_id": target}).encode("utf-8")
+          req = request.Request(
+              f"http://127.0.0.1:{host_port}/host/purge_user",
+              data=body,
+              method="POST",
+              headers={
+                  "Authorization": f"Bearer {host_token}",
+                  "Content-Type": "application/json",
+              },
+          )
+          with request.urlopen(req, timeout=180) as response:
+              status = response.status
+              payload = json.loads(response.read().decode("utf-8"))
+          directory_absent = not target_dir.exists() and not target_dir.is_symlink()
+          print(json.dumps({
+              "stuck_deletion_result": {
+                  "http_status": status,
+                  "ok": payload.get("ok") is True,
+                  "directory_absent": directory_absent,
+              }
+          }, ensure_ascii=False, sort_keys=True))
+          if status != 200 or payload.get("ok") is not True or not directory_absent:
+              raise SystemExit("旧删除现场未能幂等收口")
+          PY
+          REMOTE
+
+      - name: 等待连续性与心跳自然恢复
+        env:
+          EXPECTED_BACKEND_REVISION: ${{ inputs.expected_backend_revision }}
+        run: |
+          set -euo pipefail
+          deadline=$((SECONDS + 2100))
+          while test "$SECONDS" -lt "$deadline"; do
+            health="$(curl --connect-timeout 10 --max-time 30 \
+              --fail --silent --show-error https://lingxi.hi-veblen.com/api/health || true)"
+            if HEALTH="$health" EXPECTED_BACKEND_REVISION="$EXPECTED_BACKEND_REVISION" \
+              python3 - <<'PY'
+          import json
+          import os
+
+          try:
+              payload = json.loads(os.environ.get("HEALTH") or "{}")
+          except json.JSONDecodeError:
+              raise SystemExit(1)
+          host = payload.get("host") or {}
+          heartbeat = host.get("heartbeat") or {}
+          persona_import = payload.get("persona_import") or {}
+          persona_growth = payload.get("persona_growth") or {}
+          ready = all((
+              payload.get("ok") is True,
+              payload.get("backend_revision") == os.environ["EXPECTED_BACKEND_REVISION"],
+              payload.get("persona_schema_phase") == "active",
+              persona_import.get("provider_verified") is True,
+              persona_import.get("ready") is True,
+              persona_growth.get("phase") == "active",
+              persona_growth.get("runtime_ready") is True,
+              persona_growth.get("ready") is True,
+              host.get("ready") is True,
+              host.get("continuity_ok") is True,
+              heartbeat.get("running") is True,
+              heartbeat.get("consecutive_failures") == 0,
+              heartbeat.get("in_flight") is False,
+              heartbeat.get("in_flight_timed_out") is False,
+          ))
+          raise SystemExit(0 if ready else 1)
+          PY
+            then
+              echo "旧生产连续性、成长 readiness 与心跳已恢复"
+              exit 0
+            fi
+            echo "等待下一拍健康恢复"
+            sleep 30
+          done
+          echo "等待旧生产健康恢复超时" >&2
+          exit 1
+
+      - name: 清除生产 SSH 凭据
+        if: ${{ always() }}
+        run: rm -f -- "$HOME/.ssh/hi-veblen-deploy" "$HOME/.ssh/config" "$HOME/.ssh/known_hosts"
+
   acceptance:
     name: 生产桌面移动全链
     if: >-
+      inputs.target_persist_id != 'recover_p6_load_b' &&
+      inputs.target_persist_id != 'audit_p6_load_c' &&
+      inputs.target_persist_id != 'prepare_p6_load_c' &&
+      inputs.target_persist_id != 'confirm_p6_load_c' &&
+      inputs.target_persist_id != 'cleanup_p6_load_c' &&
       github.repository == 'Timking123/hi-veblen' &&
       github.actor == 'Timking123' &&
       github.triggering_actor == 'Timking123'

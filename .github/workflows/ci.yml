@@ -33,6 +33,9 @@ jobs:
           acceptance_spec = Path(
               "e2e/d050-production-acceptance.spec.ts"
           ).read_text(encoding="utf-8")
+          recovery = Path(
+              "scripts/d050_prepare_synthetic.py"
+          ).read_text(encoding="utf-8")
           assert "group: hi-veblen-production" in workflow
           assert "group: hi-veblen-production" in acceptance
           assert "github.triggering_actor == 'Timking123'" in acceptance
@@ -60,6 +63,107 @@ jobs:
           assert first_ssh_cleanup < browser_step < post_ssh_config
           assert post_ssh_config < final_ssh_cleanup < artifact_upload
           assert acceptance.count('rm -f "$HOME/.ssh/hi-veblen-deploy"') == 2
+          audit_job = acceptance[
+              acceptance.index("  audit-synthetic-recovery:"):
+              acceptance.index("  prepare-synthetic-user:")
+          ]
+          assert "inputs.target_persist_id == 'audit_p6_load_c'" in audit_job
+          assert 'test "$EXPECTED_HEAD_SHA" = "$GITHUB_SHA"' in audit_job
+          assert '"revisions"' in audit_job
+          assert '"token_revoked"' in audit_job
+          assert '"user_dir_exists"' in audit_job
+          assert '"cron_exists"' in audit_job
+          assert '"release_lease_exists"' in audit_job
+          assert '"world_drop_ins_empty"' in audit_job
+          assert 'inputs.target_persist_id != \'audit_p6_load_c\'' in acceptance
+          assert "inputs.target_persist_id == 'cleanup_p6_load_c'" in acceptance
+          assert "cleanup_p6_load_c) mode=cleanup" in acceptance
+          assert 'inputs.target_persist_id != \'cleanup_p6_load_c\'' in acceptance
+          prepare_job = acceptance[
+              acceptance.index("  prepare-synthetic-user:"):
+              acceptance.index("  recover-stuck-deletion:")
+          ]
+          assert prepare_job.count("'  ServerAliveInterval 30'") == 2
+          assert prepare_job.count("'  ServerAliveCountMax 10'") == 2
+          def minute_constant(name):
+              match = re.search(
+                  rf"^{name} = ([0-9]+) \* 60$", recovery, re.MULTILINE
+              )
+              assert match is not None
+              return int(match.group(1))
+          audition_timeout = minute_constant("AUDITION_TIMEOUT_SECONDS")
+          operation_timeout = minute_constant("OPERATION_TIMEOUT_SECONDS")
+          lease_ttl = minute_constant("LEASE_TTL_SECONDS")
+          prepare_header = acceptance[
+              acceptance.index("  prepare-synthetic-user:"):
+              acceptance.index("    steps:", acceptance.index("  prepare-synthetic-user:"))
+          ]
+          prepare_job_timeout = re.search(
+              r"^    timeout-minutes: ([0-9]+)$", prepare_header, re.MULTILINE
+          )
+          assert prepare_job_timeout is not None
+          assert audition_timeout * 60 >= 15 * 305 + 10 * 60
+          assert operation_timeout >= audition_timeout + 15
+          assert int(prepare_job_timeout.group(1)) >= operation_timeout + 30
+          assert lease_ttl >= operation_timeout + 75
+          restart_world = recovery[
+              recovery.index("def _restart_world("):
+              recovery.index("def _install_watchdog(")
+          ]
+          assert "stable_samples >= 2" in restart_world
+          assert "/host/health" in restart_world
+          assert "/api/health" in restart_world
+          assert 'heartbeat.get("first_fire_completed") is True' in restart_world
+          assert 'heartbeat.get("first_fire_ok") is True' in restart_world
+          assert 'gateway_host.get("ready") is True' in restart_world
+          assert 'heartbeat.get("running") is True' in restart_world
+          assert 'heartbeat.get("in_flight_timed_out") is False' in restart_world
+          assert 'gateway_host.get("backend_revision") == expected_revision' in restart_world
+          assert restart_world.count('"myagent-gateway.service"') >= 2
+          assert "if response.status == 200:" not in restart_world
+          stuck_host = recovery[
+              recovery.index("def _require_stuck_host("):
+              recovery.index("def _draft(")
+          ]
+          assert "continuity_ok" not in stuck_host
+          assert "STUCK_PERSIST_ID" in stuck_host
+          assert "is_gateway_token_revoked" in stuck_host
+          assert "user_dir.is_dir()" in stuck_host
+          release_guard = recovery[
+              recovery.index("def _release_guard("):
+              recovery.index("def _draft(")
+          ]
+          assert "fcntl.LOCK_EX | fcntl.LOCK_NB" in release_guard
+          assert "RELEASE_LEASE_DIR" in release_guard
+          assert "MAINTENANCE_MARKER_PATH" in release_guard
+          assert "PRESERVE_MARKER_PATH" in release_guard
+          prepare = recovery[
+              recovery.index("def prepare("):
+              recovery.index("def confirm(")
+          ]
+          assert prepare.index("_require_stuck_host(values)") < prepare.index(
+              "_restart_world(values)"
+          )
+          assert 'if audition != state.get("audition"):' in recovery
+          main = recovery[recovery.index("def main() -> int:"):]
+          assert "with _release_guard():" in main
+          assert main.index("_require_release_idle()") < main.index(
+              '{"prepare": prepare, "confirm": confirm, "cleanup": cleanup}'
+          )
+          recover_job = acceptance[
+              acceptance.index("  recover-stuck-deletion:"):
+              acceptance.index("  acceptance:")
+          ]
+          assert "exec 9>/run/hi-veblen-release.lock" in recover_job
+          assert "flock -x -n 9" in recover_job
+          assert "/run/hi-veblen-release-lease" in recover_job
+          assert "/run/myagent-release-maintenance" in recover_job
+          assert "/run/hi-veblen-release-preserve" in recover_job
+          assert "parse_user_token_map" in recover_job
+          assert recover_job.index('"stuck_deletion_preflight"') < recover_job.index(
+              '["systemctl", "restart", "myagent-gateway.service"]'
+          )
+          assert 'host.get("continuity_ok") is not False' not in recover_job
           artifact = acceptance[artifact_upload:]
           assert "if: $" + "{{ success() }}" in artifact
           assert "d050-growth-lock-diagnostic.json" not in artifact
