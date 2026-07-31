@@ -78,6 +78,7 @@ jobs:
             prepare_review) test -z "$REVIEW_DECISION_B64" ;;
             confirm_review) test -n "$REVIEW_DECISION_B64" ;;
             recover_delete) test -z "$REVIEW_DECISION_B64" ;;
+            rotate_token) test -z "$REVIEW_DECISION_B64" ;;
             *) echo "留出审核阶段非法" >&2; exit 1 ;;
           esac
           test "$EXPECTED_HEAD_SHA" = "$GITHUB_SHA"
@@ -110,14 +111,14 @@ jobs:
           exit 1
 
       - name: 设置 Node.js
-        if: ${{ inputs.review_phase != 'recover_delete' }}
+        if: ${{ inputs.review_phase == 'prepare_review' || inputs.review_phase == 'confirm_review' }}
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: '22'
           cache: npm
 
       - name: 安装浏览器依赖
-        if: ${{ inputs.review_phase != 'recover_delete' }}
+        if: ${{ inputs.review_phase == 'prepare_review' || inputs.review_phase == 'confirm_review' }}
         run: |
           npm ci
           npx playwright install --with-deps chromium
@@ -159,6 +160,7 @@ jobs:
         env:
           EXPECTED_PORTAL_REVISION: ${{ inputs.expected_portal_revision }}
           EXPECTED_BACKEND_REVISION: ${{ inputs.expected_backend_revision }}
+          REVIEW_PHASE: ${{ inputs.review_phase }}
         run: |
           set -euo pipefail
           portal_revision="$(curl --connect-timeout 10 --max-time 30 \
@@ -167,9 +169,12 @@ jobs:
             --fail --silent --show-error https://lingxi.hi-veblen.com/release.txt)"
           health_file="$(mktemp)"
           trap 'rm -f "$health_file"' EXIT
-          curl --connect-timeout 10 --max-time 30 --fail --silent --show-error \
-            https://lingxi.hi-veblen.com/api/health > "$health_file"
-          public_backend_revision="$(python3 - "$health_file" "$EXPECTED_BACKEND_REVISION" <<'PY'
+          health_ready=false
+          public_backend_revision=-
+          recovery_pending=false
+          if curl --connect-timeout 10 --max-time 30 --fail --silent --show-error \
+            https://lingxi.hi-veblen.com/api/health > "$health_file"; then
+            public_backend_revision="$(python3 - "$health_file" "$EXPECTED_BACKEND_REVISION" <<'PY'
           import json
           import sys
 
@@ -184,25 +189,65 @@ jobs:
           assert heartbeat.get("first_fire_ok") is True
           print(health["backend_revision"])
           PY
-          )"
+            )" || public_backend_revision=-
+          fi
+          if test "$public_backend_revision" = "$EXPECTED_BACKEND_REVISION"; then
+            health_ready=true
+          else
+            test "$REVIEW_PHASE" = rotate_token
+            recovery_pending="$(ssh hi-veblen-production 'bash -se --' \
+              "$EXPECTED_BACKEND_REVISION" <<'REMOTE'
+          set -euo pipefail
+          expected_revision="$1"
+          sudo python3 -P -B - "$expected_revision" <<'PY'
+          import json
+          import os
+          from pathlib import Path
+          import stat
+          import sys
+
+          root = Path("/var/backups/myagent-d050-token-rotation")
+          receipt_path = root / "d050-token-rotation-receipt.json"
+          root_stat = root.lstat()
+          receipt_stat = receipt_path.lstat()
+          assert stat.S_ISDIR(root_stat.st_mode) and not root.is_symlink()
+          assert root_stat.st_uid == 0 and root_stat.st_mode & 0o077 == 0
+          assert stat.S_ISREG(receipt_stat.st_mode) and not receipt_path.is_symlink()
+          assert receipt_stat.st_uid == 0 and receipt_stat.st_mode & 0o077 == 0
+          receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+          assert receipt.get("schema_version") == "d050-token-rotation-v1"
+          assert receipt.get("persist_id") == "p6_load_a"
+          assert receipt.get("expected_revision") == sys.argv[1]
+          assert receipt.get("state") == "rollback_pending"
+          print("true")
+          PY
+          REMOTE
+            )"
+            test "$recovery_pending" = true
+          fi
           server_backend_revision="$(ssh hi-veblen-production \
             'cat /opt/myagent/backend-current/release.txt')"
           test "$portal_revision" = "$EXPECTED_PORTAL_REVISION"
           test "$lingxi_revision" = "$EXPECTED_BACKEND_REVISION"
-          test "$public_backend_revision" = "$EXPECTED_BACKEND_REVISION"
           test "$server_backend_revision" = "$EXPECTED_BACKEND_REVISION"
           python3 - "$portal_revision" "$lingxi_revision" \
-            "$public_backend_revision" "$server_backend_revision" <<'PY' \
+            "$public_backend_revision" "$server_backend_revision" \
+            "$health_ready" "$recovery_pending" <<'PY' \
             > d050-prewrite-revision-evidence.json
           import json
           import sys
 
+          public_revision = None if sys.argv[3] == "-" else sys.argv[3]
+          health_ready = sys.argv[5] == "true"
+          recovery_pending = sys.argv[6] == "true"
+          assert health_ready != recovery_pending
           print(json.dumps({
               "portal_revision": sys.argv[1],
               "lingxi_revision": sys.argv[2],
-              "public_backend_revision": sys.argv[3],
+              "public_backend_revision": public_revision,
               "server_backend_revision": sys.argv[4],
-              "health_ready": True,
+              "health_ready": health_ready,
+              "rollback_recovery_pending": recovery_pending,
               "BAD": 0,
           }, sort_keys=True))
           PY
@@ -223,7 +268,7 @@ jobs:
           review_phase="$2"
           case "$target_persist_id" in auto|p6_load_a) ;; *) exit 1 ;; esac
           case "$review_phase" in
-            prepare_review|confirm_review|recover_delete) ;;
+            prepare_review|confirm_review|recover_delete|rotate_token) ;;
             *) exit 1 ;;
           esac
           python=/opt/myagent/backend-current/.venv/bin/python
@@ -254,7 +299,18 @@ jobs:
               "/opt/myagent/data", token_hash(token)
           )
           recovery = review_phase == "recover_delete"
-          if not token or invalid_path or (revoked != recovery):
+          rotation = review_phase == "rotate_token"
+          directory_absent = not user_dir.exists() and not user_dir.is_symlink()
+          valid_state = (
+              bool(token)
+              and not invalid_path
+              and (
+                  (rotation and directory_absent)
+                  or (recovery and revoked)
+                  or (not rotation and not recovery and not revoked)
+              )
+          )
+          if not valid_state:
               raise SystemExit(json.dumps({
                   "error": "p6_load_a 不满足安全准备条件",
                   "token_present": bool(token),
@@ -265,10 +321,19 @@ jobs:
                   "review_phase": review_phase,
               }, sort_keys=True))
           print(candidate)
-          print("-" if recovery else token)
+          hide_token = recovery or rotation
+          print("-" if hide_token else token)
           print(candidate)
-          print("-" if recovery else token)
-          print("delete_recovery" if recovery else "private_resumed")
+          print("-" if hide_token else token)
+          print(
+              "delete_recovery"
+              if recovery
+              else "token_rotation_ready"
+              if rotation and not revoked
+              else "token_rotation"
+              if rotation
+              else "private_resumed"
+          )
           print(token_hash(token))
           PY
           REMOTE
@@ -295,6 +360,13 @@ jobs:
               ;;
             delete_recovery)
               test "$REVIEW_PHASE" = "recover_delete"
+              test "$primary_token" = -
+              test "$delete_token" = -
+              primary_token=""
+              delete_token=""
+              ;;
+            token_rotation|token_rotation_ready)
+              test "$REVIEW_PHASE" = "rotate_token"
               test "$primary_token" = -
               test "$delete_token" = -
               primary_token=""
@@ -373,8 +445,152 @@ jobs:
           PY
           REMOTE
 
+      - name: 轮换撤销后的 p6_load_a 凭证
+        if: ${{ inputs.review_phase == 'rotate_token' }}
+        env:
+          EXPECTED_BACKEND_REVISION: ${{ inputs.expected_backend_revision }}
+          EXPECTED_CURRENT_HASH: ${{ env.D050_DELETE_TOKEN_HASH }}
+        run: |
+          set -euo pipefail
+          printf '%s' "$EXPECTED_CURRENT_HASH" | grep -Eq '^sha256:[0-9a-f]{64}$'
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+
+          evidence = json.loads(
+              Path("d050-production-backup-evidence.json").read_text(encoding="utf-8")
+          )
+          assert evidence.get("backup_created") is True
+          assert evidence.get("backup_verified") is True
+          assert evidence.get("BAD") == 0
+          PY
+          remote_script=""
+          public_health=""
+          remove_remote_script() {
+            ssh hi-veblen-production 'bash -se --' "$1" <<'REMOTE_CLEANUP'
+          set -euo pipefail
+          target="$1"
+          [[ "$target" =~ ^/tmp/d050-rotate-token\.[A-Za-z0-9]{8}\.py$ ]]
+          sudo rm -f -- "$target"
+          REMOTE_CLEANUP
+          }
+          cleanup_rotation() {
+            status=$?
+            if test -n "$remote_script"; then
+              remove_remote_script "$remote_script" >/dev/null 2>&1 || true
+            fi
+            if test -n "$public_health"; then rm -f -- "$public_health"; fi
+            exit "$status"
+          }
+          trap cleanup_rotation EXIT
+          remote_script="$(ssh hi-veblen-production \
+            'mktemp /tmp/d050-rotate-token.XXXXXXXX.py')"
+          [[ "$remote_script" =~ ^/tmp/d050-rotate-token\.[A-Za-z0-9]{8}\.py$ ]] || {
+            echo "远端轮换脚本路径无效" >&2
+            exit 1
+          }
+          scp scripts/d050_rotate_synthetic_token.py \
+            "hi-veblen-production:$remote_script"
+          script_sha="$(sha256sum scripts/d050_rotate_synthetic_token.py | awk '{print $1}')"
+          ssh hi-veblen-production 'bash -se --' \
+            "$remote_script" "$script_sha" "$EXPECTED_CURRENT_HASH" \
+            "$EXPECTED_BACKEND_REVISION" \
+            > d050-token-rotation-evidence.json <<'REMOTE'
+          set -euo pipefail
+          remote_script="$1"
+          expected_script_sha="$2"
+          expected_current_hash="$3"
+          expected_backend_revision="$4"
+          [[ "$remote_script" =~ ^/tmp/d050-rotate-token\.[A-Za-z0-9]{8}\.py$ ]]
+          printf '%s' "$expected_script_sha" | grep -Eq '^[0-9a-f]{64}$'
+          printf '%s' "$expected_current_hash" | grep -Eq '^sha256:[0-9a-f]{64}$'
+          printf '%s' "$expected_backend_revision" | grep -Eq '^[0-9a-f]{40}$'
+
+          exec 9>/run/hi-veblen-release.lock
+          if ! flock -n 9; then
+            echo "另一个服务器发布事务仍在运行，拒绝轮换凭证。" >&2
+            exit 1
+          fi
+          maintenance_marker=/run/myagent-release-maintenance
+          preserve_marker=/run/hi-veblen-release-preserve
+          lease_dir=/run/hi-veblen-release-lease
+          preserved_staging=""
+          if test -d /opt/hi-veblen/staging; then
+            preserved_staging="$(find /opt/hi-veblen/staging -mindepth 2 -maxdepth 2 \
+              -name PRESERVE -print -quit)"
+          fi
+          if test -e "$maintenance_marker" || test -L "$maintenance_marker" || \
+            test -e "$preserve_marker" || test -L "$preserve_marker" || \
+            test -e "$lease_dir" || test -L "$lease_dir" || \
+            test -n "$preserved_staging"; then
+            echo "检测到发布保护现场，拒绝轮换凭证。" >&2
+            exit 1
+          fi
+          for unit in myagent-world.service myagent-gateway.service; do
+            test -z "$(systemctl show "$unit" -p DropInPaths --value)"
+          done
+
+          sudo chown root:root "$remote_script"
+          sudo chmod 0600 "$remote_script"
+          test "$(sudo sha256sum "$remote_script" | awk '{print $1}')" = \
+            "$expected_script_sha"
+          test "$(cat /opt/myagent/backend-current/release.txt)" = \
+            "$expected_backend_revision"
+          cd /opt/myagent/backend-current
+          sudo env PYTHONPATH=/opt/myagent/backend-current \
+            ./.venv/bin/python -P -B "$remote_script" \
+            /opt/myagent/.env /opt/myagent/data \
+            /var/backups/myagent-d050-token-rotation \
+            "$expected_current_hash" "$expected_backend_revision" \
+            http://127.0.0.1:8000
+          REMOTE
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+
+          evidence = json.loads(
+              Path("d050-token-rotation-evidence.json").read_text(encoding="utf-8")
+          )
+          assert evidence.get("config_backup_created") is True
+          assert evidence.get("gateway_active") is True
+          assert evidence.get("world_pid_unchanged") is True
+          assert evidence.get("session_verified") is True
+          assert evidence.get("old_token_rejected") is True
+          assert evidence.get("receipt_persisted") is True
+          assert evidence.get("receipt_state") == "verified"
+          assert evidence.get("locked_prewrite_revision_ok") is True
+          assert 1 <= evidence.get("backup_retained_count", 0) <= 7
+          assert evidence.get("BAD") == 0
+          PY
+          remove_remote_script "$remote_script"
+          remote_script=""
+          public_health="$(mktemp)"
+          curl --connect-timeout 10 --max-time 30 --fail --silent --show-error \
+            https://lingxi.hi-veblen.com/api/health > "$public_health"
+          python3 scripts/validate_release_health.py current \
+            "$EXPECTED_BACKEND_REVISION" active active < "$public_health" >/dev/null
+          python3 - "$public_health" "$EXPECTED_BACKEND_REVISION" <<'PY' \
+            > d050-token-rotation-public-evidence.json
+          import json
+          import sys
+
+          with open(sys.argv[1], encoding="utf-8") as source:
+              health = json.load(source)
+          expected = sys.argv[2]
+          assert health.get("backend_revision") == expected
+          assert health.get("ok") is True
+          print(json.dumps({
+              "backend_revision": expected,
+              "public_health_ok": True,
+              "BAD": 0,
+          }, sort_keys=True))
+          PY
+          rm -f -- "$public_health"
+          public_health=""
+          trap - EXIT
+
       - name: 通过产品 API 准备 p6_load_a
-        if: ${{ inputs.review_phase != 'recover_delete' }}
+        if: ${{ inputs.review_phase == 'prepare_review' || inputs.review_phase == 'confirm_review' }}
         env:
           D050_BASE_URL: https://lingxi.hi-veblen.com
           D050_EXPECTED_BACKEND_REVISION: ${{ inputs.expected_backend_revision }}
@@ -982,6 +1198,19 @@ jobs:
           if-no-files-found: error
           retention-days: 3
 
+      - name: 保存合成用户凭证轮换证据
+        if: ${{ inputs.review_phase == 'rotate_token' && success() }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: d050-token-rotation-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            d050-prewrite-revision-evidence.json
+            d050-production-backup-evidence.json
+            d050-token-rotation-evidence.json
+            d050-token-rotation-public-evidence.json
+          if-no-files-found: error
+          retention-days: 3
+
       - name: 保存失败诊断证据
         if: ${{ failure() }}
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
@@ -1003,5 +1232,7 @@ jobs:
             d050-delete-complete.png
             d050-delete-confirmed.flag
             d050-delete-state-evidence.json
+            d050-token-rotation-evidence.json
+            d050-token-rotation-public-evidence.json
           if-no-files-found: warn
           retention-days: 3
