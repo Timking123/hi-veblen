@@ -147,7 +147,8 @@ jobs:
           assert workflow.count("flock -n 9") >= 4
           assert workflow.count("lease_dir=/run/hi-veblen-release-lease") >= 4
           assert workflow.count('lease_owner="$run_id-$run_attempt"') >= 4
-          assert 'mkdir -m 0700 "$lease_dir"' in workflow
+          assert 'lease_tmp="$(mktemp -d ' in workflow
+          assert 'mv -T -- "$lease_tmp" "$lease_dir"' in workflow
           assert 'rmdir "$lease_dir"' in workflow
           rollback = workflow[workflow.index("          rollback() {"):workflow.index("          trap rollback EXIT")]
           assert 'test "$nginx_mutated" -eq 1' in rollback
@@ -345,8 +346,128 @@ jobs:
           assert "test -n \"$dropins\"" in preflight
           assert 'test -e "$maintenance_marker"' in preflight
           assert 'test -e "$preserve_marker"' in preflight and "preserved_staging" in preflight
-          assert 'mkdir -m 0700 "$lease_dir"' in preflight
-          assert 'printf \'%s\\n\' "$lease_owner" > "$lease_dir/owner"' in preflight
+          assert 'lease_tmp="$(mktemp -d ' in preflight
+          assert 'printf \'%s\\n\' "$lease_owner" > "$lease_tmp/owner"' in preflight
+          assert 'mv -T -- "$lease_tmp" "$lease_dir"' in preflight
+          assert "trap cleanup_lease_tmp EXIT" in preflight
+          assert (
+              '"$GITHUB_RUN_ID" "$GITHUB_RUN_ATTEMPT" "$GITHUB_SHA" <<\'REMOTE\''
+              in preflight
+          )
+          assert 'portal_revision="$3"' in preflight
+          backup_start = preflight.index("config_backup_root=")
+          backup = preflight[backup_start:]
+          assert 'config_backup_dir="$config_backup_root/run-$run_id-$run_attempt-$portal_revision"' in backup
+          for required in (
+              "/opt/myagent/.env",
+              "/etc/systemd/system/myagent-world.service",
+              "/etc/systemd/system/myagent-gateway.service",
+              "/etc/apparmor.d/myagent-persona-parser",
+              "/etc/nginx/sites-available",
+              "/etc/nginx/sites-enabled",
+              "/etc/lingxi-ops/ops.env",
+          ):
+              assert required in backup
+          required_configs = backup[
+              backup.index("required_config_paths=("):backup.index("archive_paths=()")
+          ]
+          assert "/etc/apparmor.d/myagent-persona-parser" not in required_configs
+          assert "apparmor_profile_state=absent" in backup
+          assert "apparmor_profile_state=present" in backup
+          assert "ops_env_state=absent" in backup
+          assert "ops_env_state=present" in backup
+          assert (
+              backup.index("apparmor_profile_state=absent")
+              < backup.index('if test -e "$apparmor_profile_path"')
+              < backup.index('stage_regular_config "$apparmor_profile_path"')
+              < backup.index("apparmor_profile_state=present")
+          )
+          assert (
+              backup.index("ops_env_state=absent")
+              < backup.index('if test -e "$ops_env_path"')
+              < backup.index('stage_regular_config "$ops_env_path"')
+              < backup.index("ops_env_state=present")
+          )
+          assert 'test "$(id -u)" -ne 0' in preflight
+          assert 'root:root:700' in backup and 'root:root:600' in backup
+          assert "backups_parent_mode=" in backup
+          assert "8#$backups_parent_mode & 0022" in backup
+          trap_registration = backup.index("trap cleanup_config_backup_tmp EXIT")
+          temporary_directory = backup.index('config_backup_tmp="$(mktemp -d')
+          assert trap_registration < temporary_directory
+          snapshot_copy = backup.index("cp --archive --no-dereference")
+          archive_creation = backup.index("tar --create --gzip --file")
+          assert temporary_directory < snapshot_copy < archive_creation
+          assert 'cmp -s -- "$path" "$staged_path"' in backup
+          assert "validate_nginx_config_tree" in backup
+          assert "diff --brief --recursive --no-dereference" in backup
+          assert 'test "$(dirname -- "$target")" != \\' in backup
+          assert '--directory "$config_backup_snapshot"' in backup
+          assert "--directory /" not in backup
+          assert 'rm -rf --one-file-system -- "$config_backup_snapshot"' in backup
+          assert 'tar --create --gzip --file' in backup
+          assert 'sha256sum config.tar.gz metadata.txt > SHA256SUMS' in backup
+          assert 'sha256sum --check SHA256SUMS' in backup
+          assert "apparmor_profile=%s\\nops_env=%s" in backup
+          validator = backup[
+              backup.index("validate_config_backup_payload() {"):
+              backup.index('          for path in "${required_config_paths[@]}"; do')
+          ]
+          for required in (
+              "tarfile.open",
+              "manifest_entries",
+              "metadata 路径集合无效",
+              "归档包含越界路径",
+              "sites-enabled 链接越界",
+          ):
+              assert required in validator
+          published_validation = backup.index(
+              'validate_config_backup_payload "$config_backup_dir" "$config_backup_name"'
+          )
+          atomic_publish = backup.index(
+              'mv -T -- "$config_backup_tmp" "$config_backup_dir"'
+          )
+          published_tmp_reset = backup.index(
+              'config_backup_tmp=""', atomic_publish
+          )
+          durable_sync = backup.index(
+              'sync -f "$config_backup_dir/config.tar.gz"'
+          )
+          retention_start = backup.index("config_backup_retention=30")
+          retention_delete = backup.index('rmdir -- "$backup_path"')
+          success_log = backup.index('printf \'持久生产配置备份已创建：')
+          assert (
+              archive_creation
+              < atomic_publish
+              < published_tmp_reset
+              < published_validation
+              < durable_sync
+              < retention_start
+              < retention_delete
+              < success_log
+          )
+          assert "^run-[0-9]+-[0-9]+-[0-9a-f]{40}$" in backup
+          retention = backup[retention_start:retention_delete]
+          retention_guard = (
+              'if test "$backup_name" = "$config_backup_name" || \\\n'
+              '                  test "$backup_name" = "$latest_backup_name" || \\\n'
+              '                  test "$valid_backup_rank" -le "$config_backup_retention"; then'
+          )
+          assert retention_guard in retention
+          assert "backup_member_count=" in retention
+          assert "test \"$backup_member_count\" -ne 3" in retention
+          assert (
+              'validate_config_backup_payload "$backup_path" "$backup_name"'
+              in retention
+          )
+          assert 'rm -rf --one-file-system -- "$backup_path"' not in backup
+          assert 'rm -f -- "$backup_path/config.tar.gz"' in backup
+          assert 'rmdir -- "$backup_path"' in backup
+          lease_publish = preflight.index('mv -T -- "$lease_tmp" "$lease_dir"')
+          assert lease_publish < backup_start
+          assert '/var/backups/myagent-production-config' not in workflow[
+              workflow.index("      - name: 清理本次远端暂存与未引用发布"):
+          ]
           staging = workflow[workflow.index("      - name: 创建私有暂存目录"):workflow.index("      - name: 上传发布包")]
           assert 'test "$(cat "$lease_dir/owner" 2>/dev/null || true)" = "$lease_owner"' in staging
           assert 'install -m 0600 /dev/null "$upload_dir/PRESERVE"' in staging
@@ -391,6 +512,219 @@ jobs:
           assert main_remote.index('test -e "$maintenance_marker"') < staging_prune
           print("production transaction ordering OK")
           PY
+
+      - name: Test production config backup retention
+        shell: bash
+        run: |
+          set -euo pipefail
+          test_script="$RUNNER_TEMP/production-config-retention.sh"
+          trap 'rm -f -- "$test_script"' EXIT
+          PYTHONUTF8=1 python3 - "$test_script" <<'PY'
+          from pathlib import Path
+          import sys
+
+          workflow = Path(".github/workflows/deploy.yml").read_text(encoding="utf-8")
+          validator_start = workflow.index(
+              "          validate_config_backup_payload() {"
+          )
+          validator_end = workflow.index(
+              '          for path in "${required_config_paths[@]}"; do',
+              validator_start,
+          )
+          start = workflow.index("          config_backup_retention=30")
+          end = workflow.index(
+              "          printf '持久生产配置备份已创建：", start
+          )
+          validator = "\n".join(
+              line[10:]
+              for line in workflow[validator_start:validator_end].splitlines()
+          )
+          retention = "\n".join(
+              line[10:] for line in workflow[start:end].splitlines()
+          )
+          fixture = r'''set -euo pipefail
+          fixture_root="$(mktemp -d)"
+          trap 'rm -rf --one-file-system -- "$fixture_root"' EXIT
+          config_backup_root="$fixture_root/backups"
+          install -d -o root -g root -m 0700 "$config_backup_root"
+          snapshot="$fixture_root/snapshot"
+          install -d "$snapshot/opt/myagent" \
+            "$snapshot/etc/systemd/system" \
+            "$snapshot/etc/nginx/sites-available" \
+            "$snapshot/etc/nginx/sites-enabled"
+          printf 'test env\n' > "$snapshot/opt/myagent/.env"
+          printf 'world unit\n' > "$snapshot/etc/systemd/system/myagent-world.service"
+          printf 'gateway unit\n' > "$snapshot/etc/systemd/system/myagent-gateway.service"
+          printf 'server config\n' > "$snapshot/etc/nginx/sites-available/lingxi.conf"
+          ln -s ../sites-available/lingxi.conf \
+            "$snapshot/etc/nginx/sites-enabled/lingxi.conf"
+          tar --create --gzip --file "$fixture_root/valid-config.tar.gz" \
+            --directory "$snapshot" -- \
+            opt/myagent/.env \
+            etc/systemd/system/myagent-world.service \
+            etc/systemd/system/myagent-gateway.service \
+            etc/nginx/sites-available \
+            etc/nginx/sites-enabled
+          write_metadata() {
+            dir="$1"
+            run_id="$2"
+            revision="$3"
+            ops_state="$4"
+            printf '%s\n' \
+              'schema=myagent-production-config-backup-v1' \
+              'created_at_utc=2026-07-29T00:00:00Z' \
+              "github_run_id=$run_id" \
+              'github_run_attempt=1' \
+              "portal_revision=$revision" \
+              'apparmor_profile=absent' \
+              "ops_env=$ops_state" \
+              'path=opt/myagent/.env' \
+              'path=etc/systemd/system/myagent-world.service' \
+              'path=etc/systemd/system/myagent-gateway.service' \
+              'path=etc/nginx/sites-available' \
+              'path=etc/nginx/sites-enabled' \
+              > "$dir/metadata.txt"
+            if test "$ops_state" = present; then
+              printf '%s\n' 'path=etc/lingxi-ops/ops.env' >> "$dir/metadata.txt"
+            fi
+          }
+          finish_backup() {
+            dir="$1"
+            (cd "$dir" && sha256sum config.tar.gz metadata.txt > SHA256SUMS)
+            chmod 0600 "$dir/config.tar.gz" "$dir/metadata.txt" "$dir/SHA256SUMS"
+          }
+          make_backup() {
+            n="$1"
+            sha="$(printf '%040x' "$n")"
+            dir="$config_backup_root/run-$n-1-$sha"
+            install -d -o root -g root -m 0700 "$dir"
+            cp "$fixture_root/valid-config.tar.gz" "$dir/config.tar.gz"
+            write_metadata "$dir" "$n" "$sha" absent
+            finish_backup "$dir"
+            touch -d "@$n" "$dir"
+          }
+          for n in $(seq 1 33); do
+            make_backup "$n"
+          done
+
+          empty_sha="$(printf '%040x' 34)"
+          empty="$config_backup_root/run-34-1-$empty_sha"
+          install -d -o root -g root -m 0700 "$empty"
+          tar --create --gzip --file "$empty/config.tar.gz" --files-from /dev/null
+          write_metadata "$empty" 34 "$empty_sha" absent
+          finish_backup "$empty"
+          touch -d '@34' "$empty"
+
+          mismatch_sha="$(printf '%040x' 35)"
+          mismatch="$config_backup_root/run-35-1-$mismatch_sha"
+          install -d -o root -g root -m 0700 "$mismatch"
+          cp "$fixture_root/valid-config.tar.gz" "$mismatch/config.tar.gz"
+          write_metadata "$mismatch" 35 "$mismatch_sha" present
+          finish_backup "$mismatch"
+          touch -d '@35' "$mismatch"
+
+          extra_sha="$(printf '%040x' 36)"
+          extra="$config_backup_root/run-36-1-$extra_sha"
+          install -d -o root -g root -m 0700 "$extra"
+          cp "$fixture_root/valid-config.tar.gz" "$extra/config.tar.gz"
+          write_metadata "$extra" 36 "$extra_sha" absent
+          finish_backup "$extra"
+          printf 'manual recovery material\n' > "$extra/EXTRA"
+          chmod 0600 "$extra/EXTRA"
+          touch -d '@36' "$extra"
+
+          traversal_sha="$(printf '%040x' 37)"
+          traversal="$config_backup_root/run-37-1-$traversal_sha"
+          symlink_sha="$(printf '%040x' 38)"
+          symlink="$config_backup_root/run-38-1-$symlink_sha"
+          install -d -o root -g root -m 0700 "$traversal" "$symlink"
+          python3 - "$fixture_root/valid-config.tar.gz" \
+            "$traversal/config.tar.gz" "$symlink/config.tar.gz" <<'MAKE_ARCHIVES'
+          import copy
+          import io
+          import sys
+          import tarfile
+
+          source_path, traversal_path, symlink_path = sys.argv[1:]
+
+          def rewrite(destination, *, bad_symlink=False, add_traversal=False):
+              with tarfile.open(source_path, "r:gz") as source, tarfile.open(
+                  destination, "w:gz"
+              ) as target:
+                  for original in source.getmembers():
+                      member = copy.copy(original)
+                      if bad_symlink and member.name == (
+                          "etc/nginx/sites-enabled/lingxi.conf"
+                      ):
+                          member.linkname = "/opt/myagent/.env"
+                      payload = source.extractfile(original) if original.isreg() else None
+                      target.addfile(member, payload)
+                  if add_traversal:
+                      member = tarfile.TarInfo("etc/nginx/sites-available/..")
+                      member.size = 1
+                      target.addfile(member, io.BytesIO(b"x"))
+
+          rewrite(traversal_path, add_traversal=True)
+          rewrite(symlink_path, bad_symlink=True)
+          MAKE_ARCHIVES
+          write_metadata "$traversal" 37 "$traversal_sha" absent
+          write_metadata "$symlink" 38 "$symlink_sha" absent
+          finish_backup "$traversal"
+          finish_backup "$symlink"
+          touch -d '@37' "$traversal"
+          touch -d '@38' "$symlink"
+
+          digest_sha="$(printf '%040x' 39)"
+          digest="$config_backup_root/run-39-1-$digest_sha"
+          make_backup 39
+          bad_digest="$(printf '%064d' 0)"
+          test "$(sha256sum "$digest/config.tar.gz" | cut -d ' ' -f 1)" != \
+            "$bad_digest"
+          sed -i "1s/^[0-9a-f]\{64\}/$bad_digest/" "$digest/SHA256SUMS"
+          chmod 0600 "$digest/SHA256SUMS"
+          grep -Fqx "$bad_digest  config.tar.gz" "$digest/SHA256SUMS"
+          touch -d '@39' "$digest"
+
+          metadata_digest_sha="$(printf '%040x' 40)"
+          metadata_digest="$config_backup_root/run-40-1-$metadata_digest_sha"
+          make_backup 40
+          sed -i "2s/^[0-9a-f]\{64\}/$bad_digest/" \
+            "$metadata_digest/SHA256SUMS"
+          chmod 0600 "$metadata_digest/SHA256SUMS"
+          grep -Fqx "$bad_digest  metadata.txt" "$metadata_digest/SHA256SUMS"
+          touch -d '@40' "$metadata_digest"
+
+          current_sha="$(printf '%040x' 1)"
+          latest_sha="$(printf '%040x' 33)"
+          config_backup_dir="$config_backup_root/run-1-1-$current_sha"
+          config_backup_name="${config_backup_dir##*/}"
+          '''
+          checks = r'''
+          test -d "$config_backup_root/run-1-1-$current_sha"
+          test -d "$config_backup_root/run-33-1-$latest_sha"
+          test -d "$empty"
+          test -d "$mismatch"
+          test -f "$extra/EXTRA"
+          test -d "$traversal"
+          test -d "$symlink"
+          test -d "$digest"
+          test -d "$metadata_digest"
+          test -d "$config_backup_root/run-4-1-$(printf '%040x' 4)"
+          test ! -e "$config_backup_root/run-2-1-$(printf '%040x' 2)"
+          test ! -e "$config_backup_root/run-3-1-$(printf '%040x' 3)"
+          remaining="$(find "$config_backup_root" -mindepth 1 -maxdepth 1 \
+            -type d -name 'run-*' | wc -l)"
+          test "$remaining" -eq 38
+          printf 'production config retention OK: %s directories\n' "$remaining"
+          '''
+          Path(sys.argv[1]).write_text(
+              fixture + "\n" + validator + "\n" + retention + "\n" + checks,
+              encoding="utf-8",
+              newline="\n",
+          )
+          PY
+          chmod 0700 "$test_script"
+          sudo bash "$test_script"
 
       - name: Test release Nginx auth contract
         run: python3 scripts/validate_release_nginx.py --self-test

@@ -8,7 +8,7 @@ concurrency:
   cancel-in-progress: false
 
 env:
-  LINGXI_SHA: 15e48baf6f8efe2b3760001d89f87c30aa92c1b5
+  LINGXI_SHA: 1fef3c2bd434a5d6bee36d7a14752998bf490bce
   EXPECTED_PERSONA_SCHEMA_PHASE: active
   EXPECTED_PERSONA_GROWTH_PHASE: active
 
@@ -255,16 +255,21 @@ jobs:
       - name: 拒绝未纳管的 systemd 覆盖
         run: |
           ssh hi-veblen-production 'bash -se --' \
-            "$GITHUB_RUN_ID" "$GITHUB_RUN_ATTEMPT" <<'REMOTE'
-          set -eu
+            "$GITHUB_RUN_ID" "$GITHUB_RUN_ATTEMPT" "$GITHUB_SHA" <<'REMOTE'
+          set -euo pipefail
           run_id="$1"
           run_attempt="$2"
+          portal_revision="$3"
           case "$run_id" in
             ''|*[!0-9]*) echo "GitHub run id 格式无效：$run_id" >&2; exit 1 ;;
           esac
           case "$run_attempt" in
             ''|*[!0-9]*) echo "GitHub run attempt 格式无效：$run_attempt" >&2; exit 1 ;;
           esac
+          case "$portal_revision" in
+            ''|*[!0-9a-f]*) echo "Portal revision 格式无效" >&2; exit 1 ;;
+          esac
+          test "${#portal_revision}" -eq 40
           release_lock=/run/hi-veblen-release.lock
           lease_dir=/run/hi-veblen-release-lease
           lease_owner="$run_id-$run_attempt"
@@ -294,13 +299,479 @@ jobs:
               exit 1
             fi
           done
-          if ! mkdir -m 0700 "$lease_dir"; then
-            current_owner="$(cat "$lease_dir/owner" 2>/dev/null || true)"
+          if test -e "$lease_dir" || test -L "$lease_dir"; then
+            current_owner=unknown
+            if test -d "$lease_dir" && test ! -L "$lease_dir" && \
+              test -f "$lease_dir/owner" && test ! -L "$lease_dir/owner"; then
+              current_owner="$(cat "$lease_dir/owner" 2>/dev/null || true)"
+            fi
             echo "服务器发布生命周期已被占用：${current_owner:-unknown}" >&2
             exit 1
           fi
-          printf '%s\n' "$lease_owner" > "$lease_dir/owner"
-          chmod 0600 "$lease_dir/owner"
+          lease_tmp=""
+          cleanup_lease_tmp() {
+            cleanup_status=$?
+            if test -n "${lease_tmp:-}" && test -d "$lease_tmp" && \
+              test ! -L "$lease_tmp"; then
+              rm -f -- "$lease_tmp/owner" || cleanup_status=$?
+              rmdir -- "$lease_tmp" || cleanup_status=$?
+            fi
+            return "$cleanup_status"
+          }
+          trap cleanup_lease_tmp EXIT
+          lease_tmp="$(mktemp -d "/run/.hi-veblen-release-lease.$lease_owner.XXXXXX")"
+          printf '%s\n' "$lease_owner" > "$lease_tmp/owner"
+          chmod 0600 "$lease_tmp/owner"
+          test "$(stat -c '%U:%G:%a' "$lease_tmp")" = "root:root:700"
+          test "$(stat -c '%U:%G:%a' "$lease_tmp/owner")" = "root:root:600"
+          mv -T -- "$lease_tmp" "$lease_dir"
+          lease_tmp=""
+          trap - EXIT
+
+          # 在任何 release、服务或系统配置变更前持久化生产配置快照。
+          if test "$(id -u)" -ne 0; then
+            echo "生产配置备份只能由 root 创建。" >&2
+            exit 1
+          fi
+          config_backup_root=/var/backups/myagent-production-config
+          config_backup_dir="$config_backup_root/run-$run_id-$run_attempt-$portal_revision"
+          umask 077
+          if test -e /var/backups || test -L /var/backups; then
+            test -d /var/backups && test ! -L /var/backups
+            test "$(stat -c '%U:%G' /var/backups)" = "root:root"
+            backups_parent_mode="$(stat -c '%a' /var/backups)"
+            if (( (8#$backups_parent_mode & 0022) != 0 )); then
+              echo "持久备份父目录允许非 root 写入：/var/backups" >&2
+              exit 1
+            fi
+          else
+            echo "持久备份父目录不存在：/var/backups" >&2
+            exit 1
+          fi
+          if test -e "$config_backup_root" || test -L "$config_backup_root"; then
+            test -d "$config_backup_root" && test ! -L "$config_backup_root"
+            test "$(stat -c '%U:%G:%a' "$config_backup_root")" = "root:root:700"
+          else
+            install -d -o root -g root -m 0700 "$config_backup_root"
+          fi
+          if test -e "$config_backup_dir" || test -L "$config_backup_dir"; then
+            echo "生产配置备份已存在，拒绝覆盖：$config_backup_dir" >&2
+            exit 1
+          fi
+          config_backup_tmp=""
+          cleanup_config_backup_tmp() {
+            cleanup_status=$?
+            if test -n "${config_backup_tmp:-}" && \
+              { test -e "$config_backup_tmp" || test -L "$config_backup_tmp"; }; then
+              case "$config_backup_tmp" in
+                "$config_backup_root"/.run-"$run_id"-"$run_attempt"-"$portal_revision".tmp.*)
+                  rm -rf --one-file-system -- "$config_backup_tmp" || cleanup_status=$?
+                  ;;
+                *)
+                  echo "拒绝清理非预期生产配置临时路径：$config_backup_tmp" >&2
+                  cleanup_status=1
+                  ;;
+              esac
+            fi
+            return "$cleanup_status"
+          }
+          trap cleanup_config_backup_tmp EXIT
+          config_backup_tmp="$(mktemp -d \
+            "$config_backup_root/.run-$run_id-$run_attempt-$portal_revision.tmp.XXXXXX")"
+          test "$(stat -c '%U:%G:%a' "$config_backup_tmp")" = "root:root:700"
+          config_backup_snapshot="$config_backup_tmp/snapshot"
+          install -d -o root -g root -m 0700 "$config_backup_snapshot"
+
+          required_config_paths=(
+            /opt/myagent/.env
+            /etc/systemd/system/myagent-world.service
+            /etc/systemd/system/myagent-gateway.service
+          )
+          archive_paths=()
+          stage_regular_config() {
+            local path="$1"
+            local archive_path="${path#/}"
+            local staged_path="$config_backup_snapshot/$archive_path"
+            if test -L "$path" || ! test -f "$path" || ! test -r "$path"; then
+              echo "生产配置不可安全读取：$path" >&2
+              exit 1
+            fi
+            install -d -o root -g root -m 0700 "$(dirname "$staged_path")"
+            cp --archive --no-dereference -- "$path" "$staged_path"
+            if test -L "$path" || ! test -f "$path" || test -L "$staged_path" || \
+              ! test -f "$staged_path" || ! cmp -s -- "$path" "$staged_path"; then
+              echo "生产配置复制期间发生变化：$path" >&2
+              exit 1
+            fi
+            archive_paths+=("$archive_path")
+          }
+          validate_nginx_config_tree() {
+            local path="$1"
+            local unexpected=""
+            local hardlinked=""
+            if test "$path" = /etc/nginx/sites-available; then
+              unexpected="$(find "$path" -mindepth 1 -maxdepth 1 \
+                ! -type f -print -quit)"
+            else
+              unexpected="$(find "$path" -mindepth 1 -maxdepth 1 \
+                ! -type f ! -type l -print -quit)"
+            fi
+            if test -n "$unexpected"; then
+              echo "Nginx 配置包含目录或特殊文件：$unexpected" >&2
+              exit 1
+            fi
+            hardlinked="$(find "$path" -mindepth 1 -maxdepth 1 \
+              -type f -links +1 -print -quit)"
+            if test -n "$hardlinked"; then
+              echo "Nginx 配置包含硬链接文件：$hardlinked" >&2
+              exit 1
+            fi
+            if test "$path" = /etc/nginx/sites-enabled; then
+              while IFS= read -r -d '' member; do
+                if test -L "$member"; then
+                  target="$(readlink -f -- "$member")"
+                  if test "$(dirname -- "$target")" != \
+                    /etc/nginx/sites-available || ! test -f "$target" || \
+                    test "$(stat -c '%h' "$target")" -ne 1; then
+                    echo "sites-enabled 链接未指向受管普通配置：$member" >&2
+                    exit 1
+                  fi
+                fi
+              done < <(find "$path" -mindepth 1 -maxdepth 1 -print0)
+            fi
+          }
+          validate_config_backup_payload() {
+            local backup_path="$1"
+            local backup_name="$2"
+            python3 -B - "$backup_path" "$backup_name" <<'PY'
+          import hashlib
+          import posixpath
+          import re
+          import sys
+          import tarfile
+          from pathlib import Path, PurePosixPath
+
+
+          def require(condition: bool, message: str) -> None:
+              if not condition:
+                  raise ValueError(message)
+
+
+          def file_sha256(path: Path) -> str:
+              digest = hashlib.sha256()
+              with path.open("rb") as handle:
+                  for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+                      digest.update(chunk)
+              return digest.hexdigest()
+
+
+          try:
+              backup_path = Path(sys.argv[1])
+              backup_name = sys.argv[2]
+              name_match = re.fullmatch(
+                  r"run-([0-9]+)-([0-9]+)-([0-9a-f]{40})", backup_name
+              )
+              require(name_match is not None, "目录名格式无效")
+              run_id, run_attempt, revision = name_match.groups()
+
+              archive_path = backup_path / "config.tar.gz"
+              metadata_path = backup_path / "metadata.txt"
+              manifest_path = backup_path / "SHA256SUMS"
+              manifest_entries: dict[str, str] = {}
+              for line in manifest_path.read_text(encoding="ascii").splitlines():
+                  match = re.fullmatch(
+                      r"([0-9a-f]{64})  (config\.tar\.gz|metadata\.txt)", line
+                  )
+                  require(match is not None, "摘要清单格式无效")
+                  digest, filename = match.groups()
+                  require(filename not in manifest_entries, "摘要清单包含重复项")
+                  manifest_entries[filename] = digest
+              require(
+                  set(manifest_entries) == {"config.tar.gz", "metadata.txt"},
+                  "摘要清单成员不完整",
+              )
+              require(
+                  file_sha256(archive_path) == manifest_entries["config.tar.gz"]
+                  and file_sha256(metadata_path) == manifest_entries["metadata.txt"],
+                  "归档摘要不匹配",
+              )
+
+              metadata: dict[str, list[str]] = {}
+              for line in metadata_path.read_text(encoding="utf-8").splitlines():
+                  require("=" in line, "metadata 行格式无效")
+                  key, value = line.split("=", 1)
+                  metadata.setdefault(key, []).append(value)
+              allowed_keys = {
+                  "schema",
+                  "created_at_utc",
+                  "github_run_id",
+                  "github_run_attempt",
+                  "portal_revision",
+                  "apparmor_profile",
+                  "ops_env",
+                  "path",
+              }
+              require(set(metadata) == allowed_keys, "metadata 字段集合无效")
+
+              def single(key: str) -> str:
+                  values = metadata[key]
+                  require(len(values) == 1, f"metadata {key} 重复")
+                  return values[0]
+
+              require(
+                  single("schema") == "myagent-production-config-backup-v1",
+                  "schema 无效",
+              )
+              require(
+                  re.fullmatch(
+                      r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z",
+                      single("created_at_utc"),
+                  )
+                  is not None,
+                  "创建时间格式无效",
+              )
+              require(single("github_run_id") == run_id, "run id 与目录名不一致")
+              require(
+                  single("github_run_attempt") == run_attempt,
+                  "run attempt 与目录名不一致",
+              )
+              require(
+                  single("portal_revision") == revision,
+                  "revision 与目录名不一致",
+              )
+              apparmor_state = single("apparmor_profile")
+              ops_env_state = single("ops_env")
+              require(apparmor_state in {"present", "absent"}, "AppArmor 状态无效")
+              require(ops_env_state in {"present", "absent"}, "ops.env 状态无效")
+
+              required_files = {
+                  "opt/myagent/.env",
+                  "etc/systemd/system/myagent-world.service",
+                  "etc/systemd/system/myagent-gateway.service",
+              }
+              required_directories = {
+                  "etc/nginx/sites-available",
+                  "etc/nginx/sites-enabled",
+              }
+              optional_paths = {
+                  "etc/apparmor.d/myagent-persona-parser": apparmor_state,
+                  "etc/lingxi-ops/ops.env": ops_env_state,
+              }
+              expected_paths = required_files | required_directories | {
+                  path for path, state in optional_paths.items() if state == "present"
+              }
+              require(
+                  len(metadata["path"]) == len(set(metadata["path"]))
+                  and set(metadata["path"]) == expected_paths,
+                  "metadata 路径集合无效",
+              )
+
+              with tarfile.open(archive_path, mode="r:gz") as archive:
+                  members = archive.getmembers()
+              normalized_members: dict[str, tarfile.TarInfo] = {}
+              for member in members:
+                  pure_name = PurePosixPath(member.name)
+                  require(
+                      not pure_name.is_absolute() and ".." not in pure_name.parts,
+                      "归档包含越界路径",
+                  )
+                  normalized_name = member.name.rstrip("/")
+                  require(
+                      normalized_name and normalized_name not in normalized_members,
+                      "归档包含空路径或重复成员",
+                  )
+                  normalized_members[normalized_name] = member
+
+              for path in required_files:
+                  require(
+                      path in normalized_members and normalized_members[path].isreg(),
+                      "归档缺少必需普通文件",
+                  )
+              for path in required_directories:
+                  require(
+                      path in normalized_members and normalized_members[path].isdir(),
+                      "归档缺少必需目录",
+                  )
+              for path, state in optional_paths.items():
+                  present = path in normalized_members
+                  require(present == (state == "present"), "可选成员状态不一致")
+                  if present:
+                      require(normalized_members[path].isreg(), "可选成员不是普通文件")
+
+              fixed_members = required_files | required_directories | set(optional_paths)
+              available_prefix = "etc/nginx/sites-available/"
+              enabled_prefix = "etc/nginx/sites-enabled/"
+              for name, member in normalized_members.items():
+                  if name in fixed_members:
+                      continue
+                  if name.startswith(available_prefix):
+                      relative = name[len(available_prefix) :]
+                      require("/" not in relative and member.isreg(), "sites-available 成员无效")
+                      continue
+                  if name.startswith(enabled_prefix):
+                      relative = name[len(enabled_prefix) :]
+                      require(
+                          "/" not in relative and (member.isreg() or member.issym()),
+                          "sites-enabled 成员无效",
+                      )
+                      if member.issym():
+                          live_name = f"/etc/nginx/sites-enabled/{relative}"
+                          target = member.linkname
+                          if not target.startswith("/"):
+                              target = posixpath.join(posixpath.dirname(live_name), target)
+                          resolved = posixpath.normpath(target)
+                          require(
+                              posixpath.dirname(resolved) == "/etc/nginx/sites-available",
+                              "sites-enabled 链接越界",
+                          )
+                          available_name = resolved.removeprefix("/")
+                          require(
+                              available_name in normalized_members
+                              and normalized_members[available_name].isreg(),
+                              "sites-enabled 链接目标无效",
+                          )
+                      continue
+                  raise ValueError("归档包含未声明成员")
+          except (OSError, UnicodeError, ValueError, tarfile.TarError) as exc:
+              print(f"生产配置归档校验失败：{exc}", file=sys.stderr)
+              raise SystemExit(1)
+          PY
+          }
+          for path in "${required_config_paths[@]}"; do
+            stage_regular_config "$path"
+          done
+          for path in /etc/nginx/sites-available /etc/nginx/sites-enabled; do
+            if test -L "$path" || ! test -d "$path" || ! test -r "$path"; then
+              echo "必需 Nginx 配置目录不可安全读取：$path" >&2
+              exit 1
+            fi
+            validate_nginx_config_tree "$path"
+            archive_path="${path#/}"
+            staged_path="$config_backup_snapshot/$archive_path"
+            install -d -o root -g root -m 0700 "$(dirname "$staged_path")"
+            cp --archive --no-dereference -- "$path" "$staged_path"
+            if test -L "$path" || ! test -d "$path" || test -L "$staged_path" || \
+              ! test -d "$staged_path" || \
+              ! diff --brief --recursive --no-dereference -- "$path" "$staged_path"; then
+              echo "Nginx 配置复制期间路径类型发生变化：$path" >&2
+              exit 1
+            fi
+            validate_nginx_config_tree "$path"
+            archive_paths+=("$archive_path")
+          done
+
+          apparmor_profile_path=/etc/apparmor.d/myagent-persona-parser
+          apparmor_profile_state=absent
+          if test -e "$apparmor_profile_path" || test -L "$apparmor_profile_path"; then
+            stage_regular_config "$apparmor_profile_path"
+            apparmor_profile_state=present
+          fi
+
+          ops_env_path=/etc/lingxi-ops/ops.env
+          ops_env_state=absent
+          if test -e "$ops_env_path" || test -L "$ops_env_path"; then
+            stage_regular_config "$ops_env_path"
+            ops_env_state=present
+          fi
+
+          tar --create --gzip --file "$config_backup_tmp/config.tar.gz" \
+            --directory "$config_backup_snapshot" -- "${archive_paths[@]}"
+          rm -rf --one-file-system -- "$config_backup_snapshot"
+          {
+            printf 'schema=myagent-production-config-backup-v1\n'
+            printf 'created_at_utc=%s\n' "$(date -u +'%Y-%m-%dT%H:%M:%SZ')"
+            printf 'github_run_id=%s\ngithub_run_attempt=%s\n' \
+              "$run_id" "$run_attempt"
+            printf 'portal_revision=%s\napparmor_profile=%s\nops_env=%s\n' \
+              "$portal_revision" "$apparmor_profile_state" "$ops_env_state"
+            printf 'path=%s\n' "${archive_paths[@]}"
+          } > "$config_backup_tmp/metadata.txt"
+          (
+            cd "$config_backup_tmp"
+            sha256sum config.tar.gz metadata.txt > SHA256SUMS
+            sha256sum --check SHA256SUMS
+          )
+          chmod 0600 "$config_backup_tmp/config.tar.gz" \
+            "$config_backup_tmp/metadata.txt" "$config_backup_tmp/SHA256SUMS"
+          mv -T -- "$config_backup_tmp" "$config_backup_dir"
+          config_backup_tmp=""
+          trap - EXIT
+          test "$(stat -c '%U:%G:%a' "$config_backup_dir")" = "root:root:700"
+          for backup_file in config.tar.gz metadata.txt SHA256SUMS; do
+            test ! -L "$config_backup_dir/$backup_file"
+            test -f "$config_backup_dir/$backup_file"
+            test "$(stat -c '%U:%G:%a' "$config_backup_dir/$backup_file")" = \
+              "root:root:600"
+          done
+          (
+            cd "$config_backup_dir"
+            sha256sum --check SHA256SUMS
+          )
+          config_backup_name="${config_backup_dir##*/}"
+          validate_config_backup_payload "$config_backup_dir" "$config_backup_name"
+          sync -f "$config_backup_dir/config.tar.gz"
+          config_archive_sha="$(awk '$2 == "config.tar.gz" { print $1 }' \
+            "$config_backup_dir/SHA256SUMS")"
+          case "$config_archive_sha" in
+            ''|*[!0-9a-f]*) echo "生产配置备份摘要格式无效" >&2; exit 1 ;;
+          esac
+          test "${#config_archive_sha}" -eq 64
+
+          config_backup_retention=30
+          find "$config_backup_root" -mindepth 1 -maxdepth 1 -type d \
+            -name 'run-*' -printf '%T@ %f\0' |
+            sort -z -nr |
+            (
+              valid_backup_rank=0
+              latest_backup_name=""
+              while IFS= read -r -d '' backup_entry; do
+                backup_name="${backup_entry#* }"
+                if [[ ! "$backup_name" =~ ^run-[0-9]+-[0-9]+-[0-9a-f]{40}$ ]]; then
+                  continue
+                fi
+                if test -z "$latest_backup_name"; then
+                  latest_backup_name="$backup_name"
+                fi
+                backup_path="$config_backup_root/$backup_name"
+                if test -L "$backup_path" || ! test -d "$backup_path" || \
+                  ! test "$(stat -c '%U:%G:%a' "$backup_path")" = "root:root:700"; then
+                  echo "跳过路径或权限异常的生产配置备份：$backup_path" >&2
+                  continue
+                fi
+                valid_backup=1
+                for backup_file in config.tar.gz metadata.txt SHA256SUMS; do
+                  if test -L "$backup_path/$backup_file" || \
+                    ! test -f "$backup_path/$backup_file" || \
+                    ! test "$(stat -c '%U:%G:%a' "$backup_path/$backup_file")" = \
+                      "root:root:600"; then
+                    valid_backup=0
+                    break
+                  fi
+                done
+                backup_member_count="$(find "$backup_path" -mindepth 1 -maxdepth 1 \
+                  -printf '.' | wc -c)"
+                if test "$backup_member_count" -ne 3; then
+                  valid_backup=0
+                fi
+                if test "$valid_backup" -ne 1 || \
+                  ! validate_config_backup_payload "$backup_path" "$backup_name"; then
+                  echo "跳过不完整或摘要异常的生产配置备份：$backup_path" >&2
+                  continue
+                fi
+                valid_backup_rank=$((valid_backup_rank + 1))
+                if test "$backup_name" = "$config_backup_name" || \
+                  test "$backup_name" = "$latest_backup_name" || \
+                  test "$valid_backup_rank" -le "$config_backup_retention"; then
+                  continue
+                fi
+                printf '删除超出保留上限的生产配置备份：%s\n' "$backup_path"
+                rm -f -- "$backup_path/config.tar.gz" \
+                  "$backup_path/metadata.txt" "$backup_path/SHA256SUMS"
+                rmdir -- "$backup_path"
+              done
+            )
+          printf '持久生产配置备份已创建：%s；sha256=%s\n' \
+            "$config_backup_dir" "$config_archive_sha"
           REMOTE
 
       - name: 创建私有暂存目录
