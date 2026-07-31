@@ -6,7 +6,7 @@ on:
       target_persist_id:
         description: 本次唯一允许验收并删除的合成用户
         required: true
-        default: p6_load_c
+        default: auto
         type: string
       expected_head_sha:
         description: 必须与本次 workflow 实际检出的完整提交 SHA 一致
@@ -19,6 +19,16 @@ on:
       expected_backend_revision:
         description: 本次已经部署并等待验收的 Lingxi 完整 revision
         required: true
+        type: string
+      review_phase:
+        description: 留出审核阶段（先准备材料，再携带人工决定确认）
+        required: true
+        default: prepare_review
+        type: string
+      review_decision_b64:
+        description: confirm_review 阶段必填的人工审核决定 Base64
+        required: false
+        default: ''
         type: string
 
 permissions:
@@ -36,7 +46,7 @@ jobs:
       github.actor == 'Timking123' &&
       github.triggering_actor == 'Timking123'
     runs-on: ubuntu-latest
-    timeout-minutes: 40
+    timeout-minutes: 130
     environment:
       name: production
 
@@ -53,12 +63,22 @@ jobs:
           EXPECTED_HEAD_SHA: ${{ inputs.expected_head_sha }}
           EXPECTED_PORTAL_REVISION: ${{ inputs.expected_portal_revision }}
           EXPECTED_BACKEND_REVISION: ${{ inputs.expected_backend_revision }}
+          REVIEW_PHASE: ${{ inputs.review_phase }}
+          REVIEW_DECISION_B64: ${{ inputs.review_decision_b64 }}
         run: |
           set -euo pipefail
-          test "$TARGET_PERSIST_ID" = "p6_load_c"
+          case "$TARGET_PERSIST_ID" in
+            auto|p6_load_a) ;;
+            *) echo "本次验收目标不是已批准的合成用户" >&2; exit 1 ;;
+          esac
           printf '%s' "$EXPECTED_HEAD_SHA" | grep -Eq '^[0-9a-f]{40}$'
           printf '%s' "$EXPECTED_PORTAL_REVISION" | grep -Eq '^[0-9a-f]{40}$'
           printf '%s' "$EXPECTED_BACKEND_REVISION" | grep -Eq '^[0-9a-f]{40}$'
+          case "$REVIEW_PHASE" in
+            prepare_review) test -z "$REVIEW_DECISION_B64" ;;
+            confirm_review) test -n "$REVIEW_DECISION_B64" ;;
+            *) echo "留出审核阶段非法" >&2; exit 1 ;;
+          esac
           test "$EXPECTED_HEAD_SHA" = "$GITHUB_SHA"
           test "$EXPECTED_PORTAL_REVISION" = "$EXPECTED_HEAD_SHA"
           locked_backend_revision="$(
@@ -132,146 +152,478 @@ jobs:
           chmod 0600 "$HOME/.ssh/config" "$HOME/.ssh/known_hosts"
           ssh hi-veblen-production true
 
-      - name: 读取并掩码合成用户凭证
+      - name: 首次生产写前复核三处 backend revision
+        env:
+          EXPECTED_PORTAL_REVISION: ${{ inputs.expected_portal_revision }}
+          EXPECTED_BACKEND_REVISION: ${{ inputs.expected_backend_revision }}
+        run: |
+          set -euo pipefail
+          portal_revision="$(curl --connect-timeout 10 --max-time 30 \
+            --fail --silent --show-error https://hi-veblen.com/release.txt)"
+          lingxi_revision="$(curl --connect-timeout 10 --max-time 30 \
+            --fail --silent --show-error https://lingxi.hi-veblen.com/release.txt)"
+          health_file="$(mktemp)"
+          trap 'rm -f "$health_file"' EXIT
+          curl --connect-timeout 10 --max-time 30 --fail --silent --show-error \
+            https://lingxi.hi-veblen.com/api/health > "$health_file"
+          public_backend_revision="$(python3 - "$health_file" "$EXPECTED_BACKEND_REVISION" <<'PY'
+          import json
+          import sys
+
+          with open(sys.argv[1], encoding="utf-8") as source:
+              health = json.load(source)
+          expected = sys.argv[2]
+          assert health.get("backend_revision") == expected
+          assert health.get("persona_schema_phase") == "active"
+          growth = health.get("persona_growth") or {}
+          assert growth.get("phase") == "active" and growth.get("ready") is True
+          heartbeat = ((health.get("host") or {}).get("heartbeat") or {})
+          assert heartbeat.get("first_fire_ok") is True
+          print(health["backend_revision"])
+          PY
+          )"
+          server_backend_revision="$(ssh hi-veblen-production \
+            'cat /opt/myagent/backend-current/release.txt')"
+          test "$portal_revision" = "$EXPECTED_PORTAL_REVISION"
+          test "$lingxi_revision" = "$EXPECTED_BACKEND_REVISION"
+          test "$public_backend_revision" = "$EXPECTED_BACKEND_REVISION"
+          test "$server_backend_revision" = "$EXPECTED_BACKEND_REVISION"
+          python3 - "$portal_revision" "$lingxi_revision" \
+            "$public_backend_revision" "$server_backend_revision" <<'PY' \
+            > d050-prewrite-revision-evidence.json
+          import json
+          import sys
+
+          print(json.dumps({
+              "portal_revision": sys.argv[1],
+              "lingxi_revision": sys.argv[2],
+              "public_backend_revision": sys.argv[3],
+              "server_backend_revision": sys.argv[4],
+              "health_ready": True,
+              "BAD": 0,
+          }, sort_keys=True))
+          PY
+
+      - name: 读取并掩码 p6_load_a 凭证
         id: read-credentials
         env:
           TARGET_PERSIST_ID: ${{ inputs.target_persist_id }}
         run: |
           set -euo pipefail
-          case "$TARGET_PERSIST_ID" in
-            p6_load_c) ;;
-            *) echo "本次验收目标不是已批准的合成用户" >&2; exit 1 ;;
-          esac
+          case "$TARGET_PERSIST_ID" in auto|p6_load_a) ;; *) exit 1 ;; esac
           mapfile -t values < <(
             ssh hi-veblen-production 'bash -se --' "$TARGET_PERSIST_ID" <<'REMOTE'
           set -eu
           target_persist_id="$1"
-          test "$target_persist_id" = "p6_load_c"
+          case "$target_persist_id" in auto|p6_load_a) ;; *) exit 1 ;; esac
           python=/opt/myagent/backend-current/.venv/bin/python
           test -x "$python"
           cd /opt/myagent/backend-current
-          TARGET_PERSIST_ID="$target_persist_id" "$python" - <<'PY'
+          "$python" - <<'PY'
           import json
-          import hashlib
-          import os
           from pathlib import Path
 
           from dotenv import dotenv_values
-          from brain.persona import DEFAULT_PERSONA_ID
           from brain.workspace.p6_config import (
               is_gateway_token_revoked,
-              load_user_config,
-              onboarding_status,
-              persona_growth_consent_status,
+              parse_user_token_map,
               token_hash,
           )
-          from brain.workspace.user_paths import load_user_meta, user_storage_paths
 
           values = dotenv_values("/opt/myagent/.env")
-          mapping = json.loads(values.get("BRAIN_GATEWAY_USER_TOKENS") or "{}")
-          diagnostics = []
-          candidate = os.environ["TARGET_PERSIST_ID"]
-          if candidate != "p6_load_c":
-              raise SystemExit("本次验收目标不是已批准的合成用户")
+          mapping = parse_user_token_map(
+              str(values.get("BRAIN_GATEWAY_USER_TOKENS") or "")
+          )
+          candidate = "p6_load_a"
           token = str(mapping.get(candidate) or "")
           user_dir = Path("/opt/myagent/data/users") / candidate
-          token_present = bool(token)
-          directory_present = user_dir.is_dir()
-          revoked = token_present and is_gateway_token_revoked(
+          invalid_path = user_dir.is_symlink() or (user_dir.exists() and not user_dir.is_dir())
+          revoked = bool(token) and is_gateway_token_revoked(
               "/opt/myagent/data", token_hash(token)
           )
-          config = (
-              load_user_config("/opt/myagent/data", candidate)
-              if directory_present
-              else {}
-          )
-          try:
-              meta = load_user_meta(user_storage_paths("/opt/myagent/data", candidate))
-          except Exception:
-              meta = {}
-          role = config.get("role_choice") if isinstance(config, dict) else {}
-          persona_id = str((role or {}).get("persona_id") or "")
-          binding_matches_meta = bool(persona_id) and meta.get("persona") == persona_id
-          preset_role_id = str((role or {}).get("preset_role_id") or "")
-          growth = persona_growth_consent_status(config)
-          onboarding = onboarding_status(config)
-          onboarding_completed = bool(onboarding["completed"])
-          resumed_private = (
-              (role or {}).get("mode") == "wizard"
-              and preset_role_id == DEFAULT_PERSONA_ID
-              and binding_matches_meta
-              and persona_id == (
-                  "custom_" + hashlib.sha256(candidate.encode("utf-8")).hexdigest()[:16]
-              )
-          )
-          growth_accepted = bool(growth["accepted"])
-          diagnostics.append({
-              "persist_id": candidate,
-              "token_present": token_present,
-              "directory_present": directory_present,
-              "revoked": revoked,
-              "onboarding_completed": onboarding_completed,
-              "onboarding_status": onboarding["status"],
-              "binding_matches_meta": binding_matches_meta,
-              "resumed_private": resumed_private,
-              "role_mode": str((role or {}).get("mode") or ""),
-              "growth_accepted": growth_accepted,
-          })
-          if not all((token_present, directory_present, not revoked,
-                      onboarding_completed, resumed_private, growth_accepted)):
+          if not token or invalid_path or revoked:
               raise SystemExit(json.dumps({
-                  "error": "指定合成用户不满足安全续跑条件",
-                  "synthetic_eligibility": diagnostics,
+                  "error": "p6_load_a 不满足安全准备条件",
+                  "token_present": bool(token),
+                  "directory_state": (
+                      "invalid" if invalid_path else "present" if user_dir.is_dir() else "absent"
+                  ),
+                  "revoked": revoked,
               }, sort_keys=True))
-
           print(candidate)
           print(token)
           print(candidate)
           print(token)
           print("private_resumed")
+          print(token_hash(token))
           PY
           REMOTE
           )
-          test "${#values[@]}" -eq 5
+          test "${#values[@]}" -eq 6
           primary_id="${values[0]}"
           primary_token="${values[1]}"
           delete_id="${values[2]}"
           delete_token="${values[3]}"
           acceptance_mode="${values[4]}"
+          delete_token_hash="${values[5]}"
           case "$primary_id" in
-            p6_e2e_current|p6_load_a|p6_load_b|p6_load_c) ;;
+            p6_load_a) ;;
             *) echo "登录验收用户不在合成白名单" >&2; exit 1 ;;
           esac
           test -n "$primary_token"
           case "$delete_id" in
-            p6_e2e_current|p6_load_a|p6_load_b|p6_load_c) ;;
+            p6_load_a) ;;
             *) echo "删除验收用户不在合成白名单" >&2; exit 1 ;;
           esac
           test -n "$delete_token"
-          case "$acceptance_mode" in
-            shared_pending|private_resumed) ;;
-            *) echo "合成用户验收模式非法" >&2; exit 1 ;;
-          esac
+          test "$acceptance_mode" = "private_resumed"
+          printf '%s' "$delete_token_hash" | grep -Eq '^sha256:[0-9a-f]{64}$'
           primary_token_b64="$(printf '%s' "$primary_token" | base64 -w0)"
           delete_token_b64="$(printf '%s' "$delete_token" | base64 -w0)"
           echo "::add-mask::$primary_token"
           echo "::add-mask::$delete_token"
           echo "::add-mask::$primary_token_b64"
           echo "::add-mask::$delete_token_b64"
+          echo "::add-mask::$delete_token_hash"
           {
             printf 'D050_PRIMARY_ID=%s\n' "$primary_id"
             printf 'D050_PRIMARY_TOKEN_B64=%s\n' "$primary_token_b64"
             printf 'D050_DELETE_ID=%s\n' "$delete_id"
             printf 'D050_DELETE_TOKEN_B64=%s\n' "$delete_token_b64"
             printf 'D050_ACCEPTANCE_MODE=%s\n' "$acceptance_mode"
+            printf 'D050_DELETE_TOKEN_HASH=%s\n' "$delete_token_hash"
           } >> "$GITHUB_ENV"
           echo "已选择合成验收用户：$primary_id；模式：$acceptance_mode；删除用户：$delete_id"
+
+      - name: 在首次生产写前创建并验证备份
+        env:
+          EXPECTED_BACKEND_REVISION: ${{ inputs.expected_backend_revision }}
+        run: |
+          set -euo pipefail
+          ssh hi-veblen-production 'bash -se --' "$EXPECTED_BACKEND_REVISION" \
+            > d050-production-backup-evidence.json <<'REMOTE'
+          set -euo pipefail
+          expected_backend_revision="$1"
+          before="$({
+            sudo find /opt/myagent/backups -maxdepth 1 -type f \
+              -name 'lingxi-backup-*.tar.gz' -printf '%f\n' 2>/dev/null || true
+          } | sort | tail -n 1)"
+          timeout 20m sudo systemctl start lingxi-backup.service
+          test "$(sudo systemctl show lingxi-backup.service -p Result --value)" = "success"
+          test "$(sudo systemctl show lingxi-backup.service -p ExecMainStatus --value)" = "0"
+          latest="$(
+            sudo find /opt/myagent/backups -maxdepth 1 -type f \
+              -name 'lingxi-backup-*.tar.gz' -printf '%f\n' | sort | tail -n 1
+          )"
+          test -n "$latest"
+          test "$latest" != "$before"
+          verify_file="$(mktemp)"
+          trap 'rm -f "$verify_file"' EXIT
+          sudo /usr/bin/python3 /opt/myagent/ops/bin/backup_data.py \
+            verify "/opt/myagent/backups/$latest" > "$verify_file"
+          python3 - "$verify_file" "$latest" "$expected_backend_revision" <<'PY'
+          import json
+          import re
+          import sys
+
+          with open(sys.argv[1], encoding="utf-8") as source:
+              verified = json.load(source)
+          archive_name = sys.argv[2]
+          expected = sys.argv[3]
+          assert re.fullmatch(r"lingxi-backup-[0-9TZ]+\.tar\.gz", archive_name)
+          assert verified.get("ok") is True
+          assert verified.get("release_sha") == expected
+          print(json.dumps({
+              "backup_created": True,
+              "backup_verified": True,
+              "archive_name": archive_name,
+              "archive_sha256": verified.get("archive_sha256"),
+              "archive_bytes": verified.get("archive_bytes"),
+              "file_count": verified.get("file_count"),
+              "release_sha": verified.get("release_sha"),
+              "BAD": 0,
+          }, sort_keys=True))
+          PY
+          REMOTE
+
+      - name: 通过产品 API 准备 p6_load_a
+        env:
+          D050_BASE_URL: https://lingxi.hi-veblen.com
+          D050_EXPECTED_BACKEND_REVISION: ${{ inputs.expected_backend_revision }}
+          D050_REVIEW_PHASE: ${{ inputs.review_phase }}
+          D050_REVIEW_DECISION_B64: ${{ inputs.review_decision_b64 }}
+          D050_AUDITION_KEY: d050-p6-load-a-audition-${{ github.run_id }}
+        run: python3 scripts/d050_prepare_synthetic.py > d050-synthetic-preparation-evidence.json
+
+      - name: 加密待人工审核材料
+        if: ${{ inputs.review_phase == 'prepare_review' && success() }}
+        env:
+          D050_REVIEW_ARTIFACT_KEY: ${{ secrets.D050_REVIEW_ARTIFACT_KEY }}
+        run: |
+          set -euo pipefail
+          test "${#D050_REVIEW_ARTIFACT_KEY}" -ge 32
+          tar -czf d050-holdout-review.tar.gz \
+            d050-holdout-review-request.json \
+            d050-holdout-review-decision.json
+          printf '%s' "$D050_REVIEW_ARTIFACT_KEY" | gpg \
+            --batch --yes --pinentry-mode loopback --passphrase-fd 0 \
+            --symmetric --cipher-algo AES256 \
+            --output d050-holdout-review.tar.gz.gpg \
+            d050-holdout-review.tar.gz
+          rm -f d050-holdout-review.tar.gz \
+            d050-holdout-review-request.json \
+            d050-holdout-review-decision.json
+
+      - name: 保存待人工审核材料
+        if: ${{ inputs.review_phase == 'prepare_review' && success() }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: d050-holdout-review-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            d050-holdout-review.tar.gz.gpg
+            d050-synthetic-preparation-evidence.json
+            d050-prewrite-revision-evidence.json
+            d050-production-backup-evidence.json
+          if-no-files-found: error
+          retention-days: 3
+
+      - name: 等待人工留出审核
+        if: ${{ inputs.review_phase == 'prepare_review' }}
+        run: |
+          echo "留出材料已加密归档；人工复核并绑定回答哈希后再触发 confirm_review"
+
+      - name: 复核 p6_load_a 私有身份绑定
+        if: ${{ inputs.review_phase == 'confirm_review' }}
+        run: |
+          set -euo pipefail
+          ssh hi-veblen-production 'bash -se' > d050-ready-cleanup-evidence.json <<'REMOTE'
+          set -eu
+          python=/opt/myagent/backend-current/.venv/bin/python
+          cd /opt/myagent/backend-current
+          "$python" - <<'PY'
+          import hashlib
+          import json
+          from pathlib import Path
+          import re
+
+          from brain.persona import DEFAULT_PERSONA_ID
+          from brain.persona.studio_store import PersonaStudioStore
+          from brain.workspace.p6_config import (
+              load_user_config,
+              onboarding_status,
+              persona_growth_consent_status,
+          )
+          from brain.workspace.user_paths import (
+              USER_META_SCHEMA_VERSION,
+              load_user_meta,
+              user_storage_paths,
+          )
+
+          persist_id = "p6_load_a"
+          user_dir = Path("/opt/myagent/data/users") / persist_id
+          if not user_dir.is_dir() or user_dir.is_symlink():
+              raise SystemExit("p6_load_a 用户目录无效")
+          config = load_user_config("/opt/myagent/data", persist_id)
+          meta = load_user_meta(user_storage_paths("/opt/myagent/data", persist_id))
+          onboarding = config.get("onboarding") or {}
+          role = config.get("role_choice") or {}
+          persona_id = str(role.get("persona_id") or "")
+          expected_persona = (
+              "custom_" + hashlib.sha256(persist_id.encode("utf-8")).hexdigest()[:16]
+          )
+          checks = {
+              "onboarding_completed": bool(onboarding_status(config)["completed"]),
+              "growth_accepted": bool(persona_growth_consent_status(config)["accepted"]),
+              "role_mode_wizard": role.get("mode") == "wizard",
+              "preset_default": role.get("preset_role_id") == DEFAULT_PERSONA_ID,
+              "persona_expected": persona_id == expected_persona,
+              "meta_schema": meta.get("schema_version") == USER_META_SCHEMA_VERSION,
+              "meta_persist_id": meta.get("persist_id") == persist_id,
+              "meta_persona": meta.get("persona") == persona_id,
+              "transaction_id": onboarding.get("request_id") == "d050-p6-load-a-complete-v1",
+              "request_hash": bool(
+                  re.fullmatch(r"sha256:[0-9a-f]{64}", str(onboarding.get("request_hash") or ""))
+              ),
+              "draft_cleared": onboarding.get("draft") is None,
+              "completed_at": bool(str(onboarding.get("completed_at") or "")),
+          }
+          validation_commit = onboarding.get("validation_commit") or {}
+          audition_id = str(validation_commit.get("audition_id") or "")
+          checks["validation_transaction"] = (
+              validation_commit.get("creation_transaction_id")
+              == "d050-p6-load-a-complete-v1"
+          )
+          checks["validation_confirmed"] = (
+              validation_commit.get("audition_status") == "confirmed"
+              and bool(re.fullmatch(r"audition_[0-9a-f]{24}", audition_id))
+          )
+          audition_root = user_dir / "persona_auditions" / persona_id
+          audition = PersonaStudioStore(audition_root, persona_id).audition(audition_id)
+          checks["feedback_migrated"] = bool(str(audition.get("feedback_migrated_at") or ""))
+          checks["feedback_event_ids"] = isinstance(audition.get("feedback_event_ids"), list)
+
+          digest = hashlib.sha256(b"d050-p6-load-a-complete-v1").hexdigest()[:24]
+          staging = user_dir / "onboarding_staging" / f"persona-studio-{digest}"
+          staging_paths = [staging] + [
+              staging.with_name(staging.name + suffix)
+              for suffix in (".recovery", ".recovery.tmp", ".delete", ".partial")
+          ]
+          checks["staging_cleared"] = not any(path.exists() or path.is_symlink() for path in staging_paths)
+          checks["authoring_cleared"] = not (
+              (user_dir / "onboarding_authoring.json").exists()
+              or (user_dir / "onboarding_authoring.json").is_symlink()
+          )
+          guide_path = user_dir / "onboarding_guide.json"
+          guide = (
+              json.loads(guide_path.read_text(encoding="utf-8"))
+              if guide_path.is_file()
+              else {"messages": [], "last_response": None}
+          )
+          checks["guide_cleared"] = (
+              guide.get("messages") == [] and guide.get("last_response") is None
+          )
+          if not all(checks.values()):
+              raise SystemExit(json.dumps({"error": "p6_load_a 身份复核失败", **checks}, sort_keys=True))
+          print(json.dumps({"persist_id": persist_id, "ready": True, **checks, "BAD": 0}, sort_keys=True))
+          PY
+          REMOTE
+
+      - name: 提高活跃灰测额度
+        if: ${{ inputs.review_phase == 'confirm_review' }}
+        run: |
+          set -euo pipefail
+          ssh hi-veblen-production 'bash -se' > d050-gray-budget-evidence.json <<'REMOTE'
+          set -euo pipefail
+          python=/opt/myagent/backend-current/.venv/bin/python
+          test -x "$python"
+          cd /opt/myagent/backend-current
+          sudo -u myagent "$python" - <<'PY'
+          import json
+          import time
+          from pathlib import Path
+
+          from dotenv import dotenv_values
+          from brain.persona.growth_runtime import _user_change_lock_path
+          from brain.workspace.p6_config import (
+              is_gateway_token_revoked,
+              load_user_config,
+              parse_user_token_map,
+              save_user_config,
+              token_hash,
+              update_user_config,
+          )
+          from brain.workspace.user_paths import ProcessFileLock, user_storage_paths
+
+          data_dir = "/opt/myagent/data"
+          limit = 100_000_000
+          raw = dotenv_values("/opt/myagent/.env").get("BRAIN_GATEWAY_USER_TOKENS")
+          mapping = parse_user_token_map(str(raw or ""))
+          active_users = []
+          skipped = invalid = 0
+
+          for persist_id, token in sorted(mapping.items()):
+              paths = user_storage_paths(data_dir, persist_id)
+              user_dir = Path(paths.user_dir)
+              config_path = user_dir / "user_config.json"
+              if (
+                  user_dir.is_symlink()
+                  or (user_dir.exists() and not user_dir.is_dir())
+                  or config_path.is_symlink()
+              ):
+                  invalid += 1
+                  continue
+              if not user_dir.is_dir() or is_gateway_token_revoked(data_dir, token_hash(token)):
+                  skipped += 1
+                  continue
+              active_users.append(persist_id)
+
+          locks = []
+          originals = {}
+          updated = []
+          rollback_restored = rollback_failures = 0
+          error_type = ""
+          try:
+              if invalid:
+                  raise RuntimeError("invalid_gray_user_path")
+              for persist_id in active_users:
+                  lock = ProcessFileLock(_user_change_lock_path(data_dir, persist_id))
+                  deadline = time.monotonic() + 30
+                  while True:
+                      try:
+                          lock.acquire()
+                          locks.append(lock)
+                          break
+                      except RuntimeError:
+                          if time.monotonic() >= deadline:
+                              raise TimeoutError("gray_user_lock_timeout")
+                          time.sleep(0.05)
+              for persist_id in active_users:
+                  paths = user_storage_paths(data_dir, persist_id)
+                  user_dir = Path(paths.user_dir)
+                  config_path = user_dir / "user_config.json"
+                  if (
+                      not user_dir.is_dir()
+                      or user_dir.is_symlink()
+                      or config_path.is_symlink()
+                      or is_gateway_token_revoked(data_dir, token_hash(mapping[persist_id]))
+                  ):
+                      raise RuntimeError("gray_user_state_changed_while_locking")
+              originals = {
+                  persist_id: load_user_config(data_dir, persist_id)
+                  for persist_id in active_users
+              }
+              for persist_id in active_users:
+                  updated.append(persist_id)
+                  update_user_config(
+                      data_dir,
+                      persist_id,
+                      {"budget": {"daily_token_limit": limit}},
+                  )
+                  configured = int(
+                      (load_user_config(data_dir, persist_id).get("budget") or {}).get(
+                          "daily_token_limit", 0
+                      )
+                  )
+                  if configured != limit:
+                      raise RuntimeError("gray_user_budget_verify_failed")
+          except Exception as exc:
+              error_type = type(exc).__name__
+              for persist_id in reversed(updated):
+                  try:
+                      save_user_config(data_dir, persist_id, originals[persist_id])
+                      rollback_restored += 1
+                  except Exception:
+                      rollback_failures += 1
+          finally:
+              for lock in reversed(locks):
+                  lock.release()
+
+          committed = len(updated) if not error_type else len(updated) - rollback_restored
+          bad = invalid + rollback_failures + int(bool(error_type) and not invalid)
+
+          evidence = {
+              "active_gray_users": len(active_users),
+              "attempted_updates": len(updated),
+              "updated_gray_users": committed,
+              "skipped_inactive_users": skipped,
+              "daily_token_limit": limit,
+              "rollback_restored": rollback_restored,
+              "rollback_failures": rollback_failures,
+              "error_type": error_type,
+              "BAD": bad,
+          }
+          print(json.dumps(evidence, sort_keys=True))
+          if bad or committed != len(active_users):
+              raise SystemExit(1)
+          PY
+          REMOTE
 
       - name: 在浏览器执行前清除生产 SSH 凭据
         if: ${{ always() }}
         run: rm -f "$HOME/.ssh/hi-veblen-deploy" "$HOME/.ssh/config" "$HOME/.ssh/known_hosts"
 
       - name: 运行生产真实 Chromium 全链
+        if: ${{ inputs.review_phase == 'confirm_review' }}
         env:
           D050_BASE_URL: https://lingxi.hi-veblen.com
           D050_EXPECTED_PORTAL_REVISION: ${{ inputs.expected_portal_revision }}
@@ -288,7 +640,9 @@ jobs:
 
       - name: 为后置复核重新配置受信 SSH
         id: post-ssh
-        if: ${{ always() && steps.read-credentials.outcome == 'success' }}
+        if: >-
+          ${{ always() && inputs.review_phase == 'confirm_review' &&
+              steps.read-credentials.outcome == 'success' }}
         env:
           SERVER_HOST: ${{ secrets.SERVER_HOST }}
           SERVER_USER: ${{ secrets.SERVER_USER }}
@@ -329,7 +683,7 @@ jobs:
             > d050-growth-lock-diagnostic.json <<'REMOTE'
           set -eu
           persist_id="$1"
-          test "$persist_id" = "p6_load_c"
+          test "$persist_id" = "p6_load_a"
           python=/opt/myagent/backend-current/.venv/bin/python
           cd /opt/myagent/backend-current
           "$python" -B - "$persist_id" <<'PY'
@@ -448,32 +802,116 @@ jobs:
           PY
           REMOTE
 
-      - name: 复核整用户磁盘删除
+      - name: 复核并续做整用户删除
         if: ${{ always() && steps.post-ssh.outcome == 'success' }}
         run: |
           set -euo pipefail
-          if ! test -f d050-delete-confirmed.flag; then
-            echo "浏览器链未确认 DELETE 成功，跳过磁盘删除复核"
-            exit 0
+          delete_confirmed=0
+          if test -f d050-delete-confirmed.flag; then delete_confirmed=1; fi
+          ready_verified=0
+          if python3 - <<'PY'
+          import json
+          from pathlib import Path
+
+          path = Path("d050-ready-cleanup-evidence.json")
+          if path.is_file():
+              payload = json.loads(path.read_text(encoding="utf-8"))
+              if payload.get("ready") is True and payload.get("BAD") == 0:
+                  raise SystemExit(0)
+          raise SystemExit(1)
+          PY
+          then
+            ready_verified=1
           fi
-          ssh hi-veblen-production 'bash -se --' "$D050_DELETE_ID" <<'REMOTE'
+          ssh hi-veblen-production 'bash -se --' \
+            "$D050_DELETE_ID" "$D050_DELETE_TOKEN_HASH" \
+            "$delete_confirmed" "$ready_verified" \
+            > d050-delete-state-evidence.json <<'REMOTE'
           set -eu
           persist_id="$1"
-          case "$persist_id" in
-            p6_e2e_current|p6_load_a|p6_load_b|p6_load_c) ;;
-            *) echo "删除验收用户不在合成白名单" >&2; exit 1 ;;
-          esac
-          test ! -e "/opt/myagent/data/users/$persist_id"
-          test ! -L "/opt/myagent/data/users/$persist_id"
-          echo "整用户磁盘删除 OK"
+          expected_token_hash="$2"
+          browser_confirmed="$3"
+          ready_verified="$4"
+          test "$persist_id" = "p6_load_a"
+          printf '%s' "$expected_token_hash" | grep -Eq '^sha256:[0-9a-f]{64}$'
+          test "$browser_confirmed" = 0 || test "$browser_confirmed" = 1
+          test "$ready_verified" = 0 || test "$ready_verified" = 1
+          python=/opt/myagent/backend-current/.venv/bin/python
+          cd /opt/myagent/backend-current
+          "$python" - "$persist_id" "$expected_token_hash" \
+            "$browser_confirmed" "$ready_verified" <<'PY'
+          import json
+          from pathlib import Path
+          import sys
+          from urllib import parse, request
+
+          from dotenv import dotenv_values
+          from brain.workspace.p6_config import is_gateway_token_revoked
+
+          data_dir = "/opt/myagent/data"
+          persist_id, expected_hash = sys.argv[1:3]
+          browser_confirmed = sys.argv[3] == "1"
+          ready_verified = sys.argv[4] == "1"
+          user_dir = Path(data_dir) / "users" / persist_id
+          revoked = is_gateway_token_revoked(data_dir, expected_hash)
+          continued_purge = False
+          gateway_report = None
+
+          if revoked and (user_dir.exists() or user_dir.is_symlink()):
+              values = dotenv_values("/opt/myagent/.env")
+              gateway_token = str(values.get("BRAIN_GATEWAY_TOKEN") or "").strip()
+              if len(gateway_token) < 32:
+                  raise SystemExit("生产网关续删凭证无效")
+              req = request.Request(
+                  "http://127.0.0.1:8000/api/users/" + parse.quote(persist_id),
+                  headers={"Authorization": f"Bearer {gateway_token}"},
+                  method="DELETE",
+              )
+              with request.urlopen(req, timeout=180) as response:
+                  gateway_report = json.loads(response.read().decode("utf-8"))
+              if gateway_report.get("ok") is not True:
+                  raise SystemExit("网关续删未成功")
+              continued_purge = True
+
+          directory_absent = not user_dir.exists() and not user_dir.is_symlink()
+          revoked = is_gateway_token_revoked(data_dir, expected_hash)
+          if browser_confirmed and not (revoked and directory_absent):
+              raise SystemExit("浏览器已确认删除但服务端状态不闭合")
+          if revoked and directory_absent:
+              state = "continued_after_revoke" if continued_purge else "deleted"
+          elif not revoked and user_dir.is_dir() and not user_dir.is_symlink():
+              state = "retryable_ready" if ready_verified else "ready_cleanup_blocked"
+          else:
+              raise SystemExit("整用户删除进入未知状态")
+
+          print(json.dumps({
+              "persist_id": persist_id,
+              "browser_confirmed": browser_confirmed,
+              "ready_verified": ready_verified,
+              "token_revoked": revoked,
+              "directory_absent": directory_absent,
+              "continued_purge": continued_purge,
+              "gateway_deleted": (
+                  gateway_report.get("deleted")
+                  if isinstance(gateway_report, dict)
+                  else None
+              ),
+              "state": state,
+              "BAD": int(state == "ready_cleanup_blocked"),
+          }, sort_keys=True))
+          if state == "ready_cleanup_blocked":
+              raise SystemExit(1)
+          PY
           REMOTE
 
       - name: 清除后置生产 SSH 凭据
         if: ${{ always() }}
-        run: rm -f "$HOME/.ssh/hi-veblen-deploy" "$HOME/.ssh/config" "$HOME/.ssh/known_hosts"
+        run: |
+          rm -f "$HOME/.ssh/hi-veblen-deploy" "$HOME/.ssh/config" "$HOME/.ssh/known_hosts"
+          printf 'D050_DELETE_TOKEN_HASH=\n' >> "$GITHUB_ENV"
 
       - name: 保存非敏感验收证据
-        if: ${{ success() }}
+        if: ${{ inputs.review_phase == 'confirm_review' && success() }}
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: d050-production-acceptance-${{ github.sha }}
@@ -484,5 +922,36 @@ jobs:
             d050-mobile.png
             d050-delete-complete.png
             d050-delete-confirmed.flag
+            d050-delete-state-evidence.json
+            d050-prewrite-revision-evidence.json
+            d050-production-backup-evidence.json
+            d050-ready-cleanup-evidence.json
+            d050-gray-budget-evidence.json
+            d050-synthetic-preparation-evidence.json
+            d050-holdout-review-confirmation.json
           if-no-files-found: error
+          retention-days: 3
+
+      - name: 保存失败诊断证据
+        if: ${{ failure() }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: d050-production-failure-${{ github.sha }}-${{ github.run_attempt }}
+          path: |
+            d050-prewrite-revision-evidence.json
+            d050-production-backup-evidence.json
+            d050-ready-cleanup-evidence.json
+            d050-gray-budget-evidence.json
+            d050-synthetic-preparation-evidence.json
+            d050-holdout-review.tar.gz.gpg
+            d050-holdout-review-confirmation.json
+            d050-production-evidence.json
+            d050-growth-lock-diagnostic.json
+            d050-portal.png
+            d050-desktop.png
+            d050-mobile.png
+            d050-delete-complete.png
+            d050-delete-confirmed.flag
+            d050-delete-state-evidence.json
+          if-no-files-found: warn
           retention-days: 3

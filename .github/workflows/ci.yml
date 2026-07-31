@@ -33,19 +33,53 @@ jobs:
           acceptance_spec = Path(
               "e2e/d050-production-acceptance.spec.ts"
           ).read_text(encoding="utf-8")
+          synthetic_helper = Path(
+              "scripts/d050_prepare_synthetic.py"
+          ).read_text(encoding="utf-8")
           assert "group: hi-veblen-production" in workflow
           assert "group: hi-veblen-production" in acceptance
           assert "github.triggering_actor == 'Timking123'" in acceptance
-          assert "        default: p6_load_c" in acceptance
-          assert 'test "$TARGET_PERSIST_ID" = "p6_load_c"' in acceptance
-          assert 'test "$target_persist_id" = "p6_load_c"' in acceptance
-          assert 'if candidate != "p6_load_c":' in acceptance
-          assert 'test "$persist_id" = "p6_load_c"' in acceptance
+          assert "    timeout-minutes: 130" in acceptance
+          assert "        default: auto" in acceptance
+          assert "        default: prepare_review" in acceptance
+          assert acceptance.count("auto|p6_load_a") >= 2
+          assert 'candidate = "p6_load_a"' in acceptance
+          assert acceptance.count('test "$persist_id" = "p6_load_a"') >= 2
+          assert "p6_load_b" not in acceptance
+          assert "p6_load_c" not in acceptance
+          assert "p6_e2e_current" not in acceptance
+          assert 'D050_PRIMARY_TOKEN_B64' in synthetic_helper
+          assert 'p6_load_a' in synthetic_helper
+          assert 'p6_load_b' not in synthetic_helper
+          assert 'p6_load_c' not in synthetic_helper
+          assert 'unrevoke' not in synthetic_helper.lower()
+          assert 'BRAIN_GATEWAY_USER_TOKENS' not in synthetic_helper
+          assert '"/compare"' not in synthetic_helper
+          assert 'presets[0]["id"] == "linxi"' in synthetic_helper
+          assert 'role.get("mode") == "wizard"' in synthetic_helper
+          assert 'not str(current.get("revoked_at") or "")' in synthetic_helper
+          assert 'not str(consent.get("withdrawn_at") or "")' in synthetic_helper
+          assert 'review_phase == "prepare_review"' in synthetic_helper
+          assert 'review_phase == "confirm_review"' in synthetic_helper
+          assert 'isinstance(accepted, bool)' in synthetic_helper
+          assert 'review_set_sha256' in synthetic_helper
+          assert 'D050_REVIEW_DECISION_B64' in synthetic_helper
+          assert 'D050_AUDITION_KEY' in synthetic_helper
           assert 'test "$EXPECTED_PORTAL_REVISION" = "$EXPECTED_HEAD_SHA"' in acceptance
           assert (
               'test "$EXPECTED_BACKEND_REVISION" = "$locked_backend_revision"'
               in acceptance
           )
+          prewrite_revision = acceptance.index(
+              "      - name: 首次生产写前复核三处 backend revision"
+          )
+          backup_step = acceptance.index("      - name: 在首次生产写前创建并验证备份")
+          helper_step = acceptance.index("      - name: 通过产品 API 准备 p6_load_a")
+          review_artifact = acceptance.index("      - name: 保存待人工审核材料")
+          review_encryption = acceptance.index("      - name: 加密待人工审核材料")
+          review_gate = acceptance.index("      - name: 等待人工留出审核")
+          binding_check = acceptance.index("      - name: 复核 p6_load_a 私有身份绑定")
+          budget_step = acceptance.index("      - name: 提高活跃灰测额度")
           browser_step = acceptance.index("      - name: 运行生产真实 Chromium 全链")
           first_ssh_cleanup = acceptance.index(
               "      - name: 在浏览器执行前清除生产 SSH 凭据"
@@ -53,16 +87,60 @@ jobs:
           post_ssh_config = acceptance.index(
               "      - name: 为后置复核重新配置受信 SSH"
           )
+          deletion_state = acceptance.index("      - name: 复核并续做整用户删除")
           final_ssh_cleanup = acceptance.index(
               "      - name: 清除后置生产 SSH 凭据"
           )
           artifact_upload = acceptance.index("      - name: 保存非敏感验收证据")
-          assert first_ssh_cleanup < browser_step < post_ssh_config
-          assert post_ssh_config < final_ssh_cleanup < artifact_upload
+          failure_artifact = acceptance.index("      - name: 保存失败诊断证据")
+          assert prewrite_revision < backup_step < helper_step
+          assert helper_step < review_encryption < review_artifact < review_gate
+          assert review_gate < binding_check < budget_step
+          assert budget_step < first_ssh_cleanup < browser_step
+          assert browser_step < post_ssh_config < deletion_state
+          assert deletion_state < final_ssh_cleanup < artifact_upload
           assert acceptance.count('rm -f "$HOME/.ssh/hi-veblen-deploy"') == 2
-          artifact = acceptance[artifact_upload:]
-          assert "if: $" + "{{ success() }}" in artifact
+          artifact = acceptance[artifact_upload:failure_artifact]
+          assert "inputs.review_phase == 'confirm_review' && success()" in artifact
           assert "d050-growth-lock-diagnostic.json" not in artifact
+          assert "d050-prewrite-revision-evidence.json" in artifact
+          assert "d050-production-backup-evidence.json" in artifact
+          assert "d050-gray-budget-evidence.json" in artifact
+          assert "d050-synthetic-preparation-evidence.json" in artifact
+          assert "d050-holdout-review-confirmation.json" in artifact
+          assert "d050-delete-state-evidence.json" in artifact
+          assert "d050-holdout-review.tar.gz.gpg" in acceptance[review_encryption:review_gate]
+          assert "D050_REVIEW_ARTIFACT_KEY" in acceptance[review_encryption:review_artifact]
+          assert "github.run_id" in acceptance[helper_step:review_encryption]
+          assert "github.run_attempt" not in acceptance[helper_step:review_encryption]
+          assert "exit 78" not in acceptance
+          assert acceptance.count("inputs.review_phase == 'confirm_review'") >= 5
+          failed_artifact = acceptance[failure_artifact:]
+          assert "d050-holdout-review-request.json" not in failed_artifact
+          assert "d050-holdout-review-decision.json" not in failed_artifact
+          assert "if: $" + "{{ failure() }}" in failed_artifact
+          assert "d050-growth-lock-diagnostic.json" in failed_artifact
+          assert "d050-prewrite-revision-evidence.json" in failed_artifact
+          assert "d050-holdout-review.tar.gz.gpg" in failed_artifact
+          assert "d050-delete-state-evidence.json" in failed_artifact
+          backup = acceptance[backup_step:helper_step]
+          budget = acceptance[budget_step:first_ssh_cleanup]
+          assert "systemctl start lingxi-backup.service" in backup
+          assert "timeout 20m sudo systemctl start" in backup
+          assert "backup_data.py" in backup and 'verify "/opt/myagent/backups/$latest"' in backup
+          assert "100_000_000" in budget
+          assert '{"budget": {"daily_token_limit": limit}}' in budget
+          assert "save_user_config" in budget
+          assert "rollback_restored" in budget
+          assert "gray_user_state_changed_while_locking" in budget
+          assert '"backup_created"' not in budget
+          assert '"BAD": bad' in budget
+          assert "parse_user_token_map" in acceptance[prewrite_revision:helper_step]
+          deletion = acceptance[deletion_state:final_ssh_cleanup]
+          assert "is_gateway_token_revoked" in deletion
+          assert "/api/users/" in deletion
+          assert 'state = "retryable_ready"' in deletion
+          assert '"ready_cleanup_blocked"' in deletion
           for stage in ("initial", "before_delete", "after_delete"):
               assert f"recordRevisionCheck(evidence, '{stage}')" in acceptance_spec
           assert "expect(lingxiRevision).toBe(expectedBackendRevision)" in acceptance_spec
@@ -512,6 +590,11 @@ jobs:
           assert main_remote.index('test -e "$maintenance_marker"') < staging_prune
           print("production transaction ordering OK")
           PY
+
+      - name: Validate D050 synthetic helper
+        run: |
+          python3 -m py_compile scripts/d050_prepare_synthetic.py
+          python3 scripts/d050_prepare_synthetic.py --self-test
 
       - name: Test production config backup retention
         shell: bash
