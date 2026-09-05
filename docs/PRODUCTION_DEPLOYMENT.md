@@ -1,5 +1,11 @@
 # 生产发布与回滚
 
+## 当前候选状态：HOLD
+
+本次发布事务候选尚不能用于生产。MyWeb 专用 P6 连续观察的时长、间隔、请求超时、证据有效期及进程重启规则尚待契约冻结；不能沿用 watcher 的通用默认值，也不能缩短观察窗口或用单次 health 代替。workflow 在获取跨仓库凭据前执行 `policy`，driver 的 `deploy` 在取得生产锁前执行相同检查，当前均以 `E_GATES` 拒绝。
+
+事务文件与恢复测试可独立审查；以下流程描述已实现的状态机及其预期接线，不代表 P6 门禁已完成、生产部署已执行或已获合并许可。当前 `LINGXI_SHA` 保持不变。
+
 ## 发布边界
 
 门户与 Lingxi 双站只使用 [`.github/workflows/deploy.yml`](../.github/workflows/deploy.yml) 发布。它从 `hi-veblen` 当前提交构建门户，从 `Lingxi` 的固定 `LINGXI_SHA` 构建网页端与后端，再将三部分组合成同一个不可变发布包。
@@ -18,7 +24,7 @@
 
 门户、Lingxi 网页端和 Lingxi 后端各有一个 `current` 符号链接。发布目录按 Git revision 和 workflow run 标识创建，发布后不在原目录上覆盖文件。每个 Lingxi backend release 使用独立 `.venv`，systemd 通过 `backend-current/.venv/bin/python` 启动，使运行代码与依赖随同一个指针切换。
 
-截至 2026-07-14，当前生产 revision 为 portal `3b0f010a0fb495504d0c3ffa01006f8bc33a8475`、Lingxi frontend/backend/host `55255df61ae6aef89ce5d8e4d46ba637ca3cd632`。[Portal CI run `29301865888` attempt 2](https://github.com/Timking123/hi-veblen/actions/runs/29301865888/attempts/2) 的四个 job 均为 success；attempt 1 因 GitHub 托管 runner 访问 APT 镜像超时中断，未形成项目代码失败结论。[Lingxi CI run `29301558361`](https://github.com/Timking123/Lingxi/actions/runs/29301558361) 的 Web、Python 3.11、Python 3.12 三个 job，以及 [production workflow `29302920011`](https://github.com/Timking123/hi-veblen/actions/runs/29302920011) 的构建和部署 job 均为 success。生产构建耗时 3 分 30 秒，部署耗时 1 分 50 秒；两个 job 分别搜索 `Traceback`、`AssertionError`、`FileNotFoundError`，六项检查均为 0 命中。匿名公网协议探针 24/24 通过，两站 `release.txt` 与预期 revision 一致，Lingxi 健康接口的 `ok`、`ready`、`continuity_ok` 和 `production_auth_safe` 均为 `true`。六档 Windows Chromium 复验保持 0 横向溢出、单一裂缝宿主与单一 ready Canvas，四类交互痕迹刷新后完整保留，双站控制台 warning/error 为 0，完整证据归档在 `E:\MyAgent Test\P6生产浏览器验收\2026-07-14_1124_P6短会话鉴权优化最终生产复验\`。本次没有生产用户凭据，不能替代登录态角色创建、历史分页或完整对话验收，也不能替代 iOS、Android、Safari 与真实平板真机。
+以下为既有 2026-07-14 历史验收记录，本次未重新验证其中的生产状态或外部归档。当时生产 revision 为 portal `3b0f010a0fb495504d0c3ffa01006f8bc33a8475`、Lingxi frontend/backend/host `55255df61ae6aef89ce5d8e4d46ba637ca3cd632`。[Portal CI run `29301865888` attempt 2](https://github.com/Timking123/hi-veblen/actions/runs/29301865888/attempts/2) 的四个 job 均为 success；attempt 1 因 GitHub 托管 runner 访问 APT 镜像超时中断，未形成项目代码失败结论。[Lingxi CI run `29301558361`](https://github.com/Timking123/Lingxi/actions/runs/29301558361) 的 Web、Python 3.11、Python 3.12 三个 job，以及 [production workflow `29302920011`](https://github.com/Timking123/hi-veblen/actions/runs/29302920011) 的构建和部署 job 均为 success。生产构建耗时 3 分 30 秒，部署耗时 1 分 50 秒；两个 job 分别搜索 `Traceback`、`AssertionError`、`FileNotFoundError`，六项检查均为 0 命中。匿名公网协议探针 24/24 通过，两站 `release.txt` 与预期 revision 一致，Lingxi 健康接口的 `ok`、`ready`、`continuity_ok` 和 `production_auth_safe` 均为 `true`。六档 Windows Chromium 复验保持 0 横向溢出、单一裂缝宿主与单一 ready Canvas，四类交互痕迹刷新后完整保留，双站控制台 warning/error 为 0，完整证据归档在 `E:\MyAgent Test\P6生产浏览器验收\2026-07-14_1124_P6短会话鉴权优化最终生产复验\`。本次没有生产用户凭据，不能替代登录态角色创建、历史分页或完整对话验收，也不能替代 iOS、Android、Safari 与真实平板真机。
 
 ## 发布前条件
 
@@ -27,25 +33,21 @@
 3. `LINGXI_SHA` 是完整提交 SHA，并指向准备发布的 Lingxi revision；该 revision 必须包含精确锁定的 `requirements-ci.txt`。触发前要实际复核文件存在，仍指向不含该文件的旧 revision 时不得运行 workflow。
 4. GitHub `production` Environment 必须存在。当前没有 required reviewer，发布由具备仓库写权限的人手动触发 `workflow_dispatch`；`LINGXI_REPO_TOKEN`、`SERVER_HOST`、`SERVER_USER`、`SERVER_SSH_KEY` 当前均为 repository-level Actions secrets。若后续启用生产审批，服务器三项 secret 可迁入 Environment，build job 使用的 `LINGXI_REPO_TOKEN` 仍需保留可见作用域。仓库只保存 secret 名称，不保存值。
 5. `myagent-world.service` 与 `myagent-gateway.service` 的 `DropInPaths` 均为空；任何临时或未纳管的 systemd drop-in 都必须先清理并恢复正式配置。
-6. `/run/myagent-release-maintenance`、`/run/hi-veblen-release-preserve`、`/run/hi-veblen-release-lease` 和 staging 内的 `PRESERVE` 均不存在。发现任一标记或生命周期租约都表示上次事务仍需人工核验，不得删除后继续发布。
+6. 发布专用 P6 策略已经正式冻结并接入。当前候选不满足此条件。所有受管历史 run 必须具有合法 `closed` 回执；缺回执、非法、未关闭或旧格式现场均阻止新发布。维护、全局保护、其他 lease 或 staging `PRESERVE` 不能通过手工删除来绕过。
 7. MyWeb API 健康，运行数据已经按既定策略备份。
 
 workflow 使用的敏感项包括跨仓库只读 token、服务器主机、部署账号和 SSH 私钥。所有值只放在 GitHub Actions secrets 中，不写入命令示例、日志、文档或仓库文件。
 
 ## 发布流程
 
-1. 在 `.github/workflows/deploy.yml` 更新 `LINGXI_SHA`，提交并等待 CI。
-2. 从 GitHub Actions 手动触发“发布门户与灵犀网页端”，不要在服务器上手工复制构建产物。deploy job 会在创建暂存目录前检查两个 Lingxi systemd 单元的 `DropInPaths`、全局维护标记、全局保护标记和 staging 保护现场，随后以 `run_id-run_attempt` 原子创建生命周期租约。租约建立后、任何 release 或服务配置写入前，workflow 由 root 将 `.env`、两个 systemd unit、Nginx `sites-available`/`sites-enabled` 复制到 root-only 临时快照，并拒绝 Nginx 特殊文件、硬链接和指向非受管 `sites-available` 的启用链接，再按实际状态收集 AppArmor profile 与 `/etc/lingxi-ops/ops.env`；后二者允许合法缺失，元数据分别记录 `present` 或 `absent`。workflow 只从临时快照生成 `/var/backups/myagent-production-config/run-$run_id-$run_attempt-$GITHUB_SHA/`，写入 SHA-256 清单并复验 root-only 权限；`/var/backups` 本身也必须是 root 所有且不可被 group/other 写入。归档校验通过后，workflow 先用 `sync -f` 为备份文件系统建立持久化屏障，再轮转旧归档或进入后续生产变更；任一检查、备份或持久化失败即终止。备份成功后仅删除超过最近 30 份且权限、文件类型、目录成员和摘要均有效的旧归档；SHA-256 清单必须恰好覆盖 `config.tar.gz` 与 `metadata.txt`，删除只逐个 unlink 三个已验证文件并 `rmdir`，本次归档与按修改时间最新归档始终显式保留；异常归档跳过并留待人工核验。
-3. workflow 的 `build` job 使用 Python 3.12 和 Lingxi 的 `requirements-ci.txt` 安装确定性验证依赖，再分别构建门户和 Lingxi，将 portal、lingxi、backend 三部分写入同一发布包；锁文件缺失或为空会直接失败。
-4. 构建阶段写入 `release.txt` 和后端 revision 环境文件，对 Lingxi 提交、静态资源、必要后端文件和归档内容做一致性检查。
-5. workflow 生成 SHA-256 校验文件，并将制品短期保存为本次 run 的 artifact。
-6. 只有持有本次生命周期租约的步骤才能创建私有暂存目录；持久配置备份完成后，目录创建会立即写入 `PRESERVE`，再接收制品、重新校验摘要，并拒绝绝对路径、目录穿越和非普通归档成员。每个远端步骤还会独立持有服务器 `flock`，避免同一时刻执行两个发布事务。
-7. 服务器创建收紧写权限的发布目录，复核后端文件清单，将持久化 `data` 与 `snapshots` 作为外部目录挂入。确认上一版三个指针后，清理无 `PRESERVE` 的旧数字 run staging 目录；回收 release 时保留按修改时间最新 5 份，并额外保护本次 release 与上一版三个指针的目标。
-8. 在停服务前使用服务器现有 `/usr/bin/python3` 3.12 为新 backend release 创建独立 `.venv`，从 `requirements-ci.txt` 安装依赖并执行 `pip check`，再以离线 dry-run 逐项复核环境与锁文件版本；安装不使用持久 pip 缓存，也不安装或升级系统包。
-9. 持久生产配置备份在创建 staging 前完成并独立保留；只有 release venv 完整、属于当前 release、通过 Python 版本和写权限检查后，workflow 才在本次 staging 内创建供自动回滚使用的临时指针、systemd、Nginx 与 AppArmor 快照。
-10. 第一次修改 Nginx 前，workflow 再次确认本次 staging 的 `PRESERVE` 是普通文件。新配置通过语法检查、维护守卫检查并成功重载后，workflow 才创建全局维护标记，验证公网 mutation 已返回 `503`，然后停止 Lingxi 网关与宿主。
-11. 在短维护窗口内协调切换 portal、lingxi、backend 三个指针，安装 Lingxi 服务并等待同 SHA 健康；当前连续性恢复最多允许 1800 秒，deploy job 总预算为 60 分钟，并为依赖安装、生产验收和最长 300 秒自动回滚保留余量。
-12. 校验 Nginx 路由、生产协议和公网 revision 后移除维护标记，在本次 staging 写入 `DEPLOYED`，再关闭自动回滚 trap 并移除 `PRESERVE`。最终 cleanup 只有在生命周期租约仍属于本次运行时才会删除本次 staging；`DEPLOYED` 会阻止 cleanup 删除已完成但暂时未被 current 指针引用的 release。
+1. 独立构建门户与固定 revision 的 Lingxi，将 portal、lingxi、backend 和受信 helper、driver、健康校验器写入同一制品。后端 `.release.env` 必须为 UTF-8 无 BOM、三行 LF、末尾恰一 LF，依次包含 revision、Persona capability、WorldLedger `dual-read-v2-preserve` capability。
+2. 在服务器发布锁内先检查全部历史 run。创建同事务生命周期 lease 后，按下文独立备份协议建立持久配置归档；此备份在创建 staging 和修改生产配置前完成，归档同步失败即停止。
+3. 创建 root-only staging，立即写入 `PRESERVE`，同步文件、run 目录和 staging 父目录，再上传并验证制品摘要与归档成员。候选 release 的独立 Python 3.12 venv、锁版本与 `pip check` 在停服务之前完成。此时不回收旧 release 或旧 run。
+4. [release_transaction.py](../scripts/release_transaction.py) 在同一 flock/lease 内捕获三个 current 的原始链接与身份、previous/candidate 制品字节、配置备份、phase、canary 与独立控制代码摘要，持久发布不可变 `previous-backend-v1.json` 和 `prepared` 回执。首次 Nginx 变更、维护变化、停服务或指针切换必须在捕获成功之后。
+5. `verify_previous(before-mutation)` 重新核验前像并持久推进 `deploying`。driver 安装受管 Nginx、验证维护阻断、停两个 Lingxi 服务、消费预建候选链接并调用服务安装器。WorldLedger phase 从同一个经过验证的值传入两个 unit。
+6. finalize 自行验证维护态门：服务、unit 实际环境、配置、生产认证、D050 合成数据库结构与成长路由、完整健康和 P6 连续观察。观察前后复验配置与 epoch。只有正式 `exposing` 回执原子发布、文件与父目录 fsync 均成功后，才撤维护并执行正常流量门。
+7. `exposing` 是禁止自动回滚的围栏。公网门和最终身份、配置复验通过后，finalize 生成 proof，按 `exposing → committing → terminal` 发布可信终态；调用者不能传入 proof、outcome 或健康结果授权成功。
+8. 仅可信终态可按固定顺序清理：`terminal → record-removed → preserve-removed → pruning → pruned → lease-releasing → closed`。清理保留 run 目录、回执和 control；最终才释放 flock。workflow 的 `always` 步骤只说明现场处理方式，不按退出码删除或回滚。
 
 ## 自动验证
 
@@ -60,7 +62,7 @@ workflow 使用的敏感项包括跨仓库只读 token、服务器主机、部�
 - Lingxi `/api/health` 报告生产认证安全、宿主健康且 revision 一致。
 - 新 backend release 使用独立 Python 3.12 venv，归属当前 release、无 group/other 写权限且 `pip check` 通过。
 - 发布前持久配置备份包含 `.env`、两个 systemd unit、Nginx 可用/启用配置，并按元数据保存 AppArmor profile 与 `ops.env` 的 `present|absent` 状态；归档目录为 `root:root:0700`，归档、元数据和 SHA-256 清单为 `root:root:0600`，且清单复验通过。
-- staging 回收只删除无保护的旧数字 run 目录；release 回收保留最新 5 份和所有受保护目标，不跟随符号链接，也不触碰持久数据。
+- 清理只执行终态回执中的固定计划，保留最新 5 份 release、已验证候选/previous 和实际 current 目标；重试不扩大删除集合，新增保护标记、current 冲突或身份替换会阻断。run 目录、回执和 control 保留，不触碰持久数据。
 - 每个远端步骤都必须获得服务器发布锁，暂存创建、切换和 cleanup 还必须持有与本次 `run_id-run_attempt` 一致的生命周期租约。
 - 发布前及服务安装后，`myagent-world.service` 与 `myagent-gateway.service` 的 `DropInPaths` 均为空。
 - 无效 token 与默认开发 token 均被拒绝并返回 `401`。
@@ -68,13 +70,19 @@ workflow 使用的敏感项包括跨仓库只读 token、服务器主机、部�
 - 门户与 Lingxi 均返回 `X-Frame-Options: DENY`，`Server` 响应头不泄露版本号。
 - Lingxi 的 `Content-Security-Policy` 包含 `frame-ancestors 'none'` 与 `script-src 'self'`。
 
-## 回滚
+## 回滚与恢复
 
-切换前失败时，当前三个指针和 Lingxi 服务保持不变。持久配置归档已在切换前完成且不会被 cleanup 删除；Nginx 已发生前置变更、但尚未进入维护时，workflow 会先使用 staging 内临时快照恢复并重载配置。恢复无法通过语法、重载或活动配置核验时，本次 staging 与 release 会保留，并尽力写入 `/run/hi-veblen-release-preserve` 阻止后续发布和清理。
+恢复必须从独立核验的原事务 MyWeb 制品运行 [production-release-transaction.sh](../scripts/production-release-transaction.sh) 的 `recover <txn_id>`。不得直接执行待验证现场的 control 副本来为自己背书。四个 helper 的生产路径固定，公开接口不接受测试根目录、previous 路径或调用者 proof。
 
-进入维护或完成切换后失败时，workflow 会尝试恢复上一版 portal、lingxi、backend 指针与备份的 systemd/Nginx 配置，再验证旧服务、旧 revision、维护守卫和公网 `503`。全部恢复门通过后才移除维护与 `PRESERVE` 标记；任一恢复门未通过时保留标记、停止 Lingxi 服务并转入人工恢复。旧 systemd 单元仍可使用 `/opt/myagent/.venv` 共享环境，因此首次采用 release venv 的发布也能回滚到旧版。
+`verify_previous(recovery)` 只读分类，不能证明过去的 fsync 已完成。续做前须重新建立持久化屏障。只有仍处于 pre-exposing、三行 previous 的原 floor 与身份全部通过且能证明未执行开放流量副作用时，才允许 `restore_previous`；该 helper 先确认两个服务停止，再恢复既有 intent 绑定的链接和配置，最后仍须通过 finalize。
 
-最终 cleanup 只处理属于本次生命周期租约的 staging，不读取或删除 `/var/backups/myagent-production-config`。持久备份只由创建步骤在发布变更前轮转，源码自检同时约束本次归档和最新归档的显式保护条件。检测到维护或全局保护标记时，cleanup 会保留 release、staging 和租约，避免迟到步骤破坏人工恢复现场；先前 run 的迟到 cleanup 因租约 owner 不匹配只能跳过。人工恢复不能只删除 `/run/hi-veblen-release-lease` 后重跑。
+旧两行 previous 只允许首次不中断的 compat 发布；它不具备自动业务回滚资格。其失败或中断且没有可信 deployed 终态时必须隔离并人工恢复。已有可信 deployed 终态则可使用回执中的完整记录副本续清理，即使物理 previous 记录已经删除。
+
+正式回执为 `exposing/committing` 时禁止切回旧 writer。恢复只复核同一绑定目标；失败则重新隔离、保留记录与 `PRESERVE` 并等待人工处理。写入、rename 或 fsync 异常统一先按磁盘正式回执分类，临时文件不能提升为正式记录，非零退出不能作为回滚授权。
+
+可信 `terminal` 及后继只续清理；清理失败不得再次停服务或业务回滚。`closed` 历史不触碰后续 current 或新 lease。`/run` 重建只允许在唯一锁内按合法记录续接同一事务，不按 PID、时长或目录时间抢占。SIGKILL 本身无法即时执行封流；本实现没有独立即时封流监督器。
+
+两个 [release 清理入口](../scripts/prune-production-releases.sh) 和 [staging 清理入口](../scripts/prune-production-staging.sh) 都只接收 txn id 并委托 `cleanup`，不再接受任意目录或额外保护路径。它们不能发起业务恢复。生产配置持久归档位于 `/var/backups/myagent-production-config`，独立于本事务清理。
 
 ### 持久配置归档的验证与恢复边界
 
@@ -89,7 +97,7 @@ workflow 使用的敏感项包括跨仓库只读 token、服务器主机、部�
 3. `.env`、两个 systemd unit、Nginx 双树、AppArmor profile 和可选 `ops.env` 必须处于同一个带 `EXIT` 回退的事务。Nginx 使用同文件系统整树切换；`present|absent` 状态都必须显式恢复。任一步失败都从应急副本恢复全部已变更项，而不是继续启动服务。
 4. 全部恢复后执行 `systemctl daemon-reload`，复验两个服务、DropInPaths、AppArmor、Nginx、门户与 Lingxi health/revision。任一门失败时保留应急副本、维护/保护标记和失败现场，并保持 Lingxi 服务停止。
 
-release 回收不删除共享 venv。每次新 release 建立后，`prune-production-releases.sh` 保留最新 5 份，并额外保护本次 release 和切换前三个 current 指向的 release；受保护目标可能使实际保留数超过 5。该流程使用短维护窗口，不宣称无停机或跨三个文件系统路径的单指令原子性。
+release 回收不删除共享 venv。计划只在可信终态之后生成，保留数可因保护目标超过 5。三指针协调切换使用维护窗口，不宣称无停机或跨路径单指令原子性；窗口预算仍取决于尚未冻结的 P6 发布规则。
 
 已经完成且随后发现业务回归时，优先通过 Git 回退门户提交或将 `LINGXI_SHA` 改回已知正常 revision，再重新运行同一 workflow。不要直接改 `current` 链接，也不要在现行发布目录中热修文件，否则 revision 与实际代码会失去对应关系。
 
@@ -102,17 +110,23 @@ release 回收不删除共享 venv。每次新 release 建立后，`prune-produc
 - 从当前提交停止跟踪只能保护后续 revision。任何曾进入 Git 历史的凭据都需要立即轮换，历史净化必须由仓库所有者单独授权并安排强制同步窗口。
 - 发布日志不得输出 secret、token、用户角色正文或数据库内容。
 
+## 离线验证与未验证边界
+
+在 root Linux 私有临时根运行 `python3 -B scripts/test_release_transaction.py --require-posix`。测试使用真实目录 fd、no-follow、flock、rename、fsync 和 SIGKILL；仅私有根入口、独立制品来源、服务和网络边界使用夹具。Windows 不能替代这些 POSIX 门，CI 不允许全量 skip 后报成功。
+
+CI 同时保留 D050 helper、健康/Nginx 自检及持久配置归档轮转测试。事务测试中的观察参数和外部 watcher 替身只用于状态机故障注入，不构成实际 P6 连续观察证明。尚未验证生产 SSH、服务切换、真实数据、provider 或部署。待策略冻结后，必须完成实际 watcher 接线与连续证据校验、精确提交 CI，再另行评审发布资格。
+
 ## 失败处理
 
 | 阶段 | 处理方式 |
 | --- | --- |
-| 构建或测试失败 | 不生成可部署制品，修复后从新提交重跑 |
-| 检测到维护、全局保护、生命周期租约或 staging `PRESERVE` 标记 | 在创建或回收 release 前拒绝发布；cleanup 保留仍受保护的现场，待人工核验 |
-| 持久生产配置备份缺失、路径类型/权限不符、复制中普通文件变化、归档、SHA-256 复验或文件系统持久化失败 | 在创建 staging 前终止；退出 trap 清理本次临时目录，已有持久归档保留，不进入生产变更 |
-| 检测到 systemd drop-in | 发布前出现则在创建暂存目录前拒绝；服务安装后仍存在则验证失败并自动回滚。恢复正式单元配置后从头重跑 |
-| 制品摘要或归档校验失败 | 拒绝解包，保留当前生产指针 |
-| 新 release venv 创建、安装、锁版本复核或 `pip check` 失败 | 在停服务前终止，当前指针、服务和旧共享 venv 均不变 |
-| Nginx 前置变更失败 | 尝试恢复备份配置；恢复无法核验时保留 staging `PRESERVE` 并尽力写入全局保护标记，当前 Lingxi 服务保持原运行态 |
-| 维护切换后验证失败 | 尝试恢复上一组指针和服务配置；恢复门未全部通过时保留维护现场、停止 Lingxi 服务并转人工恢复 |
-| MyWeb API 不健康 | 不通过发布验收，API 由独立维护流程处理 |
-| revision 不一致 | 视为发布失败，不手工修改 `release.txt` |
+| P6 发布策略未冻结 | workflow/driver 提前 HOLD，不进入生产事务 |
+| 构建、制品或候选 venv 失败 | 不切 current；保留已有保护现场 |
+| 持久配置备份失败 | 创建 staging 前停止，已有归档保留 |
+| 历史 run 缺回执、非法或未 closed | 阻止新发布，不猜测旧现场安全 |
+| pre-exposing 失败，三行 previous 且原资格复验成功 | 停服务并完成既有恢复 intent，再运行完整 finalize |
+| 旧两行 previous 失败且无可信 deployed 终态 | 隔离、保留现场并人工恢复 |
+| exposing/committing 失败或提交结果不确定 | 持锁复读，禁止业务回滚；只复核既定目标或人工恢复 |
+| terminal 及后继清理失败 | 保留可信业务结果，只续固定清理计划 |
+| lease 释放或 closed 持久化失败 | 核对实际释放结果后收尾，新发布继续等待 |
+| 全局保护、current 冲突或待删对象身份漂移 | 拒绝删除，保留计划和现场 |

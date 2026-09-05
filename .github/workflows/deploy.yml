@@ -11,6 +11,7 @@ env:
   LINGXI_SHA: 1fef3c2bd434a5d6bee36d7a14752998bf490bce
   EXPECTED_PERSONA_SCHEMA_PHASE: active
   EXPECTED_PERSONA_GROWTH_PHASE: active
+  EXPECTED_WORLD_LEDGER_SCHEMA_PHASE: compat
 
 jobs:
   build:
@@ -56,6 +57,9 @@ jobs:
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
           persist-credentials: false
+
+      - name: 拒绝尚未冻结的发布观察策略
+        run: python3 scripts/release_transaction.py policy
 
       - name: 校验跨仓库只读凭据
         env:
@@ -135,13 +139,15 @@ jobs:
             release-package/prune-production-staging.sh
           install -m 0755 scripts/validate_release_health.py \
             release-package/validate_release_health.py
+          install -m 0755 scripts/release_transaction.py release-package/release_transaction.py
+          install -m 0755 scripts/production-release-transaction.sh release-package/production-release-transaction.sh
           lingxi_sha="$(git -C lingxi-source rev-parse HEAD)"
           test "$lingxi_sha" = "$LINGXI_SHA"
           git -C lingxi-source archive --format=tar "$lingxi_sha" | tar -x -C release-package/backend
           printf '%s\n' "$GITHUB_SHA" > release-package/portal/release.txt
           printf '%s\n' "$lingxi_sha" > release-package/lingxi/release.txt
           printf '%s\n' "$lingxi_sha" > release-package/backend/release.txt
-          release_env="$(printf 'BRAIN_RELEASE_SHA=%s\nLINGXI_PERSONA_SCHEMA_CAPABILITY=dual-read-v1' "$lingxi_sha")"
+          release_env="$(printf 'BRAIN_RELEASE_SHA=%s\nLINGXI_PERSONA_SCHEMA_CAPABILITY=dual-read-v1\nLINGXI_WORLD_LEDGER_SCHEMA_CAPABILITY=dual-read-v2-preserve' "$lingxi_sha")"
           printf '%s\n' "$release_env" > release-package/backend/.release.env
           printf 'portal=%s\nlingxi=%s\nbackend=%s\n' \
             "$GITHUB_SHA" "$lingxi_sha" "$lingxi_sha" > release-package/release.txt
@@ -251,6 +257,12 @@ jobs:
             > "$HOME/.ssh/config"
           chmod 0600 "$HOME/.ssh/config" "$HOME/.ssh/known_hosts"
           ssh hi-veblen-production true
+
+      - name: 从独立受信制品验证全部历史事务
+        run: |
+          set -euo pipefail
+          tar -xOf portal-dist.tar.gz ./release_transaction.py | \
+            ssh hi-veblen-production sudo /usr/bin/python3 -I -B - history
 
       - name: 拒绝未纳管的 systemd 覆盖
         run: |
@@ -820,6 +832,9 @@ jobs:
           fi
           mkdir -m 0700 "$upload_dir"
           install -m 0600 /dev/null "$upload_dir/PRESERVE"
+          sync -f /opt/hi-veblen/staging
+          sync -f "$upload_dir/PRESERVE"
+          sync -f "$upload_dir"
           REMOTE
 
       - name: 上传发布包
@@ -837,7 +852,7 @@ jobs:
             "$GITHUB_RUN_ID" "$GITHUB_RUN_ATTEMPT" "$GITHUB_SHA" \
             "$EXPECTED_ARCHIVE_SHA" "$EXPECTED_PERSONA_SCHEMA_PHASE" \
             "$EXPECTED_PERSONA_GROWTH_PHASE" \
-            "$persona_growth_canary_arg" <<'REMOTE'
+            "$persona_growth_canary_arg" "$EXPECTED_WORLD_LEDGER_SCHEMA_PHASE" <<'REMOTE'
           set -eu
 
           release_lock=/run/hi-veblen-release.lock
@@ -855,6 +870,11 @@ jobs:
           expected_persona_schema_phase="$5"
           expected_persona_growth_phase="$6"
           persona_growth_canary_hashes="$7"
+          expected_world_ledger_phase="$8"
+          case "$expected_world_ledger_phase" in
+            compat|active) ;;
+            *) echo "WorldLedger phase 无效" >&2; exit 1 ;;
+          esac
           if test "$persona_growth_canary_hashes" = "-"; then
             persona_growth_canary_hashes=""
           fi
@@ -958,7 +978,7 @@ jobs:
           test "$(cat "$release/portal/release.txt")" = "$expected_portal"
           test "$(cat "$release/lingxi/release.txt")" = "$expected_lingxi"
           test "$(cat "$release/backend/release.txt")" = "$expected_backend"
-          expected_release_env="$(printf 'BRAIN_RELEASE_SHA=%s\nLINGXI_PERSONA_SCHEMA_CAPABILITY=dual-read-v1' "$expected_backend")"
+          expected_release_env="$(printf 'BRAIN_RELEASE_SHA=%s\nLINGXI_PERSONA_SCHEMA_CAPABILITY=dual-read-v1\nLINGXI_WORLD_LEDGER_SCHEMA_CAPABILITY=dual-read-v2-preserve' "$expected_backend")"
           printf '%s\n' "$expected_release_env" | cmp -s - "$release/backend/.release.env"
           test -s "$release/backend-files.sha256"
           (
@@ -1051,31 +1071,6 @@ jobs:
             fi
           done
 
-          previous_portal="$(readlink -f "$portal_current")"
-          previous_lingxi="$(readlink -f "$lingxi_current")"
-          previous_backend="$(readlink -f "$backend_current")"
-          previous_backend_revision="$(cat "$previous_backend/release.txt" 2>/dev/null || true)"
-          if [[ ! "$previous_backend_revision" =~ ^[0-9a-f]{40}$ ]]; then
-            echo "旧后端 release revision 不是完整提交 SHA，拒绝进入可变更阶段。" >&2
-            exit 1
-          fi
-          previous_backend_rollback_floor=0
-          previous_release_env="$(printf 'BRAIN_RELEASE_SHA=%s\nLINGXI_PERSONA_SCHEMA_CAPABILITY=dual-read-v1' "$previous_backend_revision")"
-          if test -f "$previous_backend/.release.env" && \
-            ! test -L "$previous_backend/.release.env" && \
-            printf '%s\n' "$previous_release_env" | \
-              cmp -s - "$previous_backend/.release.env"; then
-            previous_backend_rollback_floor=1
-          fi
-
-          bash "$release/prune-production-staging.sh" \
-            /opt/hi-veblen/staging "$upload_dir"
-          bash "$release/prune-production-releases.sh" \
-            "$release_root" 5 "$release" \
-            "$(dirname -- "$previous_portal")" \
-            "$(dirname -- "$previous_lingxi")" \
-            "$(dirname -- "$previous_backend")"
-
           release_venv="$release/backend/.venv"
           release_python="$release_venv/bin/python"
           test ! -e "$release_venv"
@@ -1099,662 +1094,17 @@ jobs:
           test -z "$(find "$release_venv" ! -type l -perm /022 -print -quit)"
           umask 077
 
-          rollback_root="$upload_dir/rollback"
-          mkdir -m 0700 "$rollback_root"
-          mkdir "$rollback_root/apparmor" "$rollback_root/systemd" \
-            "$rollback_root/nginx-available" "$rollback_root/nginx-enabled"
-          if test "$previous_apparmor_present" -eq 1; then
-            cp -a "$apparmor_profile_path" "$rollback_root/apparmor/"
-          fi
-          for unit in myagent-world.service myagent-gateway.service; do
-            if test -e "/etc/systemd/system/$unit"; then
-              cp -a "/etc/systemd/system/$unit" "$rollback_root/systemd/"
-            fi
-          done
-          for name in hi-veblen.com.conf lingxi.hi-veblen.com.conf; do
-            if test -e "/etc/nginx/sites-available/$name" || test -L "/etc/nginx/sites-available/$name"; then
-              cp -a "/etc/nginx/sites-available/$name" "$rollback_root/nginx-available/"
-            fi
-            if test -e "/etc/nginx/sites-enabled/$name" || test -L "/etc/nginx/sites-enabled/$name"; then
-              cp -a "/etc/nginx/sites-enabled/$name" "$rollback_root/nginx-enabled/"
-            fi
-          done
-
-          restore_link() {
-            target="$1"
-            destination="$2"
-            ln -sfn "$target" "${destination}.rollback"
-            mv -Tf "${destination}.rollback" "$destination"
-          }
-
-          restore_file() {
-            target="$1"
-            backup="$2"
-            rm -f "$target"
-            if test -e "$backup" || test -L "$backup"; then
-              cp -a "$backup" "$target"
-            fi
-          }
-
-          apparmor_profile_is_present() {
-            grep -Fq "$apparmor_profile_name (" /sys/kernel/security/apparmor/profiles
-          }
-
-          apparmor_profile_is_enforced() {
-            grep -Fxq "$apparmor_profile_name (enforce)" \
-              /sys/kernel/security/apparmor/profiles
-          }
-
-          remove_apparmor_profile() {
-            if apparmor_profile_is_present; then
-              removal_source="$apparmor_profile_path"
-              if ! test -s "$removal_source"; then
-                removal_source="$rollback_root/apparmor/$apparmor_profile_name"
-              fi
-              if ! test -s "$removal_source"; then
-                removal_source="$apparmor_profile_source"
-              fi
-              test -s "$removal_source" || return 1
-              apparmor_parser --remove --base /etc/apparmor.d \
-                "$removal_source" || return 1
-            fi
-            rm -f "$apparmor_profile_path" || return 1
-            if test -e "$apparmor_profile_path" || test -L "$apparmor_profile_path"; then
-              return 1
-            fi
-            ! apparmor_profile_is_present
-          }
-
-          restore_apparmor_profile() {
-            if test "$previous_apparmor_present" -eq 0; then
-              remove_apparmor_profile
-              return
-            fi
-
-            restore_file "$apparmor_profile_path" \
-              "$rollback_root/apparmor/$apparmor_profile_name" || return 1
-            apparmor_parser --replace --skip-cache --base /etc/apparmor.d \
-              "$apparmor_profile_path" || return 1
-            test "$(stat -c '%U:%G:%a' "$apparmor_profile_path")" = "root:root:644" || return 1
-            apparmor_profile_is_enforced
-          }
-
-          verify_apparmor_profile_state() {
-            test "$(cat "$userns_restriction")" = "1" || return 1
-            if test "$apparmor_profile_mode" = "managed"; then
-              cmp -s "$apparmor_profile_source" "$apparmor_profile_path" || return 1
-              test "$(stat -c '%U:%G:%a' "$apparmor_profile_path")" = "root:root:644" || return 1
-              apparmor_profile_is_enforced
-              return
-            fi
-
-            if test -e "$apparmor_profile_path" || test -L "$apparmor_profile_path"; then
-              return 1
-            fi
-            ! apparmor_profile_is_present
-          }
-
-          restore_nginx_backup() {
-            for name in hi-veblen.com.conf lingxi.hi-veblen.com.conf; do
-              restore_file "/etc/nginx/sites-available/$name" \
-                "$rollback_root/nginx-available/$name" || return 1
-              restore_file "/etc/nginx/sites-enabled/$name" \
-                "$rollback_root/nginx-enabled/$name" || return 1
-            done
-          }
-
-          activate_maintenance() {
-            marker_tmp="${maintenance_marker}.new.$$"
-            rm -f "$marker_tmp"
-            if ! install -m 0644 /dev/null "$marker_tmp"; then
-              rm -f "$marker_tmp"
-              return 1
-            fi
-            if ! mv -Tf "$marker_tmp" "$maintenance_marker"; then
-              rm -f "$marker_tmp"
-              return 1
-            fi
-          }
-
-          previous_backend_healthy() {
-            rollback_deadline=$((SECONDS + 300))
-            while (( SECONDS < rollback_deadline )); do
-              rollback_curl_timeout=$((rollback_deadline - SECONDS))
-              if (( rollback_curl_timeout > 5 )); then
-                rollback_curl_timeout=5
-              fi
-              if (( rollback_curl_timeout < 1 )); then
-                break
-              fi
-              if rollback_health="$(curl --connect-timeout 2 \
-                --max-time "$rollback_curl_timeout" \
-                --fail --silent --show-error http://127.0.0.1:8000/api/health 2>/dev/null)" && \
-                printf '%s' "$rollback_health" | python3 \
-                  "$release/validate_release_health.py" rollback \
-                  "$previous_backend_revision"; then
-                return 0
-              fi
-              if (( SECONDS < rollback_deadline )); then
-                sleep 1
-              fi
-            done
-            return 1
-          }
-
-          nginx_has_maintenance_guards() {
-            guard='if (-f /run/myagent-release-maintenance) { return 503; }'
-            active_nginx="$(nginx -T 2>&1)" || return 1
-            guard_count="$(printf '%s\n' "$active_nginx" | grep -Fc "$guard" || true)"
-            test "$guard_count" -ge 3
-          }
-
-          backup_nginx_has_maintenance_guards() {
-            guard='if (-f /run/myagent-release-maintenance) { return 503; }'
-            backup_primary="$rollback_root/nginx-available/hi-veblen.com.conf"
-            test -f "$backup_primary" || return 1
-            guard_count="$(grep -Fc "$guard" "$backup_primary" || true)"
-            test "$guard_count" -ge 3
-          }
-
-          maintenance_public_blocked() {
-            invalid_status="$(curl --connect-timeout 10 --max-time 30 \
-              --silent --output /dev/null --write-out '%{http_code}' \
-              --request POST --header 'Content-Type: application/json' \
-              --data '{"token":"release-preflight-invalid"}' \
-              https://lingxi.hi-veblen.com/api/session)"
-            default_status="$(curl --connect-timeout 10 --max-time 30 \
-              --silent --output /dev/null --write-out '%{http_code}' \
-              --request POST --header 'Content-Type: application/json' \
-              --data '{"token":"local-dev-token"}' \
-              https://lingxi.hi-veblen.com/api/session)"
-            ws_status="$(curl --connect-timeout 10 --max-time 30 \
-              --silent --output /dev/null --write-out '%{http_code}' \
-              https://lingxi.hi-veblen.com/ws/release-maintenance-probe)"
-            test "$invalid_status" = "503"
-            test "$default_status" = "503"
-            test "$ws_status" = "503"
-          }
-
-          stop_services_for_manual_recovery() {
-            systemctl stop myagent-gateway.service myagent-world.service || true
-            ! systemctl is-active --quiet myagent-gateway.service && \
-              ! systemctl is-active --quiet myagent-world.service
-          }
-
-          switched=0
-          services_stopped=0
-          maintenance_active=0
-          nginx_mutated=0
-          apparmor_mutated=0
-          rollback() {
-            status=$?
-            trap - EXIT
-            if test "$status" -ne 0 && test "$nginx_mutated" -eq 1 && \
-              test "$switched" -eq 0 && test "$services_stopped" -eq 0 && \
-              test "$maintenance_active" -eq 0; then
-              set +e
-              nginx_restore_safe=1
-              restore_nginx_backup || nginx_restore_safe=0
-              if test "$nginx_restore_safe" -eq 1; then
-                nginx -t || nginx_restore_safe=0
-              fi
-              if test "$nginx_restore_safe" -eq 1; then
-                systemctl reload nginx || nginx_restore_safe=0
-              fi
-              if test "$nginx_restore_safe" -ne 1; then
-                preserve_tmp="${preserve_marker}.new.$$"
-                if ! install -m 0600 /dev/null "$preserve_tmp" || \
-                  ! mv -Tf "$preserve_tmp" "$preserve_marker"; then
-                  rm -f "$preserve_tmp"
-                fi
-                echo "Nginx 前置变更恢复失败；服务仍保持原运行态，请立即人工核验活动配置。" >&2
-              else
-                rm -f "$upload_dir/PRESERVE" || true
-              fi
-              exit "$status"
-            fi
-            if test "$status" -ne 0 && \
-              { test "$switched" -eq 1 || test "$services_stopped" -eq 1 || \
-                test "$maintenance_active" -eq 1; }; then
-              set +e
-              if ! activate_maintenance; then
-                echo "无法重建发布维护标记，停止服务并保留现场供人工恢复。" >&2
-                if ! stop_services_for_manual_recovery; then
-                  echo "无法确认 world/gateway 已停止，必须立即人工隔离流量。" >&2
-                fi
-                exit "$status"
-              fi
-              maintenance_active=1
-              rollback_safe=1
-              systemctl stop myagent-gateway.service myagent-world.service || rollback_safe=0
-              if systemctl is-active --quiet myagent-gateway.service || \
-                systemctl is-active --quiet myagent-world.service; then
-                rollback_safe=0
-              fi
-              services_stopped=1
-              if test "$previous_backend_rollback_floor" -ne 1; then
-                echo "旧后端不满足 dual-read-v1 回滚下限；保留维护态、PRESERVE 与停止服务现场。" >&2
-                if ! stop_services_for_manual_recovery; then
-                  echo "无法确认 world/gateway 已停止，必须立即人工隔离流量。" >&2
-                fi
-                exit "$status"
-              fi
-              if test "$switched" -eq 1; then
-                restore_link "$previous_portal" "$portal_current" || rollback_safe=0
-                restore_link "$previous_lingxi" "$lingxi_current" || rollback_safe=0
-                restore_link "$previous_backend" "$backend_current" || rollback_safe=0
-                for unit in myagent-world.service myagent-gateway.service; do
-                  restore_file "/etc/systemd/system/$unit" "$rollback_root/systemd/$unit" || rollback_safe=0
-                done
-              fi
-              if test "$rollback_safe" -eq 1 && test "$apparmor_mutated" -eq 1; then
-                restore_apparmor_profile || rollback_safe=0
-              fi
-              if test "$rollback_safe" -eq 1 && \
-                test "$(cat "$userns_restriction")" != "1"; then
-                rollback_safe=0
-              fi
-              if test "$rollback_safe" -eq 1 && ! nginx_has_maintenance_guards; then
-                rollback_safe=0
-              fi
-              if test "$rollback_safe" -eq 1 && \
-                { test "$switched" -eq 1 || test "$services_stopped" -eq 1; }; then
-                systemctl daemon-reload || rollback_safe=0
-                systemctl restart myagent-world.service myagent-gateway.service || rollback_safe=0
-              fi
-              if test "$rollback_safe" -eq 1; then
-                systemctl is-active --quiet myagent-world.service || rollback_safe=0
-                systemctl is-active --quiet myagent-gateway.service || rollback_safe=0
-              fi
-              if test "$rollback_safe" -eq 1 && ! previous_backend_healthy; then
-                rollback_safe=0
-              fi
-              if test "$rollback_safe" -eq 1 && test "$switched" -eq 1; then
-                if backup_nginx_has_maintenance_guards; then
-                  restore_nginx_backup || rollback_safe=0
-                else
-                  echo "旧 Nginx 配置不识别维护标记，保留当前 503 加固配置。" >&2
-                fi
-              fi
-              if test "$rollback_safe" -eq 1; then
-                nginx -t || rollback_safe=0
-              fi
-              if test "$rollback_safe" -eq 1 && ! nginx_has_maintenance_guards; then
-                rollback_safe=0
-              fi
-              if test "$rollback_safe" -eq 1; then
-                systemctl reload nginx || rollback_safe=0
-              fi
-              if test "$rollback_safe" -eq 1 && ! nginx_has_maintenance_guards; then
-                rollback_safe=0
-              fi
-              if test "$rollback_safe" -eq 1 && ! maintenance_public_blocked; then
-                rollback_safe=0
-              fi
-              if test "$rollback_safe" -eq 1; then
-                systemctl is-active --quiet myagent-world.service || rollback_safe=0
-                systemctl is-active --quiet myagent-gateway.service || rollback_safe=0
-              fi
-              if test "$rollback_safe" -eq 1 && ! previous_backend_healthy; then
-                rollback_safe=0
-              fi
-              if test "$rollback_safe" -eq 1 && ! maintenance_public_blocked; then
-                rollback_safe=0
-              fi
-              if test "$rollback_safe" -eq 1; then
-                rm -f "$upload_dir/PRESERVE" || rollback_safe=0
-              fi
-              if test "$rollback_safe" -eq 1; then
-                rm -f "$maintenance_marker" || rollback_safe=0
-              fi
-              if test "$rollback_safe" -ne 1; then
-                echo "自动回滚未通过旧服务、Nginx 与 revision 健康门；维护标记保留，请人工恢复。" >&2
-                if ! stop_services_for_manual_recovery; then
-                  echo "无法确认 world/gateway 已停止，必须立即人工隔离流量。" >&2
-                fi
-              fi
-            fi
-            exit "$status"
-          }
-          if ! previous_backend_healthy; then
-            echo "旧后端未通过 revision、连续性与心跳回滚下限，拒绝进入可变更阶段。" >&2
-            exit 1
-          fi
-          trap rollback EXIT
-
-          primary_conf=/etc/nginx/sites-available/hi-veblen.com.conf
-          primary_enabled=/etc/nginx/sites-enabled/hi-veblen.com.conf
-          bootstrap_enabled=/etc/nginx/sites-enabled/lingxi.hi-veblen.com.conf
-          test -d /etc/nginx/sites-available
-          test -d /etc/nginx/sites-enabled
-          test -f "$upload_dir/PRESERVE"
-          test ! -L "$upload_dir/PRESERVE"
-          nginx_mutated=1
-          install -m 0644 "$release/backend/ops/nginx/hi-veblen.com.http.conf" "$primary_conf"
-          ln -sfn "$primary_conf" "$primary_enabled"
-          rm -f "$bootstrap_enabled"
-          nginx -t
-          nginx_has_maintenance_guards
-          systemctl reload nginx
-          nginx_has_maintenance_guards
-
-          activate_maintenance
-          maintenance_active=1
-          maintenance_public_blocked
-
-          services_stopped=1
-          systemctl stop myagent-gateway.service myagent-world.service
-          ! systemctl is-active --quiet myagent-gateway.service
-          ! systemctl is-active --quiet myagent-world.service
-
-          if test "$apparmor_profile_mode" = "legacy"; then
-            apparmor_mutated=1
-            remove_apparmor_profile
-          fi
-
-          switched=1
-          restore_link "$release/portal" "$portal_current"
-          restore_link "$release/lingxi" "$lingxi_current"
-          restore_link "$release/backend" "$backend_current"
-
-          if test "$apparmor_profile_mode" = "managed"; then
-            apparmor_mutated=1
-          fi
-          RELEASE_TRANSACTION=1 REVISION="$expected_backend" PROJECT_DIR="$project_root" \
-            BACKEND_DIR="$release/backend" \
-            LINGXI_PERSONA_SCHEMA_PHASE="$expected_persona_schema_phase" \
-            LINGXI_PERSONA_GROWTH_PHASE="$expected_persona_growth_phase" \
-            LINGXI_PERSONA_GROWTH_CANARY_HASHES="$persona_growth_canary_hashes" \
-            bash "$release/backend/scripts/install_linux_services.sh"
-          services_stopped=0
-          systemctl is-active --quiet myagent-world.service
-          systemctl is-active --quiet myagent-gateway.service
-          systemctl is-enabled --quiet myagent-world.service
-          systemctl is-enabled --quiet myagent-gateway.service
-          for unit in myagent-world.service myagent-gateway.service; do
-            grep -Fqx "Environment=LINGXI_PERSONA_SCHEMA_PHASE=$expected_persona_schema_phase" \
-              "/etc/systemd/system/$unit"
-            grep -Fqx "Environment=LINGXI_PERSONA_GROWTH_PHASE=$expected_persona_growth_phase" \
-              "/etc/systemd/system/$unit"
-            grep -Fqx "Environment=LINGXI_PERSONA_GROWTH_CANARY_HASHES=$persona_growth_canary_hashes" \
-              "/etc/systemd/system/$unit"
-          done
-          test -z "$(systemctl show myagent-world.service -p DropInPaths --value)"
-          test -z "$(systemctl show myagent-gateway.service -p DropInPaths --value)"
-          verify_apparmor_profile_state
-
-          (
-            cd "$release/backend"
-            LINGXI_PERSONA_SCHEMA_PHASE="$expected_persona_schema_phase" \
-              LINGXI_PERSONA_GROWTH_PHASE="$expected_persona_growth_phase" \
-              LINGXI_PERSONA_GROWTH_CANARY_HASHES="$persona_growth_canary_hashes" \
-              "$release_python" -B - <<'PY'
-          from brain.persona.schema_phase import (
-              GROWTH_PHASE_ACTIVE,
-              GROWTH_PHASE_CANARY,
-              growth_canary_hashes,
-              growth_canary_subject,
-              persona_growth_applies_for,
-              persona_growth_phase,
-          )
-
-          phase = persona_growth_phase()
-          hashes = growth_canary_hashes()
-          if phase == GROWTH_PHASE_CANARY:
-              expected = growth_canary_subject("p6_e2e_cn")
-              assert hashes == {expected}
-              assert persona_growth_applies_for("p6_e2e_cn")
-              assert not persona_growth_applies_for("p6_e2e_control")
-          elif phase == GROWTH_PHASE_ACTIVE:
-              assert not hashes
-              assert persona_growth_applies_for("p6_e2e_cn")
-              assert persona_growth_applies_for("p6_e2e_control")
-          print(f"persona growth routing OK: phase={phase}, canary_count={len(hashes)}")
-          PY
-          )
-
-          nginx_dump="$(nginx -T 2>&1)"
-          for expected in \
-            'root /opt/hi-veblen/portal-current;' \
-            'root /opt/hi-veblen/lingxi-current;' \
-            'proxy_pass http://127.0.0.1:3001;' \
-            'proxy_pass http://127.0.0.1:8000;'; do
-            printf '%s' "$nginx_dump" | grep -Fq "$expected"
-          done
-          test "$(printf '%s' "$nginx_dump" | grep -Fc 'location ^~ /assets/')" -ge 2
-          test "$(printf '%s' "$nginx_dump" | grep -Fc 'location = /release.txt')" -ge 2
-
-          maintenance_public_blocked
-
-          verify_site_assets() {
-            site_url="$1"
-            site_html="$2"
-            site_root="$3"
-            missing_id="$4"
-            site_assets="$(printf '%s' "$site_html" | grep -oE '/assets/[^" ]+\.(js|css)' | sort -u)"
-            test -n "$site_assets"
-            for asset in $site_assets; do
-              test -s "$site_root/${asset#/}"
-              headers="$(curl --connect-timeout 10 --max-time 30 \
-                --fail --silent --show-error --head "$site_url$asset")"
-              case "$asset" in
-                *.js) printf '%s' "$headers" | grep -qiE '^content-type: *(application|text)/(javascript|x-javascript)' ;;
-                *.css) printf '%s' "$headers" | grep -qiE '^content-type: *text/css' ;;
-              esac
-            done
-            missing_status="$(curl --connect-timeout 10 --max-time 30 \
-              --silent --output /dev/null --write-out '%{http_code}' \
-              "$site_url/assets/release-missing-$missing_id.js")"
-            test "$missing_status" = "404"
-          }
-
-          verify_security_headers() {
-            site_url="$1"
-            require_lingxi_csp="$2"
-            response_headers="$(curl --connect-timeout 10 --max-time 30 \
-              --fail --silent --show-error --head "$site_url/")"
-            clean_headers="$(printf '%s\n' "$response_headers" | tr -d '\r')"
-            lower_headers="$(printf '%s\n' "$clean_headers" | tr '[:upper:]' '[:lower:]')"
-            x_frame_options="$(printf '%s\n' "$lower_headers" | sed -n \
-              's/^x-frame-options:[[:space:]]*//p')"
-            test -n "$x_frame_options"
-            test -z "$(printf '%s\n' "$x_frame_options" | grep -vx 'deny')"
-
-            server_header="$(printf '%s\n' "$lower_headers" | sed -n \
-              's/^server:[[:space:]]*//p')"
-            if printf '%s\n' "$server_header" | grep -Eq '[0-9]+([.][0-9]+)+'; then
-              echo "Server 响应头泄露版本：$site_url" >&2
-              return 1
-            fi
-
-            if test "$require_lingxi_csp" = "1"; then
-              content_security_policy="$(printf '%s\n' "$lower_headers" | sed -n \
-                's/^content-security-policy:[[:space:]]*//p')"
-              printf '%s\n' "$content_security_policy" | grep -Eq \
-                "(^|;)[[:space:]]*frame-ancestors[[:space:]]+'none'([[:space:]]*;|[[:space:]]*$)"
-              printf '%s\n' "$content_security_policy" | grep -Eq \
-                "(^|;)[[:space:]]*script-src[[:space:]]+'self'([[:space:]]|;|$)"
-            fi
-          }
-
-          portal_html="$(curl --connect-timeout 10 --max-time 30 \
-            --fail --silent --show-error https://hi-veblen.com/)"
-          printf '%s' "$portal_html" | grep -q 'id="app"'
-          grep -R -q 'https://lingxi.hi-veblen.com/' "$release/portal/assets"
-          verify_site_assets "https://hi-veblen.com" "$portal_html" "$release/portal" "$expected_portal"
-          verify_security_headers "https://hi-veblen.com" 0
-
-          lingxi_html="$(curl --connect-timeout 10 --max-time 30 \
-            --fail --silent --show-error https://lingxi.hi-veblen.com/)"
-          printf '%s' "$lingxi_html" | grep -q 'id="root"'
-          verify_site_assets "https://lingxi.hi-veblen.com" "$lingxi_html" "$release/lingxi" "$expected_lingxi"
-          verify_security_headers "https://lingxi.hi-veblen.com" 1
-
-          test "$(curl --connect-timeout 10 --max-time 30 --fail --silent --show-error \
-            https://hi-veblen.com/release.txt)" = "$expected_portal"
-          test "$(curl --connect-timeout 10 --max-time 30 --fail --silent --show-error \
-            https://lingxi.hi-veblen.com/release.txt)" = "$expected_lingxi"
-
-          portal_health="$(curl --connect-timeout 10 --max-time 30 \
-            --fail --silent --show-error https://hi-veblen.com/api/health)"
-          printf '%s' "$portal_health" | python3 -c '
-          import json, sys
-          assert json.load(sys.stdin).get("status") == "ok"
-          '
-
-          portal_auth_probe="$(curl --connect-timeout 10 --max-time 30 \
-            --silent --show-error --write-out '\n%{http_code}' \
-            --header 'Authorization: Bearer nginx-forwarding-probe' \
-            https://hi-veblen.com/api/auth/profile)"
-          printf '%s' "$portal_auth_probe" | python3 -c '
-          import json, sys
-          body, separator, status = sys.stdin.read().rpartition("\n")
-          assert separator and status == "401"
-          data = json.loads(body)
-          assert data.get("code") == 401
-          assert (data.get("details") or {}).get("reason") == "token_malformed"
-          '
-
-          invalid_status="$(curl --connect-timeout 10 --max-time 30 \
-            --silent --output /dev/null --write-out '%{http_code}' \
-            --request POST --header 'Content-Type: application/json' \
-            --data '{"token":"release-preflight-invalid"}' \
-            http://127.0.0.1:8000/api/session)"
-          default_status="$(curl --connect-timeout 10 --max-time 30 \
-            --silent --output /dev/null --write-out '%{http_code}' \
-            --request POST --header 'Content-Type: application/json' \
-            --data '{"token":"local-dev-token"}' \
-            http://127.0.0.1:8000/api/session)"
-          test "$invalid_status" = "401"
-          test "$default_status" = "401"
-
-          api_health="$(curl --connect-timeout 10 --max-time 30 \
-            --fail --silent --show-error http://127.0.0.1:8000/api/health)"
-          printf '%s' "$api_health" | python3 \
-            "$release/validate_release_health.py" current "$expected_lingxi" \
-            "$expected_persona_schema_phase" "$expected_persona_growth_phase"
-
-          synthetic_db="$project_root/data/users/p6_e2e_cn/conversation.sqlite3"
-          test -f "$synthetic_db"
-          "$release_python" -B - "$synthetic_db" "$expected_persona_schema_phase" <<'PY'
-          from contextlib import closing
-          import sqlite3
-          import sys
-
-          path, phase = sys.argv[1:]
-          with closing(sqlite3.connect(f"file:{path}?mode=ro", uri=True)) as conn:
-              version = int(conn.execute("PRAGMA user_version").fetchone()[0])
-              tables = {
-                  str(row[0])
-                  for row in conn.execute(
-                      "SELECT name FROM sqlite_master WHERE type='table'"
-                  )
-              }
-              columns = {
-                  str(row[1])
-                  for row in conn.execute("PRAGMA table_info(conversation_events)")
-              }
-          assert version == 3 if phase == "active" else version in {2, 3}
-          assert {"persona_evidence", "persona_growth_state"} <= tables
-          assert "persona_hash" in columns
-          print(f"p6_e2e_cn schema OK: version={version}, d050_tables=ready")
-          PY
-
-          verify_apparmor_profile_state
-          rm -f "$upload_dir/PRESERVE"
-          install -m 0600 /dev/null "$upload_dir/DEPLOYED"
-          rm -f "$maintenance_marker"
-          maintenance_active=0
-          switched=0
-          trap - EXIT
+          # 独立入口重新取得唯一 flock；lease 持续绑定本事务，间隙不能创建另一发布。
+          flock -u 9
+          exec 9>&-
+          exec bash "$release/production-release-transaction.sh" deploy \
+            "run-$run_id-$run_attempt-$portal_revision" "$expected_backend" "$expected_archive_sha" \
+            "$expected_persona_schema_phase" "$expected_persona_growth_phase" \
+            "$expected_world_ledger_phase" "${persona_growth_canary_hashes:--}"
           REMOTE
 
-      - name: 清理本次远端暂存与未引用发布
-        if: ${{ always() && steps.configure-ssh.outcome == 'success' }}
+      - name: 保留失败事务并提示共享恢复入口
+        if: always()
         run: |
-          ssh hi-veblen-production 'bash -se --' \
-            "$GITHUB_RUN_ID" "$GITHUB_RUN_ATTEMPT" "$GITHUB_SHA" <<'REMOTE'
-          set -euo pipefail
-          release_lock=/run/hi-veblen-release.lock
-          command -v flock >/dev/null
-          exec 9>"$release_lock"
-          if ! flock -n 9; then
-            echo "另一个服务器发布事务仍在运行，保留本次清理现场。" >&2
-            exit 1
-          fi
-          run_id="$1"
-          run_attempt="$2"
-          portal_revision="$3"
-          case "$run_id" in
-            ''|*[!0-9]*) echo "GitHub run id 格式无效：$run_id" >&2; exit 1 ;;
-          esac
-          case "$run_attempt" in
-            ''|*[!0-9]*) echo "GitHub run attempt 格式无效：$run_attempt" >&2; exit 1 ;;
-          esac
-          lease_dir=/run/hi-veblen-release-lease
-          lease_owner="$run_id-$run_attempt"
-          current_owner="$(cat "$lease_dir/owner" 2>/dev/null || true)"
-          if test "$current_owner" != "$lease_owner"; then
-            echo "本次运行不持有发布生命周期租约，跳过远端清理。"
-            exit 0
-          fi
-          maintenance_marker=/run/myagent-release-maintenance
-          preserve_marker=/run/hi-veblen-release-preserve
-          upload_dir="/opt/hi-veblen/staging/run-$run_id-$run_attempt"
-          assert_no_global_protection() {
-            if test -e "$maintenance_marker" || test -L "$maintenance_marker" || \
-              test -e "$preserve_marker" || test -L "$preserve_marker"; then
-              echo "发布保护标记仍存在，拒绝删除本次清理现场。" >&2
-              return 1
-            fi
-          }
-          if test -e "$maintenance_marker" || test -L "$maintenance_marker" || \
-            test -e "$preserve_marker" || test -L "$preserve_marker"; then
-            echo "发布保护标记仍存在，保留本次 release 与回滚现场。"
-            exit 0
-          fi
-
-          deployed=0
-          if test -L "$upload_dir/DEPLOYED"; then
-            echo "DEPLOYED 标记不能是符号链接。" >&2
-            exit 1
-          fi
-          if test -f "$upload_dir/DEPLOYED"; then
-            deployed=1
-          fi
-          rm -f "$upload_dir/PRESERVE"
-          assert_no_global_protection
-
-          release="/opt/hi-veblen/releases/release-$portal_revision-$run_id-$run_attempt"
-          referenced=0
-          for current in \
-            /opt/hi-veblen/portal-current \
-            /opt/hi-veblen/lingxi-current \
-            /opt/myagent/backend-current; do
-            if test -L "$current"; then
-              target="$(readlink -f -- "$current" 2>/dev/null || true)"
-              if test -n "$target" && test "$(dirname -- "$target")" = "$release"; then
-                referenced=1
-              fi
-            fi
-          done
-
-          if test -d "$release" && test "$referenced" -eq 0 && test "$deployed" -eq 0; then
-            assert_no_global_protection
-            case "$release" in
-              /opt/hi-veblen/releases/release-[0-9a-f]*-[0-9]*-[0-9]*)
-                rm -rf --one-file-system -- "$release"
-                ;;
-              *) echo "拒绝清理异常发布路径：$release" >&2; exit 1 ;;
-            esac
-          fi
-          assert_no_global_protection
-          case "$upload_dir" in
-            /opt/hi-veblen/staging/run-[0-9]*-[0-9]*) rm -rf -- "$upload_dir" ;;
-            *) echo "拒绝清理异常暂存路径：$upload_dir" >&2; exit 1 ;;
-          esac
-          assert_no_global_protection
-          test "$(cat "$lease_dir/owner" 2>/dev/null || true)" = "$lease_owner"
-          rm -f "$lease_dir/owner"
-          rmdir "$lease_dir"
-          REMOTE
+          echo '事务清理由持锁 finalize 完成；失败时保留 run、control、回执与恢复证据。'
+          echo '重试须从独立核验的原 MyWeb 制品执行 production-release-transaction.sh recover <txn_id>。'
