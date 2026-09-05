@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import copy
 import json
+import re
 import sys
 from typing import Any
 
@@ -95,6 +96,121 @@ def validate_payload(
     return contract
 
 
+def _transaction_object(value: Any, name: str) -> dict[str, Any]:
+    _require(isinstance(value, dict), f"{name} 必须是 JSON 对象")
+    return value
+
+
+def validate_transaction_payload(
+    data: dict[str, Any],
+    expected: str,
+    phases: dict[str, str],
+    canary_hashes: list[str],
+) -> str:
+    """验证事务的单个初步健康样本，返回 epoch；持续观察由事务调用方完成。"""
+    _require(
+        isinstance(expected, str) and re.fullmatch(r"[0-9a-f]{40}", expected) is not None,
+        "expected revision 必须是完整小写 SHA",
+    )
+    phases = _transaction_object(phases, "事务 phases")
+    allowed_phases = {
+        "persona_schema": {"compat", "active"},
+        "persona_growth": {"compat", "shadow", "canary", "active"},
+        "world_ledger": {"compat", "active"},
+    }
+    _require(set(phases) == set(allowed_phases), "事务 phases 必须包含精确的三个 phase 键")
+    for name, allowed in allowed_phases.items():
+        _require(
+            isinstance(phases[name], str) and phases[name] in allowed,
+            f"事务 {name} phase 无效",
+        )
+    _require(
+        phases["persona_schema"] != "compat"
+        or phases["persona_growth"] in {"compat", "shadow"},
+        "compat schema 仅允许 compat 或 shadow growth",
+    )
+    _require(isinstance(canary_hashes, list), "事务 canary_hashes 必须是 JSON 数组")
+    _require(len(canary_hashes) <= 512, "事务 canary_hashes 超过 512 项")
+    _require(
+        all(
+            isinstance(value, str) and re.fullmatch(r"[0-9a-f]{64}", value) is not None
+            for value in canary_hashes
+        ),
+        "事务 canary_hashes 必须是 64 位小写十六进制哈希",
+    )
+    _require(
+        canary_hashes == sorted(set(canary_hashes)),
+        "事务 canary_hashes 必须升序且唯一",
+    )
+    _require(
+        phases["persona_growth"] == "canary" or not canary_hashes,
+        "非 canary phase 的 canary_hashes 必须为空",
+    )
+
+    # 事务不走旧版回滚豁免；每个发布版本都必须提供完整健康证据。
+    data = _transaction_object(data, "健康响应")
+    host = _transaction_object(data.get("host"), "宿主健康响应")
+    heartbeat = _transaction_object(host.get("heartbeat"), "心跳健康响应")
+    persona_import = _transaction_object(data.get("persona_import"), "角色导入健康响应")
+    persona_growth = _transaction_object(data.get("persona_growth"), "角色成长健康响应")
+    _require(data.get("ok") is True, "整体健康检查未通过")
+    _base_health(data, expected)
+    for name in ("ready", "continuity_ok", "audition_isolation_ok"):
+        _require(host.get(name) is True, f"宿主 {name} 健康门未通过")
+    _require(
+        data.get("persona_schema_capability") == "dual-read-v1",
+        "Persona schema capability 不匹配",
+    )
+    _require(
+        data.get("persona_schema_phase") == phases["persona_schema"],
+        "Persona schema phase 不匹配",
+    )
+    _require(
+        data.get("world_ledger_schema_capability") == "dual-read-v2-preserve",
+        "World ledger schema capability 不匹配",
+    )
+    _require(
+        data.get("world_ledger_schema_phase") == phases["world_ledger"],
+        "World ledger schema phase 不匹配",
+    )
+    for name, expected_value in (
+        ("world_ledger_schema_capability", "dual-read-v2-preserve"),
+        ("world_ledger_schema_phase", phases["world_ledger"]),
+    ):
+        _require(
+            type(host.get(name)) is str and host[name] == expected_value == data.get(name),
+            f"宿主 {name} 缺失或与顶层及事务期望不一致",
+        )
+    _require(persona_import.get("ready") is True, "角色设定导入能力尚未 ready")
+    _require(
+        persona_growth.get("capability") == "autonomous-growth-v1",
+        "Persona growth capability 不匹配",
+    )
+    _require(
+        persona_growth.get("phase") == phases["persona_growth"],
+        "Persona growth phase 不匹配",
+    )
+    _require(persona_growth.get("runtime_ready") is True, "Persona growth 运行环境尚未 ready")
+    _require(persona_growth.get("ready") is True, "Persona growth 尚未 ready")
+    # 公开健康响应不要求回显 canary 名单；实际 unit 环境由事务调用方核验。
+    for name in ("running", "first_fire_completed", "first_fire_ok"):
+        _require(heartbeat.get(name) is True, f"心跳 {name} 健康门未通过")
+    _require(heartbeat.get("in_flight_timed_out") is False, "心跳仍有超时任务")
+    failures = heartbeat.get("consecutive_failures")
+    _require(type(failures) is int and failures == 0, "心跳连续失败计数必须是整数 0")
+    completed_fires = heartbeat.get("completed_fires")
+    _require(
+        type(completed_fires) is int and completed_fires >= 0,
+        "心跳完成计数必须是非负整数",
+    )
+    run_epoch = heartbeat.get("run_epoch")
+    _require(
+        isinstance(run_epoch, str) and re.fullmatch(r"hb_[0-9a-f]{32}", run_epoch) is not None,
+        "心跳 run_epoch 格式无效",
+    )
+    return run_epoch
+
+
 def _expect_rejected(
     data: dict[str, Any],
     mode: str,
@@ -113,6 +229,181 @@ def _expect_rejected(
     except ValueError:
         return
     raise AssertionError("危险健康响应未被拒绝")
+
+
+def _transaction_self_test(
+    strict: dict[str, Any], revision: str, legacy: dict[str, Any]
+) -> None:
+    phases = {
+        "persona_schema": "compat",
+        "persona_growth": "compat",
+        "world_ledger": "compat",
+    }
+    payload = copy.deepcopy(strict)
+    payload["world_ledger_schema_capability"] = "dual-read-v2-preserve"
+    payload["world_ledger_schema_phase"] = "compat"
+    payload["host"]["world_ledger_schema_capability"] = "dual-read-v2-preserve"
+    payload["host"]["world_ledger_schema_phase"] = "compat"
+    payload["persona_growth"]["runtime_ready"] = True
+    epoch = "hb_" + "a" * 32
+    payload["host"]["heartbeat"].update(run_epoch=epoch, completed_fires=0)
+
+    def rejected(
+        data: Any, candidate_phases: Any, hashes: Any, expected: Any = revision
+    ) -> None:
+        try:
+            validate_transaction_payload(data, expected, candidate_phases, hashes)
+        except ValueError:
+            return
+        raise AssertionError("危险事务健康响应未被拒绝")
+
+    # 覆盖全部合法组合；canary 不依赖公开健康响应回显名单。
+    for schema in ("compat", "active"):
+        for growth in ("compat", "shadow", "canary", "active"):
+            for world in ("compat", "active"):
+                candidate_phases = {
+                    "persona_schema": schema,
+                    "persona_growth": growth,
+                    "world_ledger": world,
+                }
+                candidate = copy.deepcopy(payload)
+                candidate["persona_schema_phase"] = schema
+                candidate["persona_growth"]["phase"] = growth
+                candidate["world_ledger_schema_phase"] = world
+                candidate["host"]["world_ledger_schema_phase"] = world
+                hashes = ["a" * 64] if growth == "canary" else []
+                if schema == "compat" and growth in {"canary", "active"}:
+                    rejected(candidate, candidate_phases, hashes)
+                else:
+                    _require(
+                        validate_transaction_payload(
+                            candidate, revision, candidate_phases, hashes
+                        ) == epoch,
+                        "合法事务健康组合未通过或 epoch 返回错误",
+                    )
+
+    # 每项必要证据缺失都必须拒绝，包括 World ledger 的能力与 phase。
+    required_paths = [
+        ("ok",),
+        ("production_auth_safe",),
+        ("backend_revision",),
+        ("persona_schema_capability",),
+        ("persona_schema_phase",),
+        ("world_ledger_schema_capability",),
+        ("world_ledger_schema_phase",),
+        ("persona_import",),
+        ("persona_import", "ready"),
+        ("persona_growth",),
+        ("persona_growth", "capability"),
+        ("persona_growth", "phase"),
+        ("persona_growth", "runtime_ready"),
+        ("persona_growth", "ready"),
+        ("host",),
+        ("host", "ok"),
+        ("host", "backend_revision"),
+        ("host", "world_ledger_schema_capability"),
+        ("host", "world_ledger_schema_phase"),
+        ("host", "ready"),
+        ("host", "continuity_ok"),
+        ("host", "audition_isolation_ok"),
+        ("host", "heartbeat"),
+        ("host", "heartbeat", "running"),
+        ("host", "heartbeat", "first_fire_completed"),
+        ("host", "heartbeat", "first_fire_ok"),
+        ("host", "heartbeat", "in_flight_timed_out"),
+        ("host", "heartbeat", "consecutive_failures"),
+        ("host", "heartbeat", "completed_fires"),
+        ("host", "heartbeat", "run_epoch"),
+    ]
+    for path in required_paths:
+        missing = copy.deepcopy(payload)
+        parent = missing
+        for key in path[:-1]:
+            parent = parent[key]
+        del parent[path[-1]]
+        rejected(missing, phases, [])
+
+        # 布尔健康门不能由 0/1 代替，字符串字段也不能接受数字。
+        original = payload
+        for key in path:
+            original = original[key]
+        if isinstance(original, dict):
+            invalid_values = (None, [], "invalid", True, 0)
+        elif original is True:
+            invalid_values = (False, 1)
+        elif original is False:
+            invalid_values = (True, 0)
+        elif isinstance(original, str):
+            invalid_values = (None, True, 0, "invalid")
+        else:
+            invalid_values = (None, True, False, 0.0, "0", -1)
+        for value in invalid_values:
+            invalid = copy.deepcopy(payload)
+            parent = invalid
+            for key in path[:-1]:
+                parent = parent[key]
+            parent[path[-1]] = value
+            rejected(invalid, phases, [])
+
+    for data in (None, [], "invalid", True, 0):
+        rejected(data, phases, [])
+    rejected(legacy, phases, [], legacy["backend_revision"])
+    for expected in (None, [], True, 0, "a" * 39, "A" * 40, "a" * 40 + "\n"):
+        rejected(payload, phases, [], expected)
+    for candidate_phases in (None, [], True, {}, {**phases, "extra": "compat"}):
+        rejected(payload, candidate_phases, [])
+    for name in phases:
+        missing_phase = dict(phases)
+        del missing_phase[name]
+        rejected(payload, missing_phase, [])
+        for value in (None, [], True, 0, "invalid"):
+            rejected(payload, {**phases, name: value}, [])
+    for field in ("persona_schema_phase", "world_ledger_schema_phase"):
+        mismatched = copy.deepcopy(payload)
+        mismatched[field] = "active"
+        rejected(mismatched, phases, [])
+    mismatched = copy.deepcopy(payload)
+    mismatched["persona_growth"]["phase"] = "shadow"
+    rejected(mismatched, phases, [])
+
+    invalid_heartbeat_values = {
+        "run_epoch": (
+            "hb_" + "a" * 31, "hb_" + "A" * 32, "hb_" + "a" * 32 + "\n", "a" * 32,
+        ),
+        "consecutive_failures": (1, 10),
+        "completed_fires": (1.5,),
+    }
+    for name, values in invalid_heartbeat_values.items():
+        for value in values:
+            invalid = copy.deepcopy(payload)
+            invalid["host"]["heartbeat"][name] = value
+            rejected(invalid, phases, [])
+    completed = copy.deepcopy(payload)
+    completed["host"]["heartbeat"]["completed_fires"] = 7
+    _require(
+        validate_transaction_payload(completed, revision, phases, []) == epoch,
+        "心跳完成计数未通过",
+    )
+
+    canary_phases = {**phases, "persona_schema": "active", "persona_growth": "canary"}
+    canary = copy.deepcopy(payload)
+    canary["persona_schema_phase"] = "active"
+    canary["persona_growth"]["phase"] = "canary"
+    for hashes in ([], [f"{number:064x}" for number in range(512)]):
+        _require(
+            validate_transaction_payload(canary, revision, canary_phases, hashes) == epoch,
+            "合法 canary 数组边界未通过",
+        )
+    invalid_canaries = (
+        None, {}, (), True, "a" * 64, [None], [True], [0], [[]],
+        ["a" * 63], ["a" * 65], ["A" * 64], ["g" * 64], ["a" * 64 + "\n"],
+        ["b" * 64, "a" * 64], ["a" * 64, "a" * 64],
+        [f"{number:064x}" for number in range(513)],
+    )
+    for hashes in invalid_canaries:
+        rejected(canary, canary_phases, hashes)
+    rejected(payload, phases, ["a" * 64])
+    print("release transaction health contract self-test OK")
 
 
 def _self_test() -> None:
@@ -251,6 +542,7 @@ def _self_test() -> None:
     failed_heartbeat["host"]["heartbeat"]["first_fire_ok"] = False
     _expect_rejected(failed_heartbeat, "current", strict_revision, "compat", "compat")
     _expect_rejected(failed_heartbeat, "rollback", strict_revision)
+    _transaction_self_test(strict, strict_revision, legacy)
     print("release health contract self-test OK")
 
 
