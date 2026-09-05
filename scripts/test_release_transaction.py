@@ -15,11 +15,13 @@ import stat
 import subprocess
 import sys
 import tempfile
+import textwrap
 import unittest
 from contextlib import ExitStack
 from unittest.mock import patch
 
 import release_transaction as transaction
+import validate_release_health as health_validator
 
 
 POSIX = sys.platform == "linux" and hasattr(os, "geteuid") and os.geteuid() == 0
@@ -28,6 +30,24 @@ BACKEND = "b" * 40
 PREVIOUS = "c" * 40
 TXN = f"run-31-2-{PORTAL}"
 PHASES = {"persona_schema": "compat", "persona_growth": "compat", "world_ledger": "compat"}
+RESERVED_PHASE = "LINGXI_WORLD_LEDGER_SCHEMA_PHASE"
+# 与真实 python-dotenv parse_stream 对照；只统计成功且具有赋值的键。
+DOTENV_CASES = [
+    ("单引号同值", "'" + RESERVED_PHASE + "'=compat\n", [RESERVED_PHASE]),
+    ("空值", "export '" + RESERVED_PHASE + "'=\n", [RESERVED_PHASE]),
+    ("无赋值", "'" + RESERVED_PHASE + "'\n", []),
+    ("双引号键是字面键", '"' + RESERVED_PHASE + '"=active\n', ['"' + RESERVED_PHASE + '"']),
+    ("多行单引号值", "NOTE='hello\n" + RESERVED_PHASE + "=active\nend'\n", ["NOTE"]),
+    ("多行双引号值", 'NOTE="hello\n' + RESERVED_PHASE + '=active\nend"\n', ["NOTE"]),
+    ("键跨物理行", "'NOTE\n" + RESERVED_PHASE + "'=value\n", ["NOTE\n" + RESERVED_PHASE]),
+    ("错误行恢复", "BAD='value' trailing\n'" + RESERVED_PHASE + "'=compat\n", [RESERVED_PHASE]),
+    *[("物理换行" + repr(end), "NOTE=value" + end + "export\t'" + RESERVED_PHASE + "'=compat" + end,
+       ["NOTE", RESERVED_PHASE]) for end in ("\r\n", "\r", "\n")],
+    *[("控制空白export" + repr(space), "export" + space + "'" + RESERVED_PHASE + "'" + space + "=compat\n",
+       [RESERVED_PHASE]) for space in ("\t", "\v", "\f", "\x85", "\u2028", "\u2029")],
+    *[("值内非物理换行" + repr(space), "NOTE=value" + space + RESERVED_PHASE + "=active\n", ["NOTE"])
+      for space in ("\v", "\f", "\x85", "\u2028", "\u2029")],
+]
 
 
 class FormatTests(unittest.TestCase):
@@ -72,6 +92,8 @@ class TransactionTests(unittest.TestCase):
         self.upload, self.rollback, self.candidate = transaction._locations(TXN)
         self.old = transaction.RELEASES_ROOT + "/release-previous"
         self.active = True
+        self.stopped_units: set[str] = set()
+        self.loaded_environment_files = False
         self.counter = 10
         self.epoch = "hb_" + "e" * 32
         self.events: list[str] = []
@@ -95,6 +117,8 @@ class TransactionTests(unittest.TestCase):
                     self.write(root + "/ops/apparmor/myagent-persona-parser", b"# fixture profile\n")
                     self.write(root + "/ops/nginx/hi-veblen.com.http.conf", self.nginx())
                     self.write(root + "/scripts/p6_heartbeat_watch.py", "# 独立网络观察器边界夹具\n".encode("utf-8"))
+                    for role in ("world", "gateway"):
+                        self.write(root + "/ops/systemd/myagent-" + role + ".service", self.unit_bytes(role=role))
         for slot, current in transaction.CURRENT.items():
             os.symlink(self.old + "/" + slot, self.path(current))
         for key, (path, _) in transaction.CONFIG.items():
@@ -102,7 +126,7 @@ class TransactionTests(unittest.TestCase):
                 available = transaction.CONFIG[key.replace("_enabled", "_available")][0]
                 os.symlink(available, self.path(path))
             elif key.endswith("_unit"):
-                self.write(path, self.unit_bytes())
+                self.write(path, self.unit_bytes(role=key.removesuffix("_unit")))
             elif key == "apparmor_profile":
                 self.write(path, b"# fixture profile\n")
             else:
@@ -144,9 +168,14 @@ class TransactionTests(unittest.TestCase):
         self.path(path).write_bytes(raw)
         self.path(path).chmod(mode)
 
-    def unit_bytes(self, phases: dict[str, str] | None = None) -> bytes:
+    def unit_command(self, role: str) -> str:
+        return "/opt/myagent/backend-current/.venv/bin/python -m " + ("brain.workspace.world_server" if role == "world" else
+               "uvicorn app:app --host 127.0.0.1 --port 8000 --workers 1 --proxy-headers --no-access-log --ws-max-size 16384")
+
+    def unit_bytes(self, phases: dict[str, str] | None = None, *, role: str = "world") -> bytes:
         phases = phases or PHASES
-        return ("[Service]\nEnvironment=LINGXI_PERSONA_SCHEMA_PHASE=" + phases["persona_schema"] +
+        return ("[Service]\nWorkingDirectory=/opt/myagent/backend-current" + ("/ui/backend" if role == "gateway" else "") +
+                "\nExecStart=" + self.unit_command(role) + "\nEnvironment=LINGXI_PERSONA_SCHEMA_PHASE=" + phases["persona_schema"] +
                 "\nEnvironment=LINGXI_PERSONA_GROWTH_PHASE=" + phases["persona_growth"] +
                 "\nEnvironment=LINGXI_WORLD_LEDGER_SCHEMA_PHASE=" + phases["world_ledger"] +
                 "\nEnvironment=LINGXI_PERSONA_GROWTH_CANARY_HASHES=\n").encode()
@@ -169,6 +198,7 @@ class TransactionTests(unittest.TestCase):
                 "persona_import": {"ready": True}, "persona_growth": {"capability": "autonomous-growth-v1", "phase": "compat",
                                                                         "runtime_ready": True, "ready": True},
                 "host": {"ok": True, "ready": True, "continuity_ok": True, "audition_isolation_ok": True,
+                         "world_ledger_schema_capability": "dual-read-v2-preserve", "world_ledger_schema_phase": "compat",
                          "backend_revision": revision, "heartbeat": {"running": True, "first_fire_completed": True,
                          "first_fire_ok": True, "in_flight_timed_out": False, "consecutive_failures": 0,
                          "run_epoch": self.epoch, "completed_fires": self.counter}}}
@@ -200,18 +230,33 @@ class TransactionTests(unittest.TestCase):
             if "DropInPaths" in arguments:
                 return b"\n"
             if "EnvironmentFiles" in arguments:
+                if self.loaded_environment_files:
+                    raw = self.path("/etc/systemd/system/" + arguments[2]).read_text(encoding="utf-8")
+                    return " ".join(line[len("EnvironmentFile="):].removeprefix("-") +
+                                    (" (ignore_errors=yes)" if line.startswith("EnvironmentFile=-") else " (ignore_errors=no)")
+                                    for line in raw.split("\n") if line.startswith("EnvironmentFile=")).encode()
                 return b"\n"
             if "Environment" in arguments:
                 unit = arguments[2]
                 raw = self.path("/etc/systemd/system/" + unit).read_text()
                 return " ".join(line[len("Environment="):] for line in raw.splitlines() if line.startswith("Environment=")).encode()
             if "ActiveState" in arguments:
-                return b"active\n" if self.active else b"inactive\n"
+                return b"active\n" if self.active and arguments[2] not in self.stopped_units else b"inactive\n"
+            if arguments[1] == "show":
+                unit, property_name = arguments[2], arguments[4]
+                role = "world" if unit == "myagent-world.service" else "gateway"
+                values = {"FragmentPath": "/etc/systemd/system/" + unit, "LoadState": "loaded", "NeedDaemonReload": "no",
+                          "WorkingDirectory": "/opt/myagent/backend-current" + ("/ui/backend" if role == "gateway" else ""),
+                          "ExecStart": "{ path=/opt/myagent/backend-current/.venv/bin/python ; argv[]=" + self.unit_command(role) +
+                          " ; ignore_errors=no ; start_time=[n/a] ; stop_time=[n/a] ; pid=0 ; code=(null) ; status=0 }"}
+                return (values.get(property_name, "") + "\n").encode()
             if arguments[1] == "stop":
                 self.active = False
+                self.stopped_units.update(arguments[2:])
             elif arguments[1] in ("start", "restart"):
                 self.active = True
-            elif arguments[1] == "is-active" and not self.active:
+                self.stopped_units.difference_update(arguments[2:])
+            elif arguments[1] == "is-active" and (not self.active or arguments[-1] in self.stopped_units):
                 raise transaction.TransactionError("E_SERVICES")
             return b""
         if arguments[0] == "nginx":
@@ -220,6 +265,7 @@ class TransactionTests(unittest.TestCase):
             return b""
         if arguments[0] == "bash":
             self.active = True
+            self.stopped_units.clear()
             return b""
         if "-c" in arguments and transaction.BACKEND_READ_GATES in arguments:
             return b""
@@ -328,6 +374,7 @@ class TransactionTests(unittest.TestCase):
         self.assertEqual(result["phase"], "restored")
         self.assertEqual(self.current_root("backend"), self.old + "/backend")
         self.active = True
+        self.stopped_units.clear()
         self.assertEqual(self.finalize()["outcome"], "rolled-back")
 
     def test_restore_intent_residue_rebinds_real_link(self):
@@ -521,6 +568,7 @@ class TransactionTests(unittest.TestCase):
             self.expect_code("E_COMMIT_UNCERTAIN", self.finalize)
         self.active = True
         self.path(transaction.MAINTENANCE_PATH).unlink()
+        self.stopped_units.clear()
         link = self.path(transaction.CURRENT["portal"])
         link.unlink()
         os.symlink(self.old + "/portal", link)
@@ -707,6 +755,7 @@ class TransactionTests(unittest.TestCase):
         self.path(self.upload + "/PRESERVE").unlink()
         self.path(transaction.MAINTENANCE_PATH).unlink()
         self.active = True
+        self.stopped_units.clear()
         with transaction._Fs() as fs, self.assertRaises((transaction.TransactionError, OSError)):
             transaction._resume(TXN, fs, self.lock_fd)
         self.assertFalse(self.active)
@@ -739,6 +788,204 @@ class TransactionTests(unittest.TestCase):
     def test_reserved_environment_key_blocks_capture(self):
         self.write(transaction.PROJECT_ROOT + "/.env", b"LINGXI_WORLD_LEDGER_SCHEMA_PHASE=active\n", 0o600)
         self.expect_code("E_PHASE", self.capture)
+
+    def test_dotenv_assignment_grammar(self):
+        for label, source, keys in DOTENV_CASES:
+            with self.subTest(label=label):
+                self.write(transaction.PROJECT_ROOT + "/.env", source.encode("utf-8"), 0o600)
+                with transaction._Fs() as fs:
+                    if RESERVED_PHASE in keys:
+                        self.expect_code("E_PHASE", lambda: transaction._unit_phases(fs))
+                    else:
+                        self.assertEqual(transaction._unit_phases(fs), (PHASES, []))
+
+    def test_host_world_ledger_is_required_and_consistent(self):
+        for field in ("world_ledger_schema_capability", "world_ledger_schema_phase"):
+            for value in (None, False, 0, [], "", "active", "dual-read-v1", "missing"):
+                with self.subTest(field=field, value=value):
+                    payload = self.health()
+                    if value == "missing":
+                        del payload["host"][field]
+                    else:
+                        payload["host"][field] = value
+                    with self.assertRaises(ValueError):
+                        health_validator.validate_transaction_payload(payload, PREVIOUS, PHASES, [])
+
+    def test_workflow_canary_before_ssh_remote_shell_reparse(self):
+        workflow = (Path(__file__).parents[1] / ".github/workflows/deploy.yml").read_text(encoding="utf-8")
+        step = workflow.split("- name: 维护窗口内协调切换并验证", 1)[1].split("run: |\n", 1)[1]
+        prefix = textwrap.dedent(step.split("<<'REMOTE'", 1)[0]) + "<<'REMOTE'\n"
+        # OpenSSH 将 host 后 argv 以空格拼为命令串，再交给远端登录 shell 解析。
+        # 本替身没有网络；攻击样本只含固定 printf，远端正文仅输出参数。
+        script = 'ssh() { shift; printf "TRANSPORT_REACHED\\n"; /bin/sh -c "$*"; }\n' + prefix
+        script += 'printf "REMOTE_ARG=%s\\n" "$@"\nREMOTE\n'
+        environment = {"PATH": "/usr/bin:/bin", "GITHUB_RUN_ID": "31", "GITHUB_RUN_ATTEMPT": "2", "GITHUB_SHA": PORTAL,
+                       "EXPECTED_ARCHIVE_SHA": "d" * 64, "EXPECTED_PERSONA_SCHEMA_PHASE": "active",
+                       "EXPECTED_PERSONA_GROWTH_PHASE": "canary", "EXPECTED_WORLD_LEDGER_SCHEMA_PHASE": "compat"}
+        valid = ("", "e" * 64, "e" * 64 + "," + "f" * 64)
+        invalid = ("e" * 64 + "\n$(printf REMOTE_REPARSE)", "$(printf REMOTE_REPARSE)", "`printf REMOTE_REPARSE`",
+                   "e" * 64 + "\n", "e" * 64 + "\r", "e" * 64 + "\t", "e" * 64 + "\v", "E" * 64, "-", ",", "e" * 63)
+        for value in (*valid, *invalid):
+            with self.subTest(value=repr(value)):
+                result = subprocess.run(["/bin/bash", "--noprofile", "--norc", "-e"], input=script, capture_output=True,
+                                        text=True, env={**environment, "PERSONA_GROWTH_CANARY_HASHES": value})
+                if value in valid:
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    self.assertEqual(result.stdout.splitlines(), ["TRANSPORT_REACHED", *["REMOTE_ARG=" + argument for argument in
+                                     ("31", "2", PORTAL, "d" * 64, "active", "canary", value or "-", "compat")]])
+                else:
+                    self.assertNotEqual(result.returncode, 0)
+                    self.assertNotIn("TRANSPORT_REACHED", result.stdout)
+
+    def prepare_stopped_exposing(self):
+        self.deploy()
+        original = self.http
+
+        def malformed(url, **kwargs):
+            return (200, b"[]", {}) if url == "https://hi-veblen.com/api/health" else original(url, **kwargs)
+
+        with patch.object(transaction, "_http", side_effect=malformed):
+            self.expect_code("E_COMMIT_UNCERTAIN", self.finalize)
+        self.assertEqual(self.receipt()["phase"], "exposing")
+        self.assertFalse(self.active)
+        self.recovery_unit_fixtures()
+
+    def recovery_unit_fixtures(self):
+        # 恢复夹具使用真实安装器的四变量替换和 EnvironmentFile 加载顺序。
+        self.loaded_environment_files = True
+        self.write(transaction.PROJECT_ROOT + "/.env", b"", 0o600)
+        for role in ("world", "gateway"):
+            files = b"EnvironmentFile=/opt/myagent/.env\nEnvironmentFile=/opt/myagent/backend-current/.release.env\n"
+            if role == "gateway":
+                files += b"EnvironmentFile=-/etc/myagent/admin-gateway.env\n"
+            unit = "myagent-" + role + ".service"
+            raw = self.unit_bytes(role=role) + files
+            self.write("/etc/systemd/system/" + unit, raw)
+            for key in ("LINGXI_PERSONA_SCHEMA_PHASE", "LINGXI_PERSONA_GROWTH_PHASE", "LINGXI_WORLD_LEDGER_SCHEMA_PHASE",
+                        "LINGXI_PERSONA_GROWTH_CANARY_HASHES"):
+                value = "" if key.endswith("HASHES") else "compat"
+                raw = raw.replace((key + "=" + value + "\n").encode(), (key + "=@" + key + "@\n").encode())
+            self.write(self.candidate + "/backend/ops/systemd/" + unit, raw)
+
+    def test_revalidate_commit_starts_only_same_bound_target(self):
+        self.prepare_stopped_exposing()
+        links = {slot: os.lstat(self.path(path)).st_ino for slot, path in transaction.CURRENT.items()}
+        self.events.clear()
+        with transaction._Fs() as fs:
+            self.assertEqual(transaction._resume(TXN, fs, self.lock_fd)["phase"], "closed")
+        self.assertTrue(self.active)
+        self.assertEqual({slot: os.lstat(self.path(path)).st_ino for slot, path in transaction.CURRENT.items()}, links)
+        self.assertFalse(any("restart " in event or event.startswith("command bash") for event in self.events))
+
+    def test_revalidate_commit_running_services_preserve_epoch(self):
+        self.prepare_stopped_exposing()
+        self.active = True
+        self.stopped_units.clear()
+        self.events.clear()
+        epoch = self.epoch
+        with transaction._Fs() as fs:
+            self.assertEqual(transaction._resume(TXN, fs, self.lock_fd)["phase"], "closed")
+        self.assertEqual(self.receipt()["terminal"]["proof"]["run_epoch"], epoch)
+        self.assertFalse(any(event.startswith("command systemctl " + verb) for event in self.events for verb in ("start ", "restart ", "stop ")))
+
+    def test_revalidate_committing_restarts_after_failed_terminal_publish(self):
+        self.deploy()
+        self.recovery_unit_fixtures()
+        advance = transaction._Transaction.advance
+
+        def fail_terminal(instance, record, old, identity, phase, **kwargs):
+            if phase == "terminal":
+                raise OSError("注入 committing 后 terminal 发布失败")
+            return advance(instance, record, old, identity, phase, **kwargs)
+
+        with patch.object(transaction._Transaction, "advance", new=fail_terminal):
+            self.expect_code("E_COMMIT_UNCERTAIN", self.finalize)
+        self.assertEqual(self.receipt()["phase"], "committing")
+        self.assertFalse(self.active)
+        self.events.clear()
+        with transaction._Fs() as fs:
+            self.assertEqual(transaction._resume(TXN, fs, self.lock_fd)["phase"], "closed")
+        self.assertEqual(self.current_root("backend"), self.candidate + "/backend")
+        self.assertFalse(any("restart " in event or event.startswith("command bash") for event in self.events))
+
+    def test_revalidate_commit_rejects_loaded_unit_drift_before_start(self):
+        self.prepare_stopped_exposing()
+        original = self.command
+        for field, value in (("FragmentPath", "/etc/systemd/system/unrelated.service"), ("NeedDaemonReload", "yes"),
+                             ("WorkingDirectory", self.old + "/backend"), ("ExecStart", "{ path=/bin/true ; argv[]=/bin/true ; ignore_errors=no ; }"),
+                             ("ExecStartPre", "{ path=/bin/true ; argv[]=/bin/true ; ignore_errors=no ; }"), ("DropInPaths", "/tmp/override.conf"),
+                             ("EnvironmentFiles", "/opt/myagent/.env (ignore_errors=yes)"), ("ActiveState", "activating")):
+            with self.subTest(field=field):
+                def drift(arguments, **kwargs):
+                    if arguments[:3] == ["systemctl", "show", "myagent-gateway.service"] and field in arguments:
+                        return value.encode()
+                    return original(arguments, **kwargs)
+
+                self.events.clear()
+                with patch.object(transaction, "_command", side_effect=drift), transaction._Fs() as fs:
+                    with self.assertRaises(transaction.TransactionError):
+                        transaction._resume(TXN, fs, self.lock_fd)
+                self.assertFalse(any(event.startswith("command systemctl start ") for event in self.events))
+                self.assertEqual(self.receipt()["phase"], "exposing")
+                self.assertTrue(self.path(transaction.MAINTENANCE_PATH).exists())
+
+    def test_revalidate_commit_rejects_template_drift_and_failed_start(self):
+        self.prepare_stopped_exposing()
+        path = transaction.CONFIG["gateway_unit"][0]
+        raw = self.path(path).read_bytes()
+        self.write(path, raw + b"ExecStartPre=/bin/true\n")
+        self.events.clear()
+        with transaction._Fs() as fs:
+            self.expect_code("E_BINDING", lambda: transaction._resume(TXN, fs, self.lock_fd))
+        self.assertFalse(any(event.startswith("command systemctl start ") for event in self.events))
+        self.write(path, raw)
+        original = self.command
+
+        def fail_start(arguments, **kwargs):
+            if arguments[:2] == ["systemctl", "start"]:
+                raise transaction.TransactionError("E_SERVICES")
+            return original(arguments, **kwargs)
+
+        with patch.object(transaction, "_command", side_effect=fail_start), transaction._Fs() as fs:
+            self.expect_code("E_SERVICES", lambda: transaction._resume(TXN, fs, self.lock_fd))
+        self.assertFalse(self.active)
+        self.assertEqual(self.receipt()["phase"], "exposing")
+
+    def test_revalidate_commit_pointer_drift_never_starts(self):
+        self.prepare_stopped_exposing()
+        link = self.path(transaction.CURRENT["backend"])
+        link.unlink()
+        os.symlink(self.old + "/backend", link)
+        self.events.clear()
+        with transaction._Fs() as fs, self.assertRaises(transaction.TransactionError):
+            transaction._resume(TXN, fs, self.lock_fd)
+        self.assertFalse(any(event.startswith("command systemctl start ") for event in self.events))
+        self.assertEqual(self.current_root("backend"), self.old + "/backend")
+
+    def test_revalidate_commit_starts_only_inactive_service(self):
+        self.prepare_stopped_exposing()
+        self.active = True
+        self.stopped_units = {"myagent-gateway.service"}
+        self.events.clear()
+        with transaction._Fs() as fs:
+            self.assertEqual(transaction._resume(TXN, fs, self.lock_fd)["phase"], "closed")
+        self.assertEqual([event for event in self.events if event.startswith("command systemctl start ")],
+                         ["command systemctl start myagent-gateway.service"])
+
+    def test_revalidate_commit_start_success_but_service_exited_is_rejected(self):
+        self.prepare_stopped_exposing()
+        original = self.command
+
+        def exits_immediately(arguments, **kwargs):
+            if arguments == ["systemctl", "start", "myagent-gateway.service"]:
+                return b""
+            return original(arguments, **kwargs)
+
+        with patch.object(transaction, "_command", side_effect=exits_immediately), transaction._Fs() as fs:
+            self.expect_code("E_GATES", lambda: transaction._resume(TXN, fs, self.lock_fd))
+        self.assertFalse(self.active)
+        self.assertEqual(self.receipt()["phase"], "exposing")
+        self.assertTrue(self.path(transaction.MAINTENANCE_PATH).exists())
 
     def test_watcher_contract_is_not_single_health_sample(self):
         self.deploy()

@@ -78,7 +78,9 @@ workflow 使用的敏感项包括跨仓库只读 token、服务器主机、部�
 
 旧两行 previous 只允许首次不中断的 compat 发布；它不具备自动业务回滚资格。其失败或中断且没有可信 deployed 终态时必须隔离并人工恢复。已有可信 deployed 终态则可使用回执中的完整记录副本续清理，即使物理 previous 记录已经删除。
 
-正式回执为 `exposing/committing` 时禁止切回旧 writer。恢复只复核同一绑定目标；失败则重新隔离、保留记录与 `PRESERVE` 并等待人工处理。写入、rename 或 fsync 异常统一先按磁盘正式回执分类，临时文件不能提升为正式记录，非零退出不能作为回滚授权。
+正式回执为 `exposing/committing` 时禁止切回旧 writer。恢复先建立维护阻断，复核同一绑定目标和三个 current 的身份，将该目标内两份 unit 模板按安装器的既有四个变量渲染并与实际文件逐字节比较，再检查 systemd 的加载路径、无待重载状态、WorkingDirectory、ExecStart、环境文件和无附加启动命令。`committing` 还须与既有 proof 的 unit 摘要一致。两个 unit 都通过且每次启动前复验后，只对 inactive/failed 服务执行 start；已运行服务保留当前 epoch。随后重新完成全部 finalize 门。此路径不安装依赖或 unit、不 daemon-reload、不改变 current，不引入重启策略或 P6 默认值。材料不足、未知模板、加载信息不匹配或验证失败时重新隔离并保留现场。
+
+写入、rename 或 fsync 异常统一先按磁盘正式回执分类，临时文件不能提升为正式记录，非零退出不能作为回滚授权。
 
 可信 `terminal` 及后继只续清理；清理失败不得再次停服务或业务回滚。`closed` 历史不触碰后续 current 或新 lease。`/run` 重建只允许在唯一锁内按合法记录续接同一事务，不按 PID、时长或目录时间抢占。SIGKILL 本身无法即时执行封流；本实现没有独立即时封流监督器。
 
@@ -113,6 +115,10 @@ release 回收不删除共享 venv。计划只在可信终态之后生成，保�
 ## 离线验证与未验证边界
 
 在 root Linux 私有临时根运行 `python3 -B scripts/test_release_transaction.py --require-posix`。测试使用真实目录 fd、no-follow、flock、rename、fsync 和 SIGKILL；仅私有根入口、独立制品来源、服务和网络边界使用夹具。Windows 不能替代这些 POSIX 门，CI 不允许全量 skip 后报成功。
+
+canary 原始值在 SSH 之前必须整串匹配空值或逗号分隔的 64 位小写十六进制；测试直接提取 workflow 的本地段，用无网络替身模拟 OpenSSH 拼接 argv 后的远端 shell 重解析，并校验第八参数。事务健康门要求宿主 WorldLedger capability/phase 为真实字符串，与顶层和事务期望一致。后加载环境文件的保留键检查按 python-dotenv 的赋值语法处理单引号键、export、跨物理行值和 CR/LF；VT、NEL、U+2028、U+2029 不作为物理换行。缺赋值与空赋值有别，双引号键按 dotenv 的字面键语义处理。运行时仅使用标准库。
+
+以下三个机制仍待独立裁决与实现，当前不具备解除发布 HOLD 的资格：无 lease 且回执损坏时如何独立证明当前 writer 属于旧事务；workflow 早期 root 写入如何先绑定受信祖先目录；多个 SSH 进程及交接中的解锁间隙如何满足同一 flock 连续占有。不能用全局停服补第一个缺口，否则旧 closed A 的坏回执可能干扰后续合法 B；也不能仅删除 `flock -u`，否则 driver 重新打开锁会与现有锁冲突。这些是将来启用路径的风险，标准 deploy 当前仍在 P6 policy 门无条件 HOLD，本轮未运行生产验证。
 
 CI 同时保留 D050 helper、健康/Nginx 自检及持久配置归档轮转测试。事务测试中的观察参数和外部 watcher 替身只用于状态机故障注入，不构成实际 P6 连续观察证明。尚未验证生产 SSH、服务切换、真实数据、provider 或部署。待策略冻结后，必须完成实际 watcher 接线与连续证据校验、精确提交 CI，再另行评审发布资格。
 

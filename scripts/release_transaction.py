@@ -824,6 +824,50 @@ def _health(revision: str, phases: dict[str, str] | None, hashes: list[str] | No
         raise TransactionError("E_GATES", "健康响应未通过完整契约") from error
 
 
+def _dotenv_assignment_keys(raw: bytes) -> list[str]:
+    """按 python-dotenv 的物理记录语法扫描赋值键，不展开或输出环境值。"""
+    text = raw.decode("utf-8")
+    position = 0
+    keys = []
+
+    def consume(pattern: str) -> re.Match[str]:
+        nonlocal position
+        match = re.compile(pattern, re.MULTILINE).match(text, position)
+        if match is None:
+            raise ValueError("dotenv 记录语法无效")
+        position = match.end()
+        return match
+
+    while position < len(text):
+        try:
+            consume(r"\s*")
+            if position == len(text):
+                break
+            consume(r"(?:export[^\S\r\n]+)?")
+            first = text[position:position + 1]
+            key = None if first == "#" else consume(r"'([^']+)'" if first == "'" else r"([^=\#\s]+)")[1]
+            consume(r"[^\S\r\n]*")
+            assigned = text[position:position + 1] == "="
+            if assigned:
+                consume(r"=[^\S\r\n]*")
+                quote = text[position:position + 1]
+                if quote == "'":
+                    consume(r"'((?:\\'|[^'])*)'")
+                elif quote == '"':
+                    consume(r'"((?:\\"|[^"])*)"')
+                else:
+                    consume(r"[^\r\n]*")
+            consume(r"(?:[^\S\r\n]*#[^\r\n]*)?")
+            consume(r"[^\S\r\n]*(?:\r\n|\n|\r|$)")
+            if assigned and key is not None:
+                keys.append(key)
+        except ValueError:
+            # 与 parse_stream 一致：错误后从当前游标恢复至物理行尾。
+            # VT/NEL/U+2028/U+2029 不是换行，合法引号值可跨 CR/LF。
+            consume(r"[^\r\n]*(?:\r|\n|\r\n)?")
+    return keys
+
+
 def _unit_phases(fs: _Fs) -> tuple[dict[str, str], list[str]]:
     names = {"LINGXI_PERSONA_SCHEMA_PHASE": "persona_schema", "LINGXI_PERSONA_GROWTH_PHASE": "persona_growth",
              "LINGXI_WORLD_LEDGER_SCHEMA_PHASE": "world_ledger"}
@@ -848,9 +892,8 @@ def _unit_phases(fs: _Fs) -> tuple[dict[str, str], list[str]]:
             if optional and not fs.exists(path):
                 continue
             environment_raw, _ = fs.read(path)
-            for line in environment_raw.decode("utf-8").splitlines():
-                match = re.match(r"\s*(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*=", line)
-                _require(match is None or match[1] not in reserved, "E_PHASE", "后加载环境文件定义了发布保留键")
+            _require(not set(_dotenv_assignment_keys(environment_raw)).intersection(reserved),
+                     "E_PHASE", "后加载环境文件定义了发布保留键")
         raw, _ = fs.read("/etc/systemd/system/" + unit)
         entries = shlex.split(_command(["systemctl", "show", unit, "-p", "Environment", "--value"]).decode("utf-8"))
         environment: dict[str, str] = {}
@@ -1722,6 +1765,69 @@ def _open_lease(fs: _Fs) -> int | None:
         return os.dup(fd)
 
 
+def _revalidate_target_services(transaction: _Transaction) -> dict[str, str]:
+    """恢复前证明已加载 unit 仍启动同一绑定目标；未知模板或加载状态保持隔离。"""
+    fs = transaction.fs
+    record, receipt, _ = transaction.load()
+    _require(receipt["phase"] in ("exposing", "committing"), "E_STATE")
+    rollback = receipt["operation"] == "rollback"
+    bundle = record["previous" if rollback else "candidate"]
+    phases = record["previous_phase" if rollback else "phase"]
+    hashes = record["previous_canary_hashes" if rollback else "canary_hashes"]
+    _verify_bundle(fs, bundle)
+    _verify_intended_links(transaction, record, receipt, complete=True)
+    _require(_unit_phases(fs) == (phases, hashes), "E_PHASE")
+    _require(fs.read(MAINTENANCE_PATH)[0] == b"", "E_GATES")
+    _command(["nginx", "-t"])
+    _require(_http("https://lingxi.hi-veblen.com/api/session", method="POST", data=b'{"token":"release-preflight-invalid"}',
+                   headers={"Content-Type": "application/json"})[0] == 503, "E_GATES")
+    _require(_http("https://lingxi.hi-veblen.com/ws/release-maintenance-probe")[0] == 503, "E_GATES")
+    replacements = {"LINGXI_PERSONA_SCHEMA_PHASE": phases["persona_schema"], "LINGXI_PERSONA_GROWTH_PHASE": phases["persona_growth"],
+                    "LINGXI_WORLD_LEDGER_SCHEMA_PHASE": phases["world_ledger"], "LINGXI_PERSONA_GROWTH_CANARY_HASHES": ",".join(hashes)}
+    python = CURRENT["backend"] + "/.venv/bin/python"
+    commands = {"world": python + " -m brain.workspace.world_server",
+                "gateway": python + " -m uvicorn app:app --host 127.0.0.1 --port 8000 --workers 1 --proxy-headers --no-access-log --ws-max-size 16384"}
+    states = {}
+    for role, command in commands.items():
+        unit = "myagent-" + role + ".service"
+        path = CONFIG[role + "_unit"][0]
+
+        def show(property_name: str) -> str:
+            return _command(["systemctl", "show", unit, "-p", property_name, "--value"]).decode("utf-8").strip()
+
+        # 使用绑定 release 内的模板及原安装器的四项纯字节替换，不安装或重载 unit。
+        rendered, _ = fs.read(bundle["backend"]["directory"]["path"] + "/ops/systemd/" + unit)
+        for key, value in replacements.items():
+            rendered = rendered.replace(("@" + key + "@").encode("ascii"), value.encode("ascii"))
+        raw, identity = fs.read(path)
+        _require(raw == rendered and stat.S_IMODE(identity["mode"]) == 0o644, "E_BINDING")
+        if receipt["phase"] == "committing":
+            _require(_digest(raw) == receipt["terminal"]["proof"]["unit_sha256"][role], "E_DRIFT")
+        working_directory = CURRENT["backend"] + ("/ui/backend" if role == "gateway" else "")
+        lines = raw.decode("utf-8").split("\n")
+        _require(lines.count("WorkingDirectory=" + working_directory) == 1 and lines.count("ExecStart=" + command) == 1,
+                 "E_BINDING")
+        for property_name, expected in {"FragmentPath": path, "SourcePath": "", "DropInPaths": "", "LoadState": "loaded",
+                                        "NeedDaemonReload": "no", "WorkingDirectory": working_directory,
+                                        "ExecCondition": "", "ExecStartPre": "", "ExecStartPost": "", "ExecStop": "", "ExecStopPost": ""}.items():
+            _require(show(property_name) == expected, "E_BINDING", "实际 unit 加载信息不属于绑定目标")
+        loaded = show("ExecStart")
+        prefix = "{ path=" + python + " ; argv[]=" + command + " ; ignore_errors=no ; "
+        _require(loaded.startswith(prefix) and re.fullmatch(
+            r"start_time=[^;{}]* ; stop_time=[^;{}]* ; pid=[0-9]+ ; code=[^;{}]* ; status=[^;{}]* \}", loaded[len(prefix):]) is not None,
+            "E_BINDING", "实际 ExecStart 不属于绑定目标")
+        expected_files = []
+        for line in lines:
+            if line.startswith("EnvironmentFile="):
+                value = line[len("EnvironmentFile="):]
+                expected_files.extend([value.removeprefix("-"), "(ignore_errors=yes)" if value.startswith("-") else "(ignore_errors=no)"])
+        _require(shlex.split(show("EnvironmentFiles")) == expected_files, "E_BINDING")
+        states[unit] = show("ActiveState")
+        _require(states[unit] in ("active", "inactive", "failed"), "E_SERVICES")
+        _command(["systemctl", "is-enabled", "--quiet", unit])
+    return states
+
+
 def _resume(txn_id: str, fs: _Fs, lock_fd: int, *, cleanup_only: bool = False) -> dict[str, Any]:
     lease_fd = _open_lease(fs)
     business_unfinished = False
@@ -1764,6 +1870,11 @@ def _resume(txn_id: str, fs: _Fs, lock_fd: int, *, cleanup_only: bool = False) -
             _command(["nginx", "-t"])
             _command(["systemctl", "reload", "nginx"])
             _command(["systemctl", "restart", "myagent-world.service", "myagent-gateway.service"])
+        elif action == "revalidate-commit":
+            # 先验证两个 unit；每次 start 前重验同目标。已运行服务保留当前 epoch。
+            for unit in _revalidate_target_services(transaction):
+                if _revalidate_target_services(transaction)[unit] in ("inactive", "failed"):
+                    _command(["systemctl", "start", unit])
         return finalize_transaction(txn_id=txn_id, lock_fd=lock_fd, lease_fd=lease_fd)
     except (OSError, TransactionError):
         if business_unfinished and not cleanup_only:

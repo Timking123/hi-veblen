@@ -847,7 +847,14 @@ jobs:
           EXPECTED_ARCHIVE_SHA: ${{ steps.release.outputs.package_sha256 }}
           PERSONA_GROWTH_CANARY_HASHES: ${{ vars.LINGXI_PERSONA_GROWTH_CANARY_HASHES }}
         run: |
-          persona_growth_canary_arg="${PERSONA_GROWTH_CANARY_HASHES:--}"
+          set -euo pipefail
+          # SSH 会拼接 argv 并由远端 shell 重解析；必须先校验整个原始字符串。
+          persona_growth_canary_arg="${PERSONA_GROWTH_CANARY_HASHES-}"
+          if [[ -n "$persona_growth_canary_arg" && ! "$persona_growth_canary_arg" =~ ^[0-9a-f]{64}(,[0-9a-f]{64})*$ ]]; then
+            echo "Persona growth canary 摘要格式无效。" >&2
+            exit 1
+          fi
+          persona_growth_canary_arg="${persona_growth_canary_arg:--}"
           ssh hi-veblen-production 'bash -se --' \
             "$GITHUB_RUN_ID" "$GITHUB_RUN_ATTEMPT" "$GITHUB_SHA" \
             "$EXPECTED_ARCHIVE_SHA" "$EXPECTED_PERSONA_SCHEMA_PHASE" \

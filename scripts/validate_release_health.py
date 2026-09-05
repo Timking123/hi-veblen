@@ -173,6 +173,14 @@ def validate_transaction_payload(
         data.get("world_ledger_schema_phase") == phases["world_ledger"],
         "World ledger schema phase 不匹配",
     )
+    for name, expected_value in (
+        ("world_ledger_schema_capability", "dual-read-v2-preserve"),
+        ("world_ledger_schema_phase", phases["world_ledger"]),
+    ):
+        _require(
+            type(host.get(name)) is str and host[name] == expected_value == data.get(name),
+            f"宿主 {name} 缺失或与顶层及事务期望不一致",
+        )
     _require(persona_import.get("ready") is True, "角色设定导入能力尚未 ready")
     _require(
         persona_growth.get("capability") == "autonomous-growth-v1",
@@ -234,6 +242,8 @@ def _transaction_self_test(
     payload = copy.deepcopy(strict)
     payload["world_ledger_schema_capability"] = "dual-read-v2-preserve"
     payload["world_ledger_schema_phase"] = "compat"
+    payload["host"]["world_ledger_schema_capability"] = "dual-read-v2-preserve"
+    payload["host"]["world_ledger_schema_phase"] = "compat"
     payload["persona_growth"]["runtime_ready"] = True
     epoch = "hb_" + "a" * 32
     payload["host"]["heartbeat"].update(run_epoch=epoch, completed_fires=0)
@@ -260,6 +270,7 @@ def _transaction_self_test(
                 candidate["persona_schema_phase"] = schema
                 candidate["persona_growth"]["phase"] = growth
                 candidate["world_ledger_schema_phase"] = world
+                candidate["host"]["world_ledger_schema_phase"] = world
                 hashes = ["a" * 64] if growth == "canary" else []
                 if schema == "compat" and growth in {"canary", "active"}:
                     rejected(candidate, candidate_phases, hashes)
@@ -290,6 +301,8 @@ def _transaction_self_test(
         ("host",),
         ("host", "ok"),
         ("host", "backend_revision"),
+        ("host", "world_ledger_schema_capability"),
+        ("host", "world_ledger_schema_phase"),
         ("host", "ready"),
         ("host", "continuity_ok"),
         ("host", "audition_isolation_ok"),
