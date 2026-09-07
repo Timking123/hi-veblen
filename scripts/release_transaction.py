@@ -13,13 +13,17 @@ import os
 import re
 import secrets
 import shlex
+import signal
 import stat
 import subprocess
 import sys
+import threading
+import time
+import types
 import urllib.error
 import urllib.request
 from contextlib import contextmanager
-from typing import Any, Iterator
+from typing import Any, Callable, Iterator
 
 try:
     import fcntl
@@ -68,9 +72,18 @@ DIR_FD_SUPPORTED = all(function in os.supports_dir_fd
                        for function in (os.open, os.stat, os.readlink, os.unlink, os.mkdir, os.rename))
 
 
+# 此状态只属于当前控制器；watcher 动态模块重新加载也不能复活旧观察。
+_P1_GENERATION = object()
+# 调用范围捕获此身份；取消/HOLD事件不能被close异常覆盖成普通业务失败。
+_P1_CLEANUP_EVENT = object()
+_P1_EPOCHS: dict[str, str] = {}
+_P1_STARTS: dict[str, str | None] = {}
+_P1_INSTANCES: dict[str, dict[str, Any]] = {}
+
+
 def _observation_policy() -> tuple[float, float, float]:
-    # D084 已冻结 P1 政策；完整观察门尚未接入，不能借用 watcher 的通用默认值。
-    raise TransactionError("E_GATES", "HOLD：P1 完整发布观察门尚未实现")
+    # D084/P1 的确定性实现不等于 pin、作业容量及真实发布门已完成。
+    raise TransactionError("E_GATES", "HOLD：P1 真实环境及完整发布集成门尚未通过")
 
 
 class TransactionError(RuntimeError):
@@ -79,6 +92,20 @@ class TransactionError(RuntimeError):
     def __init__(self, code: str, message: str = "发布事务校验失败") -> None:
         self.code = code
         super().__init__(f"{code}: {message}")
+
+
+class _P1ObservationFailure(TransactionError):
+    """普通观察失败；不会授权顶层对同一目标自动重观。"""
+
+    def __init__(self) -> None:
+        super().__init__("E_GATES", "P1 本轮观察或完成证据失败，保留现场")
+
+
+class _P1HoldReleased(TransactionError):
+    """已知 worker 曾收束不确定；证明关闭后也只允许失败退出。"""
+
+    def __init__(self) -> None:
+        super().__init__("E_GATES", "HOLD：本次观察已要求停止，禁止继续业务")
 
 
 def _require(condition: bool, code: str, message: str = "发布事务校验失败") -> None:
@@ -296,7 +323,8 @@ class _Fs:
             os.fsync(fd)
         return self.link(path)
 
-    def write(self, path: str, raw: bytes, *, expected: dict[str, int] | None = None, mode: int = 0o600) -> None:
+    def write(self, path: str, raw: bytes, *, expected: dict[str, int] | None = None, mode: int = 0o600,
+              before_replace: Callable[[], None] | None = None) -> None:
         with self.parent(path) as (fd, name):
             temporary = f".{name}.{secrets.token_hex(16)}.tmp"
             opened = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC, mode, dir_fd=fd)
@@ -316,13 +344,18 @@ class _Fs:
                 _require(not self.exists(path), "E_STATE", "拒绝覆盖已有首次发布文件")
             else:
                 _same(_identity(os.stat(name, dir_fd=fd, follow_symlinks=False)), expected)
+            if before_replace is not None:
+                before_replace()
             os.rename(temporary, name, src_dir_fd=fd, dst_dir_fd=fd)
             os.fsync(fd)
 
-    def remove(self, path: str, expected: dict[str, int], *, directory: bool = False) -> None:
+    def remove(self, path: str, expected: dict[str, int], *, directory: bool = False,
+               before_remove: Callable[[], None] | None = None) -> None:
         with self.parent(path) as (fd, name):
             actual = _identity(os.stat(name, dir_fd=fd, follow_symlinks=False))
             _same(actual, expected, directory_children=directory)
+            if before_remove is not None:
+                before_remove()
             if directory:
                 os.rmdir(name, dir_fd=fd)
             else:
@@ -684,6 +717,8 @@ class _Transaction:
         self.upload, self.rollback, self.candidate_path = _locations(txn_id)
         self.record_path = self.rollback + "/" + RECORD_NAME
         self.receipt_path = self.upload + "/" + RECEIPT_NAME
+        self.p1_freshness: Callable[[], None] | None = None
+        self.p1_exposed = False
         _lock(fs, lock_fd)
 
     def load(self) -> tuple[dict[str, Any], dict[str, Any], dict[str, int]]:
@@ -733,7 +768,10 @@ class _Transaction:
         _validate_receipt(receipt, record, self.txn_id)
         raw = _canonical(receipt)
         _require(len(raw) <= 4 * 1024 * 1024, "E_RECEIPT_INVALID")
-        self.fs.write(self.receipt_path, raw, expected=identity)
+        if receipt["phase"] == "terminal":
+            _require(callable(self.p1_freshness), "E_GATES", "业务终态缺少本次观察闭包")
+        self.fs.write(self.receipt_path, raw, expected=identity,
+                      before_replace=self.p1_freshness if receipt["phase"] == "terminal" else None)
         return self.fs.info(self.receipt_path)
 
     def advance(self, record: dict[str, Any], old: dict[str, Any], identity: dict[str, int], phase: str,
@@ -1009,7 +1047,9 @@ def capture_previous(*, txn_id: str, candidate_revision: str, package_sha256: st
             _require(candidate["backend"]["revision"] == candidate_revision, "E_BINDING")
             _require(not legacy or phases["world_ledger"] == "compat", "E_FLOOR")
             previous_phases, previous_hashes = (None, None) if legacy else _unit_phases(fs)
-            _health(previous["backend"]["revision"], previous_phases, previous_hashes)
+            _, previous_epoch = _health(previous["backend"]["revision"], previous_phases, previous_hashes)
+            if previous_epoch is not None:
+                _P1_EPOCHS[txn_id] = previous_epoch
             loaded = _apparmor_loaded()
             fs.mkdir(transaction.rollback)
             backup = _snapshot_config(transaction)
@@ -1260,42 +1300,328 @@ def _isolate_if_uncommitted(transaction: _Transaction, lease_fd: int | None) -> 
     _isolate(transaction.fs)
 
 
-def _watch_heartbeat(transaction: _Transaction, backend: dict[str, Any], epoch: str) -> str:
-    hours, interval, timeout = _observation_policy()
-    _require(all(type(value) in (int, float) and math.isfinite(value) and value > 0
-                 for value in (hours, interval, timeout)), "E_ARGUMENT")
-    output = transaction.rollback + "/.p6-heartbeat-watch." + secrets.token_hex(16) + ".jsonl"
-    backend_path = backend["directory"]["path"]
-    watcher = backend_path + "/scripts/p6_heartbeat_watch.py"
-    transaction.fs.read(watcher)
-    raw = _command([backend_path + "/.venv/bin/python", "-I", "-B", watcher,
-                    "--gateway", "http://127.0.0.1:8000", "--hours", str(hours), "--interval", str(interval),
-                    "--timeout", str(timeout), "--expected-revision", backend["revision"], "--output", output],
-                   timeout=math.ceil(hours * 3600 + timeout + 30))
+def _p1_starting(txn_id: str) -> None:
+    """合法启动批次也先废弃当前控制器的旧窗口；不产生新启动权限。"""
+    global _P1_GENERATION
+    _P1_GENERATION = object()
+    _P1_STARTS[txn_id] = _P1_EPOCHS.get(txn_id)
+
+
+def _p1_configuration(fs: _Fs) -> dict[str, Any]:
+    result = {}
+    for key, (path, _) in CONFIG.items():
+        if not fs.exists(path):
+            result[key] = None
+        elif stat.S_ISLNK(fs.info(path)["mode"]):
+            result[key] = fs.link(path)
+        else:
+            result[key] = fs.file_image(path)
+    return result
+
+
+def _p1_sample(raw: bytes) -> None:
+    """父级只收严格现有v2样本；P1专用失败不自造公开形状。"""
+    sample = _decode_json(raw, 6 * 1024 * 1024 + 4096, "E_GATES")
+    common = {"schema_version", "at_unix", "elapsed_s", "gateway", "ok", "latency_s", "run_epoch", "freshness_failure"}
+    _require(sample.get("schema_version") == "p6-heartbeat-watch-v2"
+             and sample.get("gateway") == "http://127.0.0.1:8000" and type(sample.get("ok")) is bool, "E_GATES")
+    for key in ("at_unix", "elapsed_s", "latency_s"):
+        value = sample.get(key)
+        _require(type(value) in (float, int) and math.isfinite(value) and value >= 0, "E_GATES")
+    epoch = sample.get("run_epoch")
+    _require(epoch is None or (type(epoch) is str and re.fullmatch(r"hb_[0-9a-f]{32}", epoch) is not None), "E_GATES")
+    failures = {"request_timeout", "request_failed", "http_status_invalid", "json_invalid", "health_shape_invalid",
+                "heartbeat_epoch_invalid", "backend_revision_mismatch", "heartbeat_not_ready", "heartbeat_counter_regressed",
+                "heartbeat_counter_stalled", "heartbeat_run_changed"}
+    failure = sample.get("freshness_failure")
+    _require(failure is None or (type(failure) is str and failure in failures), "E_GATES")
+    if "data" in sample:
+        _keys(sample, common | {"status", "data"}, "E_GATES")
+        _require(type(sample["status"]) is int and sample["status"] == 200 and type(sample["data"]) is dict, "E_GATES")
+        _require(not sample["ok"] or (failure is None and epoch is not None), "E_GATES")
+    elif "status" in sample:
+        _keys(sample, common | {"status", "error"}, "E_GATES")
+        _require(type(sample["status"]) is int and 100 <= sample["status"] <= 599, "E_GATES")
+        expected = {"json_invalid", "health_shape_invalid"} if sample["status"] == 200 else {"http_status_invalid"}
+        _require(sample["error"] in expected, "E_GATES")
+    else:
+        _keys(sample, common | {"error"}, "E_GATES")
+        _require(sample["error"] in {"request_timeout", "request_failed"}, "E_GATES")
+    if "error" in sample:
+        _require(sample["ok"] is False and epoch is None and failure == sample["error"], "E_GATES")
+
+
+class _P1SampleSink:
+    """唯一fd追加并验证完整字节；关闭后只用冻结身份和摘要复验。"""
+
+    def __init__(self, fs: _Fs, path: str):
+        self.fs, self.path = fs, path
+        self.fd: int | None = None
+        self.parent: int | None = None
+        self.identity: dict[str, int] | None = None
+        self.length = 0
+        self.digest = hashlib.sha256()
+        self.failed = False
+
+    def __enter__(self) -> _P1SampleSink:
+        with self.fs.parent(self.path) as (parent, name):
+            self.parent = os.dup(parent)
+            try:
+                self.fd = os.open(name, os.O_RDWR | os.O_APPEND | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC,
+                                  0o600, dir_fd=self.parent)
+                os.fchmod(self.fd, 0o600)
+                self.identity = _identity(os.fstat(self.fd))
+                _validate_identity(self.identity, "file")
+                os.fsync(self.fd)
+                os.fsync(self.parent)
+                self.verify()
+            except BaseException:
+                self.__exit__()
+                raise
+        return self
+
+    def __exit__(self, *_: Any) -> None:
+        fd, self.fd = self.fd, None
+        parent, self.parent = self.parent, None
+        try:
+            if fd is not None:
+                os.close(fd)
+        finally:
+            if parent is not None:
+                os.close(parent)
+
+    def verify(self) -> None:
+        _require(not self.failed and self.identity is not None, "E_GATES")
+        if self.fd is not None:
+            _same(_identity(os.fstat(self.fd)), self.identity)
+            _require(os.fstat(self.fd).st_size == self.length, "E_DRIFT")
+        # 按已确认追加长度分块复验，不把未获批准的全局B/C容量当作P1样本上限。
+        with self.fs.parent(self.path) as (parent, name):
+            _same(_identity(os.stat(name, dir_fd=parent, follow_symlinks=False)), self.identity)
+            fd = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC | os.O_NONBLOCK, dir_fd=parent)
+            try:
+                _same(_identity(os.fstat(fd)), self.identity)
+                _require(os.fstat(fd).st_size == self.length, "E_DRIFT")
+                digest, remaining = hashlib.sha256(), self.length
+                while remaining:
+                    chunk = os.read(fd, min(65536, remaining))
+                    _require(bool(chunk), "E_DRIFT")
+                    digest.update(chunk)
+                    remaining -= len(chunk)
+                _require(os.read(fd, 1) == b"" and digest.hexdigest() == self.digest.hexdigest(), "E_DRIFT")
+                _same(_identity(os.fstat(fd)), self.identity)
+                _require(os.fstat(fd).st_size == self.length, "E_DRIFT")
+                _same(_identity(os.stat(name, dir_fd=parent, follow_symlinks=False)), self.identity)
+            finally:
+                os.close(fd)
+
+    def append(self, raw: bytes) -> None:
+        try:
+            _require(type(raw) is bytes and self.fd is not None, "E_GATES")
+            _p1_sample(raw)
+            self.verify()
+            _require(os.write(self.fd, raw) == len(raw), "E_IO", "P1样本短写，保留失败材料")
+            self.length += len(raw)
+            self.digest.update(raw)
+            os.fsync(self.fd)
+            self.verify()
+        except BaseException:
+            self.failed = True
+            raise
+
+
+def _p1_hold_worker(error: BaseException) -> None:
+    """在任何外层finally之前保留owner和控制资源，只回收已知子步骤。"""
+    global _P1_CLEANUP_EVENT
+    _P1_CLEANUP_EVENT = object()
+    # P1入口先确认主线程/Linux；HOLD期间常规中断不能使锁先于worker释放。
+    blocked = {signal.SIGINT, signal.SIGTERM, signal.SIGHUP}
     try:
-        summary = json.loads(raw, object_pairs_hook=_pairs)
-        _keys(summary, ("schema_version", "requested_duration_s", "interval_s", "duration_s", "minimum_samples", "total",
-                        "failures", "pass", "output", "expected_revision", "run_epoch", "first_completed_fires",
-                        "last_completed_fires", "freshness_failure", "output_synced"), "E_GATES")
-        _require(summary["schema_version"] == "p6-heartbeat-watch-summary-v2" and summary["pass"] is True
-                 and summary["output_synced"] is True and summary["output"] == output
-                 and summary["expected_revision"] == backend["revision"] and summary["run_epoch"] == epoch
-                 and summary["freshness_failure"] is None, "E_GATES")
-        for key in ("minimum_samples", "total", "failures", "first_completed_fires", "last_completed_fires"):
-            _uint(summary[key], "E_GATES")
-        for key in ("requested_duration_s", "interval_s", "duration_s"):
-            _require(type(summary[key]) in (int, float) and math.isfinite(summary[key]) and summary[key] > 0, "E_GATES")
-        minimum = max(2, math.ceil(hours * 3600 / interval) + 1)
-        _require(summary["requested_duration_s"] == hours * 3600 and summary["interval_s"] == interval
-                 and summary["duration_s"] >= hours * 3600 and summary["minimum_samples"] == minimum
-                 and summary["total"] >= minimum and summary["failures"] == 0
-                 and summary["last_completed_fires"] > summary["first_completed_fires"], "E_GATES")
-        samples, _ = transaction.fs.read(output, 64 * 1024 * 1024)
-        _require(len(samples.splitlines()) == summary["total"], "E_GATES")
-        transaction.fs.sync_file(output)
-        return epoch
-    except (ValueError, TypeError, KeyError) as error:
-        raise TransactionError("E_GATES", "P6 watcher 汇总未通过精确绑定") from error
+        previous = signal.pthread_sigmask(signal.SIG_BLOCK, blocked)
+    except BaseException:
+        # 调用前已安装只锁存取消的处理器；屏蔽失败也不能离开资源作用域。
+        previous = None
+    try:
+        owner = getattr(error, "owner", None)
+    except BaseException:
+        owner = None
+    try:
+        print("E_GATES: HOLD：已知观察执行单元收束未确认，保持控制资源", file=sys.stderr, flush=True)
+    except BaseException:
+        pass
+    while True:
+        try:
+            closed = owner is not None and owner.try_cleanup() is True
+        except BaseException:
+            closed = False
+        if closed:
+            # 此时worker/pipe已经证明关闭；只失败退出，不触发恢复或重观。
+            if previous is not None:
+                signal.pthread_sigmask(signal.SIG_SETMASK, previous)
+            raise _P1HoldReleased() from None
+        try:
+            time.sleep(1.0)
+        except BaseException:
+            # 包括KeyboardInterrupt/SystemExit；未证明收束不能穿透控制资源作用域。
+            continue
+
+
+def _p1_preserve_hold(event: object) -> None:
+    if event is not _P1_CLEANUP_EVENT:
+        raise _P1HoldReleased() from None
+
+
+@contextmanager
+def _p1_signals(cancel: Callable[[], None]) -> Iterator[None]:
+    """在P6可能创建worker前完成安装；仅在已确认收束后离开调用范围。"""
+    previous = {}
+    try:
+        for number in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP):
+            try:
+                previous[number] = signal.getsignal(number)
+                signal.signal(number, lambda _number, _frame: cancel())
+            except BaseException as error:
+                cancel()
+                raise TransactionError("E_GATES", "P1取消处理器安装失败") from error
+        yield
+    finally:
+        failure = None
+        for number, handler in previous.items():
+            try:
+                signal.signal(number, handler)
+            except BaseException as error:
+                failure = error
+        if failure is not None:
+            cancel()
+            raise TransactionError("E_GATES", "P1取消处理器恢复失败") from failure
+
+
+def _load_p1_observer(raw: bytes, path: str) -> types.ModuleType:
+    module = types.ModuleType("_myweb_p1_" + secrets.token_hex(16))
+    module.__file__ = path
+    sys.modules[module.__name__] = module
+    try:
+        exec(compile(raw, path, "exec"), module.__dict__)
+        ordinary = module._P1ObservationError
+        cleanup = module._P1WorkerCleanupError
+        _require(isinstance(ordinary, type) and isinstance(cleanup, type)
+                 and issubclass(ordinary, RuntimeError) and issubclass(cleanup, RuntimeError)
+                 and not issubclass(ordinary, cleanup) and not issubclass(cleanup, ordinary)
+                 and callable(module._observe_myweb_p1), "E_BINDING")
+        return module
+    except (OSError, ValueError, TypeError, AttributeError, SyntaxError) as error:
+        sys.modules.pop(module.__name__, None)
+        raise TransactionError("E_BINDING", "受信P1观察入口不兼容") from error
+
+
+def _watch_heartbeat(transaction: _Transaction, backend: dict[str, Any], epoch: str,
+                     *, lease_fd: int | None) -> Callable[[], None]:
+    global _P1_GENERATION
+    _P1_GENERATION = object()
+    generation, creator = _P1_GENERATION, os.getpid()
+    _require(threading.current_thread() is threading.main_thread() and hasattr(signal, "pthread_sigmask"), "E_GATES")
+    fs = transaction.fs
+    record, receipt, _ = transaction.load()
+    operation = receipt["operation"]
+    selected = "previous" if operation == "rollback" else "candidate"
+    _require(record[selected]["backend"] == backend, "E_BINDING")
+    phases = record["previous_phase" if operation == "rollback" else "phase"]
+    hashes = record["previous_canary_hashes" if operation == "rollback" else "canary_hashes"]
+    _validate_phases(phases, hashes)
+    watcher = backend["directory"]["path"] + "/scripts/p6_heartbeat_watch.py"
+    watcher_image = fs.read(watcher)
+    transaction.barrier(receipt)
+    transaction.verify_control(record)
+    health_path = transaction.upload + "/control/" + CONTROL["health_validator"]
+    health_image = fs.read(health_path)
+    _same(health_image[1], record["control"]["health_validator"]["identity"])
+    _require(_digest(health_image[0]) == record["control"]["health_validator"]["sha256"], "E_BINDING")
+    _require(fs.read(watcher) == watcher_image, "E_DRIFT")
+    boot = fs.read("/proc/sys/kernel/random/boot_id", 128)[0]
+    _require(re.fullmatch(rb"[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}\n", boot) is not None, "E_BINDING")
+    baseline: dict[str, Any] = {}
+    _revalidate_target_services(transaction, lease_fd, evidence=baseline)
+    configuration = _p1_configuration(fs)
+    maintenance = fs.file_image(MAINTENANCE_PATH)
+    _require(maintenance["bytes_b64"] == "", "E_GATES")
+    previous = _P1_EPOCHS.get(transaction.txn_id)
+    if transaction.txn_id in _P1_STARTS:
+        _require(_P1_STARTS[transaction.txn_id] is None or epoch != _P1_STARTS[transaction.txn_id], "E_GATES",
+                 "启动后必须取得新world epoch，禁止沿用旧观察")
+    if transaction.txn_id in _P1_INSTANCES and _P1_INSTANCES[transaction.txn_id] != baseline:
+        _require(epoch != previous, "E_GATES", "服务实例已变而world epoch未变")
+    _P1_EPOCHS[transaction.txn_id] = epoch
+    _P1_INSTANCES[transaction.txn_id] = copy.deepcopy(baseline)
+    module = _load_p1_observer(watcher_image[0], watcher)
+    observation_error, cleanup_error = module._P1ObservationError, module._P1WorkerCleanupError
+    output = transaction.rollback + "/.p6-heartbeat-watch." + secrets.token_hex(16) + ".jsonl"
+    invalid = False
+    cancelled = False
+    def cancel() -> None:
+        nonlocal invalid, cancelled
+        global _P1_CLEANUP_EVENT
+        if not cancelled:
+            _P1_CLEANUP_EVENT = object()
+            cancelled = True
+        invalid = True
+    with _P1SampleSink(fs, output) as sink:
+        def revalidate_instance() -> None:
+            nonlocal invalid
+            try:
+                _require(not invalid and os.getpid() == creator and generation is _P1_GENERATION, "E_GATES")
+                current_record, current_receipt, _ = transaction.load()
+                _require(current_record == record and current_receipt["operation"] == operation, "E_DRIFT")
+                repeated: dict[str, Any] = {}
+                _revalidate_target_services(transaction, lease_fd, evidence=repeated)
+                _require(repeated == baseline and _p1_configuration(fs) == configuration, "E_DRIFT")
+                _require(fs.read(watcher) == watcher_image and fs.read(health_path) == health_image
+                         and fs.read("/proc/sys/kernel/random/boot_id", 128)[0] == boot, "E_DRIFT")
+                if transaction.p1_exposed:
+                    _require(not fs.exists(MAINTENANCE_PATH), "E_DRIFT")
+                else:
+                    _require(fs.file_image(MAINTENANCE_PATH) == maintenance, "E_DRIFT")
+                sink.verify()
+                _require(os.getpid() == creator and generation is _P1_GENERATION, "E_GATES")
+            except BaseException:
+                invalid = True
+                raise
+
+        def invoke(function: Callable[[], Any]) -> Any:
+            nonlocal invalid
+            with _p1_signals(cancel):
+                try:
+                    result = function()
+                except cleanup_error as error:
+                    invalid = True
+                    _p1_hold_worker(error)
+                except observation_error:
+                    invalid = True
+                    raise _P1ObservationFailure() from None
+                except BaseException as error:
+                    # 非契约异常不证明worker已关闭；缺失owner时仍持有资源等待人工处理。
+                    invalid = True
+                    _p1_hold_worker(error)
+            _require(not cancelled, "E_GATES", "P1观察已取消")
+            return result
+
+        guarded = invoke(lambda: module._observe_myweb_p1(
+            gateway="http://127.0.0.1:8000", expected_revision=backend["revision"], expected_epoch=epoch,
+            health_validator_source=health_image[0], expected_phases=copy.deepcopy(phases), expected_canary_hashes=tuple(hashes),
+            revalidate_instance=revalidate_instance, sync_sample=sink.append))
+        _require(callable(guarded) and sink.length > 0, "E_GATES")
+        revalidate_instance()
+        _P1_STARTS.pop(transaction.txn_id, None)
+
+    def freshness() -> None:
+        nonlocal invalid
+        try:
+            _require(not invalid, "E_GATES")
+            result = invoke(guarded)
+            _require(result is None and not invalid, "E_GATES")
+        except BaseException:
+            invalid = True
+            raise
+    return freshness
 
 
 BACKEND_READ_GATES = r'''
@@ -1338,7 +1664,8 @@ def _backend_read_gates(backend: dict[str, Any], phases: dict[str, str], hashes:
     _command([path + "/.venv/bin/python", "-I", "-B", "-c", BACKEND_READ_GATES, path], env=environment)
 
 
-def _maintained_gates(transaction: _Transaction, record: dict[str, Any], receipt: dict[str, Any], *, observe: bool = True) -> dict[str, Any]:
+def _maintained_gates(transaction: _Transaction, record: dict[str, Any], receipt: dict[str, Any], *, observe: bool = True,
+                      lease_fd: int | None = None) -> dict[str, Any]:
     fs = transaction.fs
     rollback = receipt["operation"] == "rollback"
     bundle = record["previous" if rollback else "candidate"]
@@ -1394,10 +1721,10 @@ def _maintained_gates(transaction: _Transaction, record: dict[str, Any], receipt
               "run_epoch": epoch, "blocked_statuses": blocked,
               "unit_sha256": {key: _digest(fs.read(CONFIG[key + "_unit"][0])[0]) for key in ("world", "gateway")}}
     if observe:
-        observed_epoch = _watch_heartbeat(transaction, bundle["backend"], epoch)
-        _require(observed_epoch == epoch, "E_GATES")
-        repeated = _maintained_gates(transaction, record, receipt, observe=False)
+        freshness = _watch_heartbeat(transaction, bundle["backend"], epoch, lease_fd=lease_fd)
+        repeated = _maintained_gates(transaction, record, receipt, observe=False, lease_fd=lease_fd)
         _require(all(repeated[key] == result[key] for key in ("nginx_sha256", "apparmor_sha256", "unit_sha256", "run_epoch")), "E_DRIFT")
+        repeated["p1_freshness"] = freshness
         return repeated
     return result
 
@@ -1603,6 +1930,7 @@ def _cleanup(transaction: _Transaction, record: dict[str, Any], receipt: dict[st
 
 
 def finalize_transaction(*, txn_id: str, lock_fd: int, lease_fd: int | None) -> dict[str, Any]:
+    cleanup_event = _P1_CLEANUP_EVENT
     _txn(txn_id)
     _require(lease_fd is None or (type(lease_fd) is int and lease_fd >= 0), "E_ARGUMENT")
     with _Fs() as fs:
@@ -1623,8 +1951,12 @@ def finalize_transaction(*, txn_id: str, lock_fd: int, lease_fd: int | None) -> 
                 transaction.barrier(receipt)
                 if phase in ("exposing", "committing"):
                     _isolate(fs, stop=False)
-                maintained = _maintained_gates(transaction, record, receipt)
+                maintained = _maintained_gates(transaction, record, receipt, lease_fd=lease_fd)
+                transaction.p1_freshness = maintained["p1_freshness"]
+            except _P1HoldReleased:
+                raise
             except (OSError, TransactionError, ValueError) as error:
+                _p1_preserve_hold(cleanup_event)
                 if phase in ("exposing", "committing"):
                     _isolate_if_uncommitted(transaction, lease_fd)
                 raise TransactionError("E_GATES", "维护态门失败，保留恢复材料") from error
@@ -1633,7 +1965,8 @@ def finalize_transaction(*, txn_id: str, lock_fd: int, lease_fd: int | None) -> 
                 if phase in ("deploying", "restored"):
                     receipt, identity = transaction.advance(record, receipt, identity, "exposing")
                 # 原子发布和目录 fsync 全部返回之后才允许第一个正常流量副作用。
-                fs.remove(MAINTENANCE_PATH, fs.info(MAINTENANCE_PATH))
+                fs.remove(MAINTENANCE_PATH, fs.info(MAINTENANCE_PATH), before_remove=transaction.p1_freshness)
+                transaction.p1_exposed = True
                 opened = _public_gates(transaction, record, receipt, maintained["run_epoch"])
                 _revalidate_target_services(transaction, lease_fd)
                 _verify_bundle(fs, record["previous" if receipt["operation"] == "rollback" else "candidate"])
@@ -1666,7 +1999,10 @@ def finalize_transaction(*, txn_id: str, lock_fd: int, lease_fd: int | None) -> 
                     identity = transaction.publish(record, updated, identity)
                     receipt = updated
                 receipt, identity = transaction.advance(record, receipt, identity, "terminal")
+            except _P1HoldReleased:
+                raise
             except (OSError, TransactionError, ValueError) as error:
+                _p1_preserve_hold(cleanup_event)
                 # 不凭内存 phase 推断刚才 rename 的结果；驱动下一步必须持锁复读正式回执。
                 try:
                     _isolate_if_uncommitted(transaction, lease_fd)
@@ -1727,6 +2063,7 @@ def _candidate_mutation(txn_id: str, lock_fd: int, lease_fd: int) -> None:
         _require(_http("https://lingxi.hi-veblen.com/api/session", method="POST", data=b'{"token":"release-preflight-invalid"}',
                        headers={"Content-Type": "application/json"})[0] == 503, "E_GATES")
         _require(_http("https://lingxi.hi-veblen.com/ws/release-maintenance-probe")[0] == 503, "E_GATES")
+        _p1_starting(txn_id)
         _command(["systemctl", "stop", "myagent-gateway.service", "myagent-world.service"])
         _services_stopped()
         for slot in SLOTS:
@@ -1858,7 +2195,7 @@ def _empty_unit_identity(fs: _Fs, role: str, show: Any) -> tuple[str, bytes, str
 
 def _revalidate_target_services(transaction: _Transaction, lease_fd: int | None,
                                 *, allow_missing_lease: bool = False, require_active: bool = True,
-                                rollback_recovery: bool = False) -> dict[str, str]:
+                                rollback_recovery: bool = False, evidence: dict[str, Any] | None = None) -> dict[str, str]:
     """业务副作用前只读证明加载配置与 writer；R0 额外要求双 active。"""
     fs = transaction.fs
     record, receipt, _ = transaction.load()
@@ -1988,10 +2325,16 @@ def _revalidate_target_services(transaction: _Transaction, lease_fd: int | None,
     _require(all(fs.read(CONFIG[role + "_unit"][0]) == unit_images[role] for role in commands), "E_DRIFT")
     _lock(fs, transaction.lock_fd)
     _lease(fs, transaction.txn_id, lease_fd, allow_missing=allow_missing_lease)
+    if evidence is not None:
+        _require(type(evidence) is dict and not evidence, "E_ARGUMENT")
+        evidence.update(copy.deepcopy({"writers": writers, "units": unit_images, "loaded": loaded_properties,
+                                       "links": {slot: fs.link(path) for slot, path in CURRENT.items()}}))
     return states
 
 
-def _resume(txn_id: str, fs: _Fs, lock_fd: int, *, cleanup_only: bool = False) -> dict[str, Any]:
+def _resume(txn_id: str, fs: _Fs, lock_fd: int, *, cleanup_only: bool = False,
+            allow_revalidation: bool = True) -> dict[str, Any]:
+    cleanup_event = _P1_CLEANUP_EVENT
     lease_fd = _open_lease(fs)
     isolation_started = False
     try:
@@ -2007,6 +2350,8 @@ def _resume(txn_id: str, fs: _Fs, lock_fd: int, *, cleanup_only: bool = False) -
             _require(action in ("resume-cleanup", "finish-lease"), "E_STATE", "清理入口不得执行业务恢复")
         if action == "manual-recovery":
             raise TransactionError("E_STATE", "HOLD：需要人工恢复，已保留现场")
+        if action == "revalidate-commit" and not allow_revalidation:
+            raise _P1ObservationFailure()
         if action in ("resume-rollback", "revalidate-commit"):
             # 分类和 lease 不证明 writer；政策与双 unit 全部通过后才允许修改维护态。
             _observation_policy()
@@ -2026,9 +2371,13 @@ def _resume(txn_id: str, fs: _Fs, lock_fd: int, *, cleanup_only: bool = False) -
             restore_previous(txn_id=txn_id, lock_fd=lock_fd, lease_fd=lease_fd)
             _command(["nginx", "-t"])
             _command(["systemctl", "reload", "nginx"])
+            _p1_starting(txn_id)
             _command(["systemctl", "restart", "myagent-world.service", "myagent-gateway.service"])
         return finalize_transaction(txn_id=txn_id, lock_fd=lock_fd, lease_fd=lease_fd)
+    except _P1HoldReleased:
+        raise
     except (OSError, TransactionError):
+        _p1_preserve_hold(cleanup_event)
         if isolation_started and not cleanup_only:
             try:
                 _isolate_if_uncommitted(_Transaction(fs, txn_id, lock_fd), lease_fd)
@@ -2053,6 +2402,7 @@ def main(argv: list[str] | None = None) -> int:
     for name in ("txn_id", "candidate_revision", "package_sha256", "persona_schema", "persona_growth", "world_ledger", "canary_hashes"):
         deploy.add_argument(name)
     args = parser.parse_args(argv)
+    cleanup_event = _P1_CLEANUP_EVENT
     try:
         if args.operation in ("policy", "deploy"):
             _observation_policy()
@@ -2079,8 +2429,11 @@ def main(argv: list[str] | None = None) -> int:
                         verify_previous(txn_id=args.txn_id, purpose="before-mutation", lock_fd=lock_fd, lease_fd=lease_fd)
                         _candidate_mutation(args.txn_id, lock_fd, lease_fd)
                         result = finalize_transaction(txn_id=args.txn_id, lock_fd=lock_fd, lease_fd=lease_fd)
+                    except _P1HoldReleased:
+                        raise
                     except (OSError, TransactionError):
-                        _resume(args.txn_id, fs, lock_fd)
+                        _p1_preserve_hold(cleanup_event)
+                        _resume(args.txn_id, fs, lock_fd, allow_revalidation=False)
                         raise
                 finally:
                     os.close(lease_fd)

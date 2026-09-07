@@ -4,7 +4,9 @@
 from __future__ import annotations
 
 import copy
+import builtins
 import io
+import importlib
 import json
 import math
 import os
@@ -16,8 +18,9 @@ import subprocess
 import sys
 import tempfile
 import textwrap
+import time
 import unittest
-from contextlib import ExitStack
+from contextlib import ExitStack, contextmanager
 from unittest.mock import patch
 
 import release_transaction as transaction
@@ -31,6 +34,20 @@ PREVIOUS = "c" * 40
 TXN = f"run-31-2-{PORTAL}"
 PHASES = {"persona_schema": "compat", "persona_growth": "compat", "world_ledger": "compat"}
 RESERVED_PHASE = "LINGXI_WORLD_LEDGER_SCHEMA_PHASE"
+# 明确只替换 P6 内部接口；真正的 1800 秒调度和 worker 由跨仓固定源码另验。
+P1_WATCHER_FIXTURE = b'''import builtins
+class _P1ObservationError(RuntimeError):
+    pass
+class _P1WorkerCleanupError(RuntimeError):
+    pass
+def _observe_myweb_p1(*, gateway, expected_revision, expected_epoch, health_validator_source,
+                     expected_phases, expected_canary_hashes, revalidate_instance, sync_sample):
+    return builtins._myweb_p1_fixture(_P1ObservationError, _P1WorkerCleanupError,
+        gateway=gateway, expected_revision=expected_revision, expected_epoch=expected_epoch,
+        health_validator_source=health_validator_source, expected_phases=expected_phases,
+        expected_canary_hashes=expected_canary_hashes, revalidate_instance=revalidate_instance,
+        sync_sample=sync_sample)
+'''
 # 与真实 python-dotenv parse_stream 对照；只统计成功且具有赋值的键。
 DOTENV_CASES = [
     ("单引号同值", "'" + RESERVED_PHASE + "'=compat\n", [RESERVED_PHASE]),
@@ -98,6 +115,15 @@ class TransactionTests(unittest.TestCase):
         self.epoch = "hb_" + "e" * 32
         self.events: list[str] = []
         self.watcher_failure: str | None = None
+        self.p1_now = 100.0
+        self.p1_calls = 0
+        self.p1_freshness_calls = 0
+        self.p1_after_observation = None
+        self.p1_invocations = {"world": "a" * 32, "gateway": "a" * 32}
+        self.p1_start_count = 0
+        for attribute in ("_P1_EPOCHS", "_P1_STARTS", "_P1_INSTANCES"):
+            if hasattr(transaction, attribute):
+                self.stack.enter_context(patch.dict(getattr(transaction, attribute), clear=True))
         self.policy = (0.001, 1.8, 1.0)
         self.artifacts = {key: (Path(__file__).parent / filename).read_bytes() for key, filename in transaction.CONTROL.items()}
         for directory in (transaction.WEB_ROOT, transaction.PROJECT_ROOT, transaction.RELEASES_ROOT,
@@ -118,7 +144,7 @@ class TransactionTests(unittest.TestCase):
                     self.write(root + "/.release.env", transaction._release_env(backend))
                     self.write(root + "/ops/apparmor/myagent-persona-parser", b"# fixture profile\n")
                     self.write(root + "/ops/nginx/hi-veblen.com.http.conf", self.nginx())
-                    self.write(root + "/scripts/p6_heartbeat_watch.py", "# 独立网络观察器边界夹具\n".encode("utf-8"))
+                    self.write(root + "/scripts/p6_heartbeat_watch.py", P1_WATCHER_FIXTURE)
                     for role in ("world", "gateway"):
                         self.write(root + "/ops/systemd/myagent-" + role + ".service", self.unit_bytes(role=role))
         for slot, current in transaction.CURRENT.items():
@@ -147,6 +173,7 @@ class TransactionTests(unittest.TestCase):
         self.stack.enter_context(patch.object(transaction, "_http", side_effect=self.http))
         self.stack.enter_context(patch.object(transaction, "_apparmor_loaded", side_effect=lambda: self.path(transaction.CONFIG["apparmor_profile"][0]).exists()))
         self.stack.enter_context(patch.object(transaction, "_observation_policy", side_effect=lambda: self.policy))
+        self.stack.enter_context(patch.object(builtins, "_myweb_p1_fixture", self.p1_observe, create=True))
         original_open = open
 
         def kernel_open(path, *args, **kwargs):
@@ -155,6 +182,7 @@ class TransactionTests(unittest.TestCase):
             return original_open(path, *args, **kwargs)
 
         self.stack.enter_context(patch("builtins.open", side_effect=kernel_open))
+        self.write("/proc/sys/kernel/random/boot_id", b"11111111-2222-3333-4444-555555555555\n", 0o444)
         self.writer_fixtures()
 
     def path(self, path: str) -> Path:
@@ -252,7 +280,7 @@ class TransactionTests(unittest.TestCase):
                 main_pid = pid if self.active and unit not in self.stopped_units else "0"
                 values = {"FragmentPath": "/etc/systemd/system/" + unit, "LoadState": "loaded", "NeedDaemonReload": "no",
                           "MainPID": main_pid, "ExecMainPID": pid, "ControlGroup": "/system.slice/" + unit,
-                          "InvocationID": "a" * 32,
+                          "InvocationID": self.p1_invocations[role],
                           "WorkingDirectory": "/opt/myagent/backend-current" + ("/ui/backend" if role == "gateway" else ""),
                           "ExecStart": "{ path=/opt/myagent/backend-current/.venv/bin/python ; argv[]=" + self.unit_command(role) +
                           " ; ignore_errors=no ; start_time=[n/a] ; stop_time=[n/a] ; pid=" + pid + " ; code=(null) ; status=0 }"}
@@ -263,6 +291,8 @@ class TransactionTests(unittest.TestCase):
                 for unit in arguments[2:]:
                     self.write("/sys/fs/cgroup/system.slice/" + unit + "/cgroup.procs", b"")
             elif arguments[1] in ("start", "restart"):
+                self.p1_start_count += 1
+                self.epoch = "hb_" + format(self.p1_start_count + 100, "032x")
                 self.active = True
                 self.stopped_units.difference_update(arguments[2:])
                 self.writer_fixtures()
@@ -274,6 +304,8 @@ class TransactionTests(unittest.TestCase):
         if arguments[0] == "apparmor_parser":
             return b""
         if arguments[0] == "bash":
+            self.p1_start_count += 1
+            self.epoch = "hb_" + format(self.p1_start_count + 100, "032x")
             self.active = True
             self.stopped_units.clear()
             self.recovery_unit_fixtures()
@@ -302,8 +334,68 @@ class TransactionTests(unittest.TestCase):
                 summary["output_synced"] = False
             elif self.watcher_failure == "stalled":
                 summary["last_completed_fires"] = summary["first_completed_fires"]
+            if self.p1_after_observation is not None:
+                self.p1_after_observation()
             return json.dumps(summary).encode()
         raise AssertionError("未经定义的服务边界：" + repr(arguments))
+
+    def p1_observe(self, observation_error, cleanup_error, **options):
+        try:
+            return self.p1_observe_body(observation_error, cleanup_error, **options)
+        except (observation_error, cleanup_error):
+            raise
+        except BaseException as error:
+            raise observation_error("P1_OBSERVATION_FAILED") from error
+
+    def p1_observe_body(self, observation_error, cleanup_error, **options):
+        # 这是消费者生命周期替身，不能作为 P6 的完整时钟/请求实现证据。
+        self.p1_calls += 1
+        self.p1_options = options
+        self.assertEqual(set(options), {"gateway", "expected_revision", "expected_epoch", "health_validator_source",
+                                       "expected_phases", "expected_canary_hashes", "revalidate_instance", "sync_sample"})
+        self.assertEqual(options["gateway"], "http://127.0.0.1:8000")
+        self.assertEqual(options["health_validator_source"], (Path(__file__).parent / "validate_release_health.py").read_bytes())
+        self.assertIs(type(options["expected_canary_hashes"]), tuple)
+        if self.watcher_failure is not None:
+            raise observation_error("P1_OBSERVATION_FAILED")
+        options["revalidate_instance"]()
+        for index in range(61):
+            data = self.health()
+            epoch = health_validator.validate_transaction_payload(data, options["expected_revision"],
+                                                                  options["expected_phases"], list(options["expected_canary_hashes"]))
+            self.assertEqual(epoch, options["expected_epoch"])
+            sample = {"schema_version": "p6-heartbeat-watch-v2", "at_unix": 1000.0 + index * 30,
+                      "elapsed_s": float(index * 30), "gateway": options["gateway"], "ok": True,
+                      "latency_s": 0.001, "run_epoch": epoch, "freshness_failure": None,
+                      "status": 200, "data": data}
+            options["sync_sample"](transaction._canonical(sample))
+        self.p1_now += 1800.0
+        completed = self.p1_now
+        options["revalidate_instance"]()
+        if self.p1_after_observation is not None:
+            self.p1_after_observation()
+        invalid = False
+
+        def freshness():
+            nonlocal invalid
+            self.p1_freshness_calls += 1
+            try:
+                self.assertFalse(invalid)
+                options["revalidate_instance"]()
+                if not 0 <= self.p1_now - completed <= 600:
+                    raise observation_error("P1_OBSERVATION_FAILED")
+            except BaseException:
+                invalid = True
+                raise observation_error("P1_OBSERVATION_FAILED") from None
+        return freshness
+
+    def main_deploy(self):
+        @contextmanager
+        def held_entry():
+            with transaction._Fs() as fs:
+                yield fs, self.lock_fd
+        with patch.object(transaction, "_entry_lock", held_entry):
+            return transaction.main(["deploy", TXN, BACKEND, "d" * 64, "compat", "compat", "compat", "-"])
 
     def capture(self, *, legacy=False):
         if legacy:
@@ -802,16 +894,10 @@ class TransactionTests(unittest.TestCase):
 
     def test_observation_config_drift_cannot_publish_exposing(self):
         self.deploy()
-        original = self.command
-
-        def mutate_profile(arguments, **kwargs):
-            result = original(arguments, **kwargs)
-            if "--expected-revision" in arguments:
-                self.write(transaction.CONFIG["apparmor_profile"][0], b"changed\n")
-            return result
-
-        with patch.object(transaction, "_command", side_effect=mutate_profile):
-            self.expect_code("E_GATES", self.finalize)
+        self.p1_after_observation = lambda: self.write(transaction.CONFIG["apparmor_profile"][0], b"changed\n")
+        with self.assertRaises(transaction.TransactionError) as caught:
+            self.finalize()
+        self.assertIn(caught.exception.code, ("E_GATES", "E_DRIFT"))
         self.assertEqual(self.receipt()["phase"], "deploying")
         self.assertTrue(self.path(transaction.MAINTENANCE_PATH).exists())
 
@@ -958,12 +1044,13 @@ class TransactionTests(unittest.TestCase):
         self.stopped_units.clear()
         self.writer_fixtures()
         self.events.clear()
+        self.p1_calls = 0
         epoch = self.epoch
         with transaction._Fs() as fs:
             self.assertEqual(transaction._resume(TXN, fs, self.lock_fd)["phase"], "closed")
         self.assertEqual(self.receipt()["terminal"]["proof"]["run_epoch"], epoch)
         self.assertFalse(any(event.startswith("command systemctl " + verb) for event in self.events for verb in ("start ", "restart ", "stop ")))
-        self.assertEqual(sum("--expected-revision" in event for event in self.events), 1)
+        self.assertEqual(self.p1_calls + sum("--expected-revision" in event for event in self.events), 1)
 
     def test_bound_deploying_recovery_preserves_legal_rollback(self):
         self.deploy()
@@ -972,7 +1059,7 @@ class TransactionTests(unittest.TestCase):
             result = transaction._resume(TXN, fs, self.lock_fd)
         self.assertEqual(result["outcome"], "rolled-back")
         self.assertEqual(self.current_root("backend"), self.old + "/backend")
-        self.assertEqual(sum("--expected-revision" in event for event in self.events), 1)
+        self.assertEqual(self.p1_calls + sum("--expected-revision" in event for event in self.events), 1)
 
     def test_prepared_recovery_preserves_legal_rollback(self):
         self.capture()
@@ -1085,11 +1172,12 @@ class TransactionTests(unittest.TestCase):
         self.stopped_units.clear()
         self.writer_fixtures()
         self.events.clear()
+        self.p1_calls = 0
         with transaction._Fs() as fs:
             self.assertEqual(transaction._resume(TXN, fs, self.lock_fd)["phase"], "closed")
         self.assertEqual(self.current_root("backend"), self.candidate + "/backend")
         self.assertFalse(any("restart " in event or event.startswith("command bash") for event in self.events))
-        self.assertEqual(sum("--expected-revision" in event for event in self.events), 1)
+        self.assertEqual(self.p1_calls + sum("--expected-revision" in event for event in self.events), 1)
 
     def prepare_stopped_committing(self):
         self.deploy()
@@ -1458,8 +1546,598 @@ class TransactionTests(unittest.TestCase):
             self.assertEqual(self.receipt()["phase"], "deploying")
             self.assertTrue(self.path(transaction.MAINTENANCE_PATH).exists())
 
+    def test_p1_exposing_fsync_expiry_never_removes_maintenance(self):
+        self.deploy()
+        original = os.fsync
+        expired = False
+
+        def delayed_sync(fd):
+            nonlocal expired
+            original(fd)
+            if not expired and self.receipt()["phase"] == "exposing":
+                expired = True
+                self.p1_now += 600.001
+        with patch.object(os, "fsync", side_effect=delayed_sync):
+            self.expect_code("E_COMMIT_UNCERTAIN", self.finalize)
+        self.assertTrue(expired)
+        self.assertTrue(self.path(transaction.MAINTENANCE_PATH).exists())
+        self.assertEqual(self.receipt()["phase"], "exposing")
+        self.assertFalse(any(event == "GET https://lingxi.hi-veblen.com/api/health" for event in self.events))
+
+    def test_p1_terminal_temp_fsync_expiry_never_publishes_terminal(self):
+        self.deploy()
+        original = os.fsync
+        expired = False
+
+        def delayed_sync(fd):
+            nonlocal expired
+            original(fd)
+            if expired or not stat.S_ISREG(os.fstat(fd).st_mode):
+                return
+            path = Path(os.readlink("/proc/self/fd/" + str(fd)))
+            if path.is_relative_to(self.root) and b'"phase":"terminal"' in path.read_bytes():
+                expired = True
+                self.p1_now += 600.001
+        with patch.object(os, "fsync", side_effect=delayed_sync):
+            self.expect_code("E_COMMIT_UNCERTAIN", self.finalize)
+        self.assertTrue(expired)
+        self.assertEqual(self.receipt()["phase"], "committing")
+        self.assertTrue(self.path(transaction.MAINTENANCE_PATH).exists())
+
+    def test_p1_public_gate_delay_does_not_refresh_completed_time(self):
+        self.deploy()
+        original = transaction._public_gates
+
+        def delayed_public(*args, **kwargs):
+            result = original(*args, **kwargs)
+            self.p1_now += 600.001
+            return result
+        with patch.object(transaction, "_public_gates", side_effect=delayed_public):
+            self.expect_code("E_COMMIT_UNCERTAIN", self.finalize)
+        self.assertNotIn(self.receipt()["phase"], transaction.TERMINAL_PHASES)
+        self.assertTrue(self.path(transaction.MAINTENANCE_PATH).exists())
+
+    def test_p1_same_revision_new_gateway_instance_rejects_old_window(self):
+        self.deploy()
+        self.p1_after_observation = lambda: self.p1_invocations.__setitem__("gateway", "b" * 32)
+        self.expect_code("E_GATES", self.finalize)
+        self.assertEqual(self.receipt()["phase"], "deploying")
+        self.assertTrue(self.path(transaction.MAINTENANCE_PATH).exists())
+
+    def test_p1_top_level_failure_never_reobserves_same_target(self):
+        original = transaction._public_gates
+        public_calls = 0
+
+        def fail_first_public(*args, **kwargs):
+            nonlocal public_calls
+            public_calls += 1
+            if public_calls == 1:
+                raise transaction.TransactionError("E_GATES")
+            return original(*args, **kwargs)
+        def stop_failure_preserves_active(arguments, **kwargs):
+            if arguments[:2] == ["systemctl", "stop"] and public_calls:
+                # 已知服务停机失败仍保持active，不能靠R0偶然挡住同目标重观。
+                raise transaction.TransactionError("E_SERVICES")
+            return self.command(arguments, **kwargs)
+        with patch.object(transaction, "_public_gates", side_effect=fail_first_public), \
+                patch.object(transaction, "_command", side_effect=stop_failure_preserves_active):
+            self.assertEqual(self.main_deploy(), 1)
+        # 旧源码走外部watcher替身，新源码走私有入口；两种口径均精确计数。
+        observed = self.p1_calls + sum("--expected-revision" in event for event in self.events)
+        self.assertEqual(observed, 1)
+        self.assertEqual(public_calls, 1)
+        self.assertNotIn(self.receipt()["phase"], transaction.TERMINAL_PHASES)
+
+    def p1_observation(self, fs):
+        txn = transaction._Transaction(fs, TXN, self.lock_fd)
+        record, _, _ = txn.load()
+        return transaction._watch_heartbeat(txn, record["candidate"]["backend"], self.epoch, lease_fd=self.lease_fd)
+
+    def test_p1_freshness_600_inclusive_and_failure_never_revives(self):
+        self.deploy()
+        with transaction._Fs() as fs:
+            guard = self.p1_observation(fs)
+            completed = self.p1_now
+            self.p1_now = completed + 600
+            guard()
+            self.assertEqual(self.p1_calls, 1)
+            self.p1_now += 0.001
+            self.expect_code("E_GATES", guard)
+            self.p1_now = completed
+            self.expect_code("E_GATES", guard)
+            self.assertEqual(self.p1_calls, 1)
+
+    def test_p1_negative_age_and_slow_instance_check_fail(self):
+        self.deploy()
+        with transaction._Fs() as fs:
+            guard = self.p1_observation(fs)
+            self.p1_now -= 0.001
+            self.expect_code("E_GATES", guard)
+            guard = self.p1_observation(fs)
+            revalidate = transaction._revalidate_target_services
+            def slow_check(*args, **kwargs):
+                result = revalidate(*args, **kwargs)
+                self.p1_now += 600.001
+                return result
+            with patch.object(transaction, "_revalidate_target_services", side_effect=slow_check):
+                self.expect_code("E_GATES", guard)
+
+    def test_p1_new_module_generation_invalidates_old_closure(self):
+        self.deploy()
+        with transaction._Fs() as fs:
+            first = self.p1_observation(fs)
+            first()
+            second = self.p1_observation(fs)
+            second()
+            self.expect_code("E_GATES", first)
+            second()
+            self.assertEqual(self.p1_calls, 2)
+
+    def test_p1_controller_reload_cannot_reuse_old_generation(self):
+        self.deploy()
+        with transaction._Fs() as fs:
+            guard = self.p1_observation(fs)
+            # 恢复测试I/O边界，reload本身真实执行；绝不访问生产根/服务。
+            boundaries = {name: getattr(transaction, name) for name in
+                          ("_open_root_fd", "_control_sources", "_command", "_http", "_apparmor_loaded", "_observation_policy")}
+            importlib.reload(transaction)
+            transaction.__dict__.update(boundaries)
+            with patch.object(transaction, "_load_p1_observer", side_effect=transaction.TransactionError("E_BINDING")):
+                # deploy已有一次合法start代际，随后观察捕获2；重载后两次失败重观形成ABA。
+                for _ in range(2):
+                    self.expect_code("E_BINDING", lambda: self.p1_observation(fs))
+            self.expect_code("E_GATES", guard)
+
+    def test_p1_forked_closure_cannot_reuse_parent_window(self):
+        self.deploy()
+        with transaction._Fs() as fs:
+            guard = self.p1_observation(fs)
+            child = os.fork()
+            if child == 0:
+                try:
+                    guard()
+                    os._exit(96)
+                except transaction.TransactionError:
+                    os._exit(0)
+                except BaseException:
+                    os._exit(97)
+            _, status = os.waitpid(child, 0)
+            self.assertEqual(os.waitstatus_to_exitcode(status), 0)
+            guard()
+
+    def test_p1_start_or_changed_instance_requires_new_world_epoch(self):
+        self.deploy()
+        with transaction._Fs() as fs:
+            self.p1_observation(fs)()
+            self.p1_invocations["gateway"] = "b" * 32
+            self.expect_code("E_GATES", lambda: self.p1_observation(fs))
+            self.assertEqual(self.p1_calls, 1)
+            self.epoch = "hb_" + "d" * 32
+            self.p1_observation(fs)()
+            transaction._p1_starting(TXN)
+            self.expect_code("E_GATES", lambda: self.p1_observation(fs))
+            self.assertEqual(self.p1_calls, 2)
+            self.epoch = "hb_" + "c" * 32
+            self.p1_observation(fs)()
+
+    def test_p1_bound_bytes_and_boot_drift_permanently_invalidate(self):
+        self.deploy()
+        paths = [self.candidate + "/backend/scripts/p6_heartbeat_watch.py",
+                 self.upload + "/control/validate_release_health.py", "/proc/sys/kernel/random/boot_id",
+                 transaction.CONFIG["apparmor_profile"][0], self.rollback + "/" + transaction.RECORD_NAME]
+        with transaction._Fs() as fs:
+            for path in paths:
+                with self.subTest(path=path):
+                    guard = self.p1_observation(fs)
+                    original = self.path(path).read_bytes()
+                    inode = self.path(path).stat().st_ino
+                    self.path(path).write_bytes(original + b" ")
+                    self.assertEqual(self.path(path).stat().st_ino, inode)
+                    with self.assertRaises(transaction.TransactionError):
+                        guard()
+                    self.path(path).write_bytes(original)
+                    self.expect_code("E_GATES", guard)
+
+    def test_p1_sample_sink_rejects_malformed_short_write_and_sync_failure(self):
+        raw = transaction._canonical({"schema_version": "p6-heartbeat-watch-v2", "at_unix": 1.0, "elapsed_s": 0.0,
+                                     "gateway": "http://127.0.0.1:8000", "ok": False, "latency_s": 0.0,
+                                     "run_epoch": None, "freshness_failure": "request_failed", "error": "request_failed"})
+        bad = [b"{}\n", raw.replace(b"\n", b"\r\n"), raw.replace(b'"ok":false', b'"ok":true'),
+               raw.replace(b'"latency_s":0.0', b'"latency_s":NaN'), raw.replace(b'"error":"request_failed"', b'"error":"invented"')]
+        self.directory(self.rollback)
+        with transaction._Fs() as fs:
+            for index, data in enumerate(bad):
+                with self.subTest(index=index), transaction._P1SampleSink(fs, self.rollback + "/bad-" + str(index)) as sink:
+                    self.expect_code("E_GATES", lambda: sink.append(data))
+                    self.assertEqual(self.path(sink.path).read_bytes(), b"")
+                    self.expect_code("E_GATES", lambda: sink.append(raw))
+            for kind in ("short", "sync"):
+                with self.subTest(kind=kind), transaction._P1SampleSink(fs, self.rollback + "/" + kind) as sink:
+                    write = os.write
+                    def short_write(fd, data):
+                        return write(fd, data[:-1])
+                    context = patch.object(os, "write", side_effect=short_write) if kind == "short" else patch.object(os, "fsync", side_effect=OSError("fixture fsync"))
+                    with context, self.assertRaises((OSError, transaction.TransactionError)):
+                        sink.append(raw)
+                    self.expect_code("E_GATES", sink.verify)
+                    self.expect_code("E_GATES", lambda: sink.append(raw))
+
+    def test_p1_sample_sink_rejects_same_inode_rewrite_and_path_replacement(self):
+        self.deploy()
+        with transaction._Fs() as fs:
+            for kind in ("same-inode", "replacement"):
+                with self.subTest(kind=kind):
+                    guard = self.p1_observation(fs)
+                    sink = self.p1_options["sync_sample"].__self__
+                    self.assertIsNone(sink.fd)
+                    path = self.path(sink.path)
+                    raw = path.read_bytes()
+                    inode = path.stat().st_ino
+                    self.assertEqual(len(raw.splitlines()), 61)
+                    if kind == "same-inode":
+                        path.write_bytes(raw.replace(b'"at_unix":1000.0', b'"at_unix":2000.0', 1))
+                        self.assertEqual(path.stat().st_ino, inode)
+                    else:
+                        replacement = path.with_suffix(".replaced")
+                        replacement.write_bytes(raw)
+                        replacement.chmod(0o600)
+                        replacement.replace(path)
+                        self.assertNotEqual(path.stat().st_ino, inode)
+                    self.expect_code("E_GATES", guard)
+                    path.write_bytes(raw)
+                    self.expect_code("E_GATES", guard)
+
+    def test_p1_sample_sink_streams_valid_samples_beyond_64mib(self):
+        self.directory(self.rollback)
+        data = self.health()
+        data["fixture_padding"] = "中" * 340000
+        # 上游1MiB HTTP体可在规范ensure_ascii编码后扩大；不引入任意累计容量政策。
+        self.assertLessEqual(len(json.dumps(data, ensure_ascii=False).encode("utf-8")), 1024 * 1024)
+        with transaction._Fs() as fs, transaction._P1SampleSink(fs, self.rollback + "/large-samples") as sink:
+            for index in range(34):
+                sample = {"schema_version": "p6-heartbeat-watch-v2", "at_unix": 1000.0 + index * 30,
+                          "elapsed_s": float(index * 30), "gateway": "http://127.0.0.1:8000", "ok": True,
+                          "latency_s": 0.001, "run_epoch": self.epoch, "freshness_failure": None,
+                          "status": 200, "data": data}
+                sink.append(transaction._canonical(sample))
+            self.assertGreater(sink.length, 64 * 1024 * 1024)
+            sink.verify()
+
+    def test_p1_dynamic_exception_identity_is_used(self):
+        self.deploy()
+        seen = []
+        def fail(actual_observation, actual_cleanup, **kwargs):
+            seen.append((actual_observation, actual_cleanup))
+            raise actual_observation("P1_OBSERVATION_FAILED")
+        with patch.object(builtins, "_myweb_p1_fixture", fail), transaction._Fs() as fs:
+            self.expect_code("E_GATES", lambda: self.p1_observation(fs))
+            self.expect_code("E_GATES", lambda: self.p1_observation(fs))
+        self.assertIsNot(seen[0][0], seen[1][0])
+        self.assertFalse(issubclass(seen[0][1], seen[0][0]))
+        self.assertTrue(self.path(transaction.MAINTENANCE_PATH).exists())
+
+    def test_p1_signal_handlers_restore_on_observation_and_freshness(self):
+        self.deploy()
+        previous = {number: signal.getsignal(number) for number in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP)}
+        with transaction._Fs() as fs:
+            guard = self.p1_observation(fs)
+            self.assertEqual({number: signal.getsignal(number) for number in previous}, previous)
+            guard()
+            self.assertEqual({number: signal.getsignal(number) for number in previous}, previous)
+
+    def test_p1_signal_install_or_restore_failure_stops_without_recovery(self):
+        for stage in ("install", "restore"):
+            with self.subTest(stage=stage):
+                case = TransactionTests()
+                case.setUp()
+                original = signal.signal
+                previous = {number: signal.getsignal(number) for number in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP)}
+                injected = False
+                def failure(number, handler):
+                    nonlocal injected
+                    result = original(number, handler)
+                    matched = (stage == "install" and number == signal.SIGTERM and handler is not previous[number]) or (
+                        stage == "restore" and number == signal.SIGINT and handler is previous[number] and case.p1_calls > 0)
+                    if not injected and matched:
+                        injected = True
+                        raise OSError("信号处理器已写入后的确定性异常")
+                    return result
+                try:
+                    with patch.object(signal, "signal", side_effect=failure), patch.object(transaction, "_resume") as resume:
+                        self.assertEqual(case.main_deploy(), 1)
+                    self.assertTrue(injected)
+                    resume.assert_not_called()
+                    self.assertEqual(case.p1_calls, 0 if stage == "install" else 1)
+                    self.assertEqual({number: signal.getsignal(number) for number in previous}, previous)
+                finally:
+                    for number, handler in previous.items():
+                        original(number, handler)
+                    case.doCleanups()
+
+    def test_p1_sticky_cancel_rejects_callback_result_and_guard(self):
+        for stage in ("callback", "result", "guard"):
+            with self.subTest(stage=stage):
+                case = TransactionTests()
+                case.setUp()
+                previous = signal.getsignal(signal.SIGINT)
+                invoked = False
+                def observe(ordinary, cleanup, **options):
+                    def cancel():
+                        nonlocal invoked
+                        handler = signal.getsignal(signal.SIGINT)
+                        if handler is previous or not callable(handler):
+                            raise ordinary("取消处理器尚未安装")
+                        handler(signal.SIGINT, None)
+                        invoked = True
+                    if stage == "callback":
+                        cancel()
+                        try:
+                            options["revalidate_instance"]()
+                        except BaseException as error:
+                            raise ordinary("P1_OBSERVATION_FAILED") from error
+                        raise AssertionError("取消后错误接纳了安全回调")
+                    guarded = case.p1_observe(ordinary, cleanup, **options)
+                    if stage == "result":
+                        cancel()
+                        return guarded
+                    def cancelled_guard():
+                        cancel()
+                        return None
+                    return cancelled_guard
+                try:
+                    with patch.object(builtins, "_myweb_p1_fixture", observe), patch.object(transaction, "_resume") as resume:
+                        self.assertEqual(case.main_deploy(), 1)
+                    self.assertTrue(invoked)
+                    resume.assert_not_called()
+                    self.assertNotIn(case.receipt()["phase"], transaction.TERMINAL_PHASES)
+                    self.assertTrue(case.path(transaction.MAINTENANCE_PATH).exists())
+                    self.assertIs(signal.getsignal(signal.SIGINT), previous)
+                finally:
+                    case.doCleanups()
+
+    def test_p1_cancel_during_handler_restore_rejects_side_effect(self):
+        for phase in ("exposing", "committing"):
+            with self.subTest(phase=phase):
+                case = TransactionTests()
+                case.setUp()
+                original = signal.signal
+                previous = {number: signal.getsignal(number) for number in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP)}
+                injected = False
+                def interrupt(number, handler):
+                    nonlocal injected
+                    result = original(number, handler)
+                    if (not injected and number == signal.SIGINT and handler is previous[number]
+                            and case.p1_freshness_calls > 0 and case.receipt()["phase"] == phase):
+                        current = signal.getsignal(signal.SIGHUP)
+                        if current is previous[signal.SIGHUP] or not callable(current):
+                            raise OSError("尚未确认当前HUP由临时处理器接管")
+                        os.kill(os.getpid(), signal.SIGHUP)
+                        injected = True
+                    return result
+                try:
+                    with patch.object(signal, "signal", side_effect=interrupt), patch.object(transaction, "_resume") as resume:
+                        self.assertEqual(case.main_deploy(), 1)
+                    self.assertTrue(injected)
+                    resume.assert_not_called()
+                    self.assertEqual(case.receipt()["phase"], phase)
+                    if phase == "exposing":
+                        self.assertTrue(case.path(transaction.MAINTENANCE_PATH).exists())
+                        self.assertNotIn("GET https://lingxi.hi-veblen.com/api/health", case.events)
+                    self.assertEqual(case.p1_calls, 1)
+                    self.assertEqual({number: signal.getsignal(number) for number in previous}, previous)
+                finally:
+                    for number, handler in previous.items():
+                        original(number, handler)
+                    case.doCleanups()
+
+    def test_p1_hold_close_failure_never_reenters_business_recovery(self):
+        # 每个故障使用独立事务夹具，完整走main及真实合法回滚分支。
+        for target in ("sink", "sink-parent", "root", "freshness-parent"):
+            with self.subTest(target=target):
+                case = TransactionTests()
+                case.setUp()
+                try:
+                    close = os.close
+                    failing_fds = set()
+                    closed_fault = False
+                    observations = 0
+                    recovered = []
+                    resume = transaction._resume
+                    class Owner:
+                        def try_cleanup(self):
+                            return True
+                    def cleanup_error(actual):
+                        error = actual("P1_WORKER_CLEANUP_UNCONFIRMED")
+                        error.owner = Owner()
+                        return error
+                    def observe(actual_observation, actual_cleanup, **options):
+                        nonlocal observations
+                        observations += 1
+                        if observations > 1:
+                            return case.p1_observe(actual_observation, actual_cleanup, **options)
+                        if target == "freshness-parent":
+                            guard = case.p1_observe(actual_observation, actual_cleanup, **options)
+                            def fail_guard():
+                                for entry in Path("/proc/self/fd").iterdir():
+                                    try:
+                                        if os.readlink(entry) == str(case.path("/run")):
+                                            failing_fds.add(int(entry.name))
+                                    except FileNotFoundError:
+                                        pass
+                                if not failing_fds:
+                                    raise AssertionError("未捕获freshness副作用的目录fd")
+                                raise cleanup_error(actual_cleanup)
+                            return fail_guard
+                        sink = options["sync_sample"].__self__
+                        cells = dict(zip(options["revalidate_instance"].__code__.co_freevars,
+                                         (cell.cell_contents for cell in options["revalidate_instance"].__closure__)))
+                        failing_fds.add(sink.fd if target == "sink" else sink.parent if target == "sink-parent" else cells["fs"].root)
+                        raise cleanup_error(actual_cleanup)
+                    def fail_close(fd):
+                        nonlocal closed_fault
+                        close(fd)
+                        if not closed_fault and fd in failing_fds:
+                            closed_fault = True
+                            raise OSError("已知fd关闭时的组合故障") from None
+                    def record_resume(*args, **kwargs):
+                        recovered.append(True)
+                        return resume(*args, **kwargs)
+                    with patch.object(builtins, "_myweb_p1_fixture", observe), \
+                            patch.object(os, "close", side_effect=fail_close), \
+                            patch.object(transaction, "_resume", side_effect=record_resume):
+                        self.assertEqual(case.main_deploy(), 1)
+                    self.assertTrue(closed_fault)
+                    self.assertEqual(recovered, [])
+                    self.assertEqual(observations, 1)
+                    self.assertEqual(case.current_root("backend"), case.candidate + "/backend")
+                finally:
+                    case.doCleanups()
+
+    def test_p1_worker_unknown_holds_real_process_resources_until_closed(self):
+        for interrupted in (False, True, "entry", "mask"):
+            with self.subTest(interrupted=interrupted), tempfile.TemporaryDirectory(prefix="myweb-p1-hold-parent-") as directory:
+                report = Path(directory)
+                if interrupted == "entry":
+                    (report / "entry-interrupt").write_bytes(b"inject SIGINT immediately before first mask\n")
+                if interrupted == "mask":
+                    (report / "mask-failure").write_bytes(b"inject first mask failure\n")
+                with (report / "child.log").open("wb") as log:
+                    child = subprocess.Popen([sys.executable, "-B", str(Path(__file__).resolve()), "--p1-hold-child", directory],
+                                             stdin=subprocess.DEVNULL, stdout=log, stderr=subprocess.STDOUT,
+                                             close_fds=True, start_new_session=True)
+                    def wait_report(minimum):
+                        deadline = time.monotonic() + 20
+                        while time.monotonic() < deadline:
+                            state_path = report / "state.json"
+                            if state_path.exists():
+                                state = json.loads(state_path.read_text(encoding="utf-8"))
+                                if state["attempts"] >= minimum:
+                                    return state
+                            self.assertIsNone(child.poll(), (report / "child.log").read_text(encoding="utf-8"))
+                            time.sleep(0.02)
+                        self.fail("未取得实际HOLD与资源验证证据")
+                    try:
+                        state = wait_report(2)
+                        self.assertTrue(state["held"])
+                        self.assertTrue(state["worker_alive"])
+                        self.assertGreaterEqual(state["tracked_fds"], 6)
+                        self.assertEqual(state["phase"], "deploying")
+                        with open(state["lock_path"], "rb") as contender:
+                            with self.assertRaises(BlockingIOError):
+                                transaction.fcntl.flock(contender.fileno(), transaction.fcntl.LOCK_EX | transaction.fcntl.LOCK_NB)
+                        if interrupted is True or interrupted == "mask":
+                            child.send_signal(signal.SIGTERM)
+                        later = wait_report(state["attempts"] + 2)
+                        self.assertTrue(later["held"])
+                        self.assertTrue(later["worker_alive"])
+                        self.assertIsNone(child.poll())
+                        (report / "release").write_bytes(b"release known fixture worker\n")
+                        child.wait(timeout=10)
+                        self.assertNotEqual(child.returncode, 0)
+                        self.assertTrue((report / "known-closed").exists())
+                        self.assertFalse((report / "business-replayed").exists())
+                        if interrupted == "entry":
+                            self.assertTrue((report / "entry-signal-injected").exists())
+                        if interrupted == "mask":
+                            self.assertTrue((report / "mask-failure-injected").exists())
+                        self.assertFalse(Path("/proc/" + str(state["worker_pid"])).exists())
+                        if not interrupted:
+                            self.assertEqual(child.returncode, 1)
+                    finally:
+                        try:
+                            # 本测试独占的进程组也包含异常退出后仍存活的已知fixture worker。
+                            os.killpg(child.pid, signal.SIGKILL)
+                        except ProcessLookupError:
+                            pass
+                        if child.poll() is None:
+                            child.wait(timeout=5)
+
+
+def _p1_hold_fixture(directory: str) -> int:
+    """独立Linux测试进程；只创建私有文件和已知sleep worker，服务/网络沿用替身。"""
+    case = TransactionTests()
+    case.setUp()
+    report = Path(directory)
+    try:
+        masked = signal.pthread_sigmask
+        injected = False
+        def entry_signal(how, values):
+            nonlocal injected
+            if not injected and how == signal.SIG_BLOCK and (report / "mask-failure").exists():
+                injected = True
+                (report / "mask-failure-injected").write_bytes(b"first pthread_sigmask failed\n")
+                raise OSError("确定性屏蔽失败")
+            if not injected and how == signal.SIG_BLOCK and (report / "entry-interrupt").exists():
+                injected = True
+                (report / "entry-signal-injected").write_bytes(b"before first pthread_sigmask\n")
+                os.kill(os.getpid(), signal.SIGINT)
+            return masked(how, values)
+        def observe(observation_error, cleanup_error, **options):
+            worker = subprocess.Popen([sys.executable, "-I", "-B", "-c", "import time; time.sleep(120)"],
+                                      stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, close_fds=True)
+            events = list(case.events)
+            snapshot = case.material_snapshot()
+            captured = {}
+            for entry in Path("/proc/self/fd").iterdir():
+                try:
+                    target = os.readlink(entry)
+                    if target.startswith(str(case.root)):
+                        captured[int(entry.name)] = os.fstat(int(entry.name))
+                except FileNotFoundError:
+                    pass
+            sink = options["sync_sample"].__self__
+            if sink.fd not in captured or case.lock_fd not in captured or case.lease_fd not in captured:
+                raise AssertionError("没有捕获真实控制描述符")
+            class Owner:
+                attempts = 0
+                closed = False
+                def try_cleanup(self):
+                    if self.closed:
+                        return True
+                    self.attempts += 1
+                    held = all(os.fstat(fd).st_ino == old.st_ino and os.fstat(fd).st_dev == old.st_dev
+                               for fd, old in captured.items())
+                    unchanged = case.events == events and case.material_snapshot() == snapshot
+                    if not held or not unchanged:
+                        (report / "business-replayed").write_bytes(b"failed\n")
+                    state = {"attempts": self.attempts, "held": held and unchanged,
+                             "worker_alive": worker.poll() is None, "worker_pid": worker.pid,
+                             "tracked_fds": len(captured), "phase": case.receipt()["phase"],
+                             "lock_path": str(case.path(transaction.LOCK_PATH))}
+                    pending = report / "pending.json"
+                    pending.write_text(json.dumps(state), encoding="utf-8")
+                    pending.replace(report / "state.json")
+                    if not (report / "release").exists():
+                        if self.attempts % 2 == 0:
+                            raise RuntimeError("已知worker的回收尚未确认")
+                        return False
+                    worker.kill()
+                    worker.wait(timeout=1)
+                    for stream in (worker.stdin, worker.stdout, worker.stderr):
+                        stream.close()
+                    self.closed = True
+                    (report / "known-closed").write_bytes(b"known worker reaped and pipes closed\n")
+                    return True
+            error = cleanup_error("P1_WORKER_CLEANUP_UNCONFIRMED")
+            error.owner = Owner()
+            raise error
+        def replay(*args, **kwargs):
+            (report / "business-replayed").write_bytes(b"unexpected fallback\n")
+            raise AssertionError("HOLD后禁止业务回放")
+        with patch.object(builtins, "_myweb_p1_fixture", observe), \
+                patch.object(signal, "pthread_sigmask", side_effect=entry_signal), \
+                patch.object(transaction, "_resume", side_effect=replay), \
+                patch.object(transaction, "_isolate_if_uncommitted", side_effect=replay):
+            return case.main_deploy()
+    finally:
+        case.doCleanups()
+
 
 if __name__ == "__main__":
+    if "--p1-hold-child" in sys.argv:
+        if not POSIX or len(sys.argv) != 3:
+            raise SystemExit("HOLD测试入口仅接受root Linux的固定参数")
+        raise SystemExit(_p1_hold_fixture(sys.argv[2]))
     require_posix = "--require-posix" in sys.argv
     if require_posix:
         sys.argv.remove("--require-posix")
