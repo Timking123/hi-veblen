@@ -113,6 +113,8 @@ class TransactionTests(unittest.TestCase):
                     self.write(root + "/index.html", b'<div id="app"></div><div id="root"></div><script src="/assets/main.js"></script>')
                     self.write(root + "/assets/main.js", b"https://lingxi.hi-veblen.com/")
                 else:
+                    self.directory(root + "/ui/backend")
+                    self.write(root + "/.venv/bin/python", b"fixture interpreter\n", 0o755)
                     self.write(root + "/.release.env", transaction._release_env(backend))
                     self.write(root + "/ops/apparmor/myagent-persona-parser", b"# fixture profile\n")
                     self.write(root + "/ops/nginx/hi-veblen.com.http.conf", self.nginx())
@@ -153,6 +155,7 @@ class TransactionTests(unittest.TestCase):
             return original_open(path, *args, **kwargs)
 
         self.stack.enter_context(patch("builtins.open", side_effect=kernel_open))
+        self.writer_fixtures()
 
     def path(self, path: str) -> Path:
         self.assertTrue(path.startswith("/"))
@@ -245,17 +248,24 @@ class TransactionTests(unittest.TestCase):
             if arguments[1] == "show":
                 unit, property_name = arguments[2], arguments[4]
                 role = "world" if unit == "myagent-world.service" else "gateway"
+                pid = "4101" if role == "world" else "4102"
+                main_pid = pid if self.active and unit not in self.stopped_units else "0"
                 values = {"FragmentPath": "/etc/systemd/system/" + unit, "LoadState": "loaded", "NeedDaemonReload": "no",
+                          "MainPID": main_pid, "ExecMainPID": pid, "ControlGroup": "/system.slice/" + unit,
+                          "InvocationID": "a" * 32,
                           "WorkingDirectory": "/opt/myagent/backend-current" + ("/ui/backend" if role == "gateway" else ""),
                           "ExecStart": "{ path=/opt/myagent/backend-current/.venv/bin/python ; argv[]=" + self.unit_command(role) +
-                          " ; ignore_errors=no ; start_time=[n/a] ; stop_time=[n/a] ; pid=0 ; code=(null) ; status=0 }"}
+                          " ; ignore_errors=no ; start_time=[n/a] ; stop_time=[n/a] ; pid=" + pid + " ; code=(null) ; status=0 }"}
                 return (values.get(property_name, "") + "\n").encode()
             if arguments[1] == "stop":
                 self.active = False
                 self.stopped_units.update(arguments[2:])
+                for unit in arguments[2:]:
+                    self.write("/sys/fs/cgroup/system.slice/" + unit + "/cgroup.procs", b"")
             elif arguments[1] in ("start", "restart"):
                 self.active = True
                 self.stopped_units.difference_update(arguments[2:])
+                self.writer_fixtures()
             elif arguments[1] == "is-active" and (not self.active or arguments[-1] in self.stopped_units):
                 raise transaction.TransactionError("E_SERVICES")
             return b""
@@ -266,6 +276,8 @@ class TransactionTests(unittest.TestCase):
         if arguments[0] == "bash":
             self.active = True
             self.stopped_units.clear()
+            self.recovery_unit_fixtures()
+            self.writer_fixtures()
             return b""
         if "-c" in arguments and transaction.BACKEND_READ_GATES in arguments:
             return b""
@@ -318,6 +330,58 @@ class TransactionTests(unittest.TestCase):
         with self.assertRaises(transaction.TransactionError) as caught:
             function()
         self.assertEqual(caught.exception.code, code)
+
+    def material_snapshot(self):
+        # 比较材料字节、路径与对象身份；读取引起的 atime 不属于变更。
+        result = {}
+        for path in (self.root, *sorted(self.root.rglob("*"))):
+            info = path.lstat()
+            identity = (info.st_dev, info.st_ino, info.st_mode, info.st_uid, info.st_gid, info.st_nlink)
+            content = os.readlink(path) if path.is_symlink() else path.read_bytes() if path.is_file() else None
+            result[str(path.relative_to(self.root))] = (identity, content)
+        return result
+
+    def assert_hold_preserves_scene(self, action=None):
+        before = self.material_snapshot()
+        state = self.active, set(self.stopped_units)
+        self.events.clear()
+        with transaction._Fs() as fs, self.assertRaises((transaction.TransactionError, OSError)):
+            (action or (lambda: transaction._resume(TXN, fs, self.lock_fd)))()
+        self.assertEqual((self.active, self.stopped_units), state)
+        self.assertEqual(self.material_snapshot(), before)
+        self.assertFalse([event for event in self.events if not event.startswith(("command systemctl show ",
+                                                                                "command systemctl is-enabled "))])
+
+    def maintenance_fixture(self, exists):
+        path = self.path(transaction.MAINTENANCE_PATH)
+        if exists:
+            self.write(transaction.MAINTENANCE_PATH, b"")
+        elif path.exists():
+            path.unlink()
+
+    def writer_fixtures(self):
+        # 只在私有根构造 proc/cgroup 边界；不读取真实进程、服务或环境变量。
+        backend = self.current_root("backend")
+        self.directory(backend + "/ui/backend")
+        self.write(backend + "/.venv/bin/python", b"fixture interpreter\n", 0o755)
+        for role, pid in (("world", "4101"), ("gateway", "4102")):
+            process = "/proc/" + pid
+            group = "/system.slice/myagent-" + role + ".service"
+            self.write(process + "/stat", (pid + " (python) S " + "0 " * 18 + "12345\n").encode())
+            self.write(process + "/cmdline", b"\0".join(part.encode() for part in self.unit_command(role).split()) + b"\0")
+            self.write(process + "/cgroup", ("0::" + group + "\n").encode())
+            values = {"BRAIN_RELEASE_SHA": self.path(backend + "/release.txt").read_text().strip(),
+                      "LINGXI_PERSONA_SCHEMA_PHASE": "compat", "LINGXI_PERSONA_GROWTH_PHASE": "compat",
+                      "LINGXI_WORLD_LEDGER_SCHEMA_PHASE": "compat", "LINGXI_PERSONA_GROWTH_CANARY_HASHES": ""}
+            self.write(process + "/environ", b"\0".join((key + "=" + value).encode() for key, value in values.items()) + b"\0")
+            self.write("/sys/fs/cgroup" + group + "/cgroup.procs", (pid + "\n").encode())
+            for name, target in (("cwd", backend + ("/ui/backend" if role == "gateway" else "")),
+                                 ("exe", backend + "/.venv/bin/python")):
+                path = self.path(process + "/" + name)
+                if path.is_symlink():
+                    path.unlink()
+                # 测试根不做宿主 chroot，proc magic link 用根内绝对路径模拟。
+                os.symlink(str(self.path(target)), path)
 
     def test_capture_and_success_close_real_files(self):
         self.deploy()
@@ -375,6 +439,7 @@ class TransactionTests(unittest.TestCase):
         self.assertEqual(self.current_root("backend"), self.old + "/backend")
         self.active = True
         self.stopped_units.clear()
+        self.writer_fixtures()
         self.assertEqual(self.finalize()["outcome"], "rolled-back")
 
     def test_restore_intent_residue_rebinds_real_link(self):
@@ -555,7 +620,7 @@ class TransactionTests(unittest.TestCase):
         self.assertTrue(self.path(transaction.MAINTENANCE_PATH).exists())
         self.assertEqual(self.classify()["action"], "revalidate-commit")
 
-    def test_recovery_drift_still_isolates_bound_nonterminal_transaction(self):
+    def test_recovery_pointer_drift_preserves_unknown_scene(self):
         self.deploy()
         rename = os.rename
 
@@ -572,10 +637,10 @@ class TransactionTests(unittest.TestCase):
         link = self.path(transaction.CURRENT["portal"])
         link.unlink()
         os.symlink(self.old + "/portal", link)
-        with transaction._Fs() as fs, self.assertRaises(transaction.TransactionError):
-            transaction._resume(TXN, fs, self.lock_fd)
-        self.assertFalse(self.active)
-        self.assertTrue(self.path(transaction.MAINTENANCE_PATH).exists())
+        for maintained in (False, True):
+            with self.subTest(maintained=maintained):
+                self.maintenance_fixture(maintained)
+                self.assert_hold_preserves_scene()
 
     def test_exposing_temporary_file_never_becomes_receipt(self):
         self.deploy()
@@ -750,16 +815,29 @@ class TransactionTests(unittest.TestCase):
         self.assertEqual(self.receipt()["phase"], "deploying")
         self.assertTrue(self.path(transaction.MAINTENANCE_PATH).exists())
 
-    def test_recovery_missing_preserve_still_stops_own_services(self):
+    def test_recovery_missing_preserve_preserves_unknown_scene(self):
         self.deploy()
         self.path(self.upload + "/PRESERVE").unlink()
         self.path(transaction.MAINTENANCE_PATH).unlink()
         self.active = True
         self.stopped_units.clear()
-        with transaction._Fs() as fs, self.assertRaises((transaction.TransactionError, OSError)):
-            transaction._resume(TXN, fs, self.lock_fd)
-        self.assertFalse(self.active)
-        self.assertTrue(self.path(transaction.MAINTENANCE_PATH).exists())
+        for maintained in (False, True):
+            with self.subTest(maintained=maintained):
+                self.maintenance_fixture(maintained)
+                self.assert_hold_preserves_scene()
+
+    def test_recovery_bad_or_missing_receipt_preserves_same_lease(self):
+        self.deploy()
+        path = self.path(self.upload + "/" + transaction.RECEIPT_NAME)
+        for raw in (b"invalid\n", None):
+            if raw is None:
+                path.unlink()
+            else:
+                path.write_bytes(raw)
+            for maintained in (False, True):
+                with self.subTest(raw=raw, maintained=maintained):
+                    self.maintenance_fixture(maintained)
+                    self.assert_hold_preserves_scene()
 
     def test_terminal_binding_rejects_bool_and_extra_keys(self):
         self.deploy()
@@ -867,28 +945,153 @@ class TransactionTests(unittest.TestCase):
                 raw = raw.replace((key + "=" + value + "\n").encode(), (key + "=@" + key + "@\n").encode())
             self.write(self.candidate + "/backend/ops/systemd/" + unit, raw)
 
-    def test_revalidate_commit_starts_only_same_bound_target(self):
+    def test_revalidate_commit_inactive_holds_without_scene_changes(self):
         self.prepare_stopped_exposing()
-        links = {slot: os.lstat(self.path(path)).st_ino for slot, path in transaction.CURRENT.items()}
-        self.events.clear()
-        with transaction._Fs() as fs:
-            self.assertEqual(transaction._resume(TXN, fs, self.lock_fd)["phase"], "closed")
-        self.assertTrue(self.active)
-        self.assertEqual({slot: os.lstat(self.path(path)).st_ino for slot, path in transaction.CURRENT.items()}, links)
-        self.assertFalse(any("restart " in event or event.startswith("command bash") for event in self.events))
+        for maintained in (False, True):
+            with self.subTest(maintained=maintained):
+                self.maintenance_fixture(maintained)
+                self.assert_hold_preserves_scene()
 
     def test_revalidate_commit_running_services_preserve_epoch(self):
         self.prepare_stopped_exposing()
         self.active = True
         self.stopped_units.clear()
+        self.writer_fixtures()
         self.events.clear()
         epoch = self.epoch
         with transaction._Fs() as fs:
             self.assertEqual(transaction._resume(TXN, fs, self.lock_fd)["phase"], "closed")
         self.assertEqual(self.receipt()["terminal"]["proof"]["run_epoch"], epoch)
         self.assertFalse(any(event.startswith("command systemctl " + verb) for event in self.events for verb in ("start ", "restart ", "stop ")))
+        self.assertEqual(sum("--expected-revision" in event for event in self.events), 1)
 
-    def test_revalidate_committing_restarts_after_failed_terminal_publish(self):
+    def test_bound_deploying_recovery_preserves_legal_rollback(self):
+        self.deploy()
+        self.events.clear()
+        with transaction._Fs() as fs:
+            result = transaction._resume(TXN, fs, self.lock_fd)
+        self.assertEqual(result["outcome"], "rolled-back")
+        self.assertEqual(self.current_root("backend"), self.old + "/backend")
+        self.assertEqual(sum("--expected-revision" in event for event in self.events), 1)
+
+    def test_prepared_recovery_preserves_legal_rollback(self):
+        self.capture()
+        with transaction._Fs() as fs:
+            self.assertEqual(transaction._resume(TXN, fs, self.lock_fd)["outcome"], "rolled-back")
+
+    def test_partial_candidate_switch_can_resume_original_rollback(self):
+        self.capture()
+        transaction.verify_previous(txn_id=TXN, purpose="before-mutation", lock_fd=self.lock_fd, lease_fd=self.lease_fd)
+        replace = transaction._replace_link
+        def interrupted(instance, path, *args, **kwargs):
+            replace(instance, path, *args, **kwargs)
+            if path == transaction.CURRENT["portal"]:
+                raise OSError("注入首个 current 已替换后的中断")
+        with patch.object(transaction, "_replace_link", side_effect=interrupted):
+            with self.assertRaises(OSError):
+                transaction._candidate_mutation(TXN, self.lock_fd, self.lease_fd)
+        self.assertFalse(self.active)
+        with transaction._Fs() as fs:
+            self.assertEqual(transaction._resume(TXN, fs, self.lock_fd)["outcome"], "rolled-back")
+
+    def test_rollback_pending_reenters_after_link_failure(self):
+        self.deploy()
+        replace = transaction._replace_link
+        def interrupted(instance, path, *args, **kwargs):
+            if path == transaction.CURRENT["portal"]:
+                raise OSError("注入 rollback-pending 后首个切链失败")
+            return replace(instance, path, *args, **kwargs)
+        with patch.object(transaction, "_replace_link", side_effect=interrupted), transaction._Fs() as fs:
+            with self.assertRaises(transaction.TransactionError):
+                transaction._resume(TXN, fs, self.lock_fd)
+        self.assertEqual(self.receipt()["phase"], "rollback-pending")
+        self.assertFalse(self.active)
+        with transaction._Fs() as fs:
+            self.assertEqual(transaction._resume(TXN, fs, self.lock_fd)["outcome"], "rolled-back")
+
+    def test_candidate_backend_switch_before_new_phase_install_can_rollback(self):
+        transaction.capture_previous(txn_id=TXN, candidate_revision=BACKEND, package_sha256="d" * 64,
+                                     phases={**PHASES, "persona_growth": "shadow"}, canary_hashes=[],
+                                     lock_fd=self.lock_fd, lease_fd=self.lease_fd)
+        transaction.verify_previous(txn_id=TXN, purpose="before-mutation", lock_fd=self.lock_fd, lease_fd=self.lease_fd)
+        replace = transaction._replace_link
+        def interrupted(instance, path, *args, **kwargs):
+            replace(instance, path, *args, **kwargs)
+            if path == transaction.CURRENT["backend"]:
+                raise OSError("注入 backend 已切换但新 phase 尚未安装")
+        with patch.object(transaction, "_replace_link", side_effect=interrupted):
+            with self.assertRaises(OSError):
+                transaction._candidate_mutation(TXN, self.lock_fd, self.lease_fd)
+        self.assertEqual(self.current_root("backend"), self.candidate + "/backend")
+        with transaction._Fs() as fs:
+            self.assertEqual(transaction._resume(TXN, fs, self.lock_fd)["outcome"], "rolled-back")
+
+    def test_restored_backend_before_configuration_can_resume_rollback(self):
+        self.deploy()
+        replace = transaction._replace_link
+        def interrupted(instance, path, *args, **kwargs):
+            replace(instance, path, *args, **kwargs)
+            if path == transaction.CURRENT["backend"]:
+                raise OSError("注入 backend 已恢复但配置尚未恢复")
+        with patch.object(transaction, "_replace_link", side_effect=interrupted), transaction._Fs() as fs:
+            with self.assertRaises(transaction.TransactionError):
+                transaction._resume(TXN, fs, self.lock_fd)
+        self.assertEqual(self.receipt()["phase"], "rollback-pending")
+        self.assertEqual(self.current_root("backend"), self.old + "/backend")
+        with transaction._Fs() as fs:
+            self.assertEqual(transaction._resume(TXN, fs, self.lock_fd)["outcome"], "rolled-back")
+
+    def test_partially_restored_units_hold_with_loaded_configuration_unchanged(self):
+        self.deploy()
+        record = json.loads(self.path(self.rollback + "/" + transaction.RECORD_NAME).read_bytes())
+        first_unit = next(key for key in record["config_backup"] if key.endswith("_unit"))
+        destination = transaction.CONFIG[first_unit][0]
+        units = ("myagent-world.service", "myagent-gateway.service")
+        loaded_bytes = {unit: self.path("/etc/systemd/system/" + unit).read_bytes() for unit in units}
+        # loaded 与磁盘独立；此次恢复未 daemon-reload，不能跟着磁盘夹具自动改变。
+        loaded_properties = {(unit, key): self.command(["systemctl", "show", unit, "-p", key, "--value"])
+                             for unit in units for key in ("Environment", "EnvironmentFiles")}
+        before_loaded = copy.deepcopy(loaded_properties)
+        original = self.command
+        def loaded_command(arguments, **kwargs):
+            if arguments[:2] == ["systemctl", "show"]:
+                unit, key = arguments[2], arguments[4]
+                if (unit, key) in loaded_properties:
+                    self.events.append("command " + " ".join(arguments))
+                    return loaded_properties[(unit, key)]
+                if key == "NeedDaemonReload":
+                    return b"no" if self.path("/etc/systemd/system/" + unit).read_bytes() == loaded_bytes[unit] else b"yes"
+            return original(arguments, **kwargs)
+        write = transaction._Fs.write
+        def interrupt(fs, path, *args, **kwargs):
+            result = write(fs, path, *args, **kwargs)
+            if path == destination:
+                raise OSError("注入第一个 unit 已写回、daemon-reload 尚未执行")
+            return result
+        with patch.object(transaction, "_command", side_effect=loaded_command):
+            with patch.object(transaction._Fs, "write", new=interrupt), transaction._Fs() as fs:
+                with self.assertRaises(transaction.TransactionError):
+                    transaction._resume(TXN, fs, self.lock_fd)
+            self.assertEqual(self.receipt()["phase"], "rollback-pending")
+            self.assertNotEqual(self.path(destination).read_bytes(), loaded_bytes["myagent-" + first_unit.removesuffix("_unit") + ".service"])
+            self.assertFalse(self.active)
+            self.assert_hold_preserves_scene()
+        self.assertEqual(loaded_properties, before_loaded)
+
+    def test_revalidate_committing_requires_both_active(self):
+        self.prepare_stopped_committing()
+        self.assert_recovery_states_hold()
+        self.active = True
+        self.stopped_units.clear()
+        self.writer_fixtures()
+        self.events.clear()
+        with transaction._Fs() as fs:
+            self.assertEqual(transaction._resume(TXN, fs, self.lock_fd)["phase"], "closed")
+        self.assertEqual(self.current_root("backend"), self.candidate + "/backend")
+        self.assertFalse(any("restart " in event or event.startswith("command bash") for event in self.events))
+        self.assertEqual(sum("--expected-revision" in event for event in self.events), 1)
+
+    def prepare_stopped_committing(self):
         self.deploy()
         self.recovery_unit_fixtures()
         advance = transaction._Transaction.advance
@@ -902,14 +1105,12 @@ class TransactionTests(unittest.TestCase):
             self.expect_code("E_COMMIT_UNCERTAIN", self.finalize)
         self.assertEqual(self.receipt()["phase"], "committing")
         self.assertFalse(self.active)
-        self.events.clear()
-        with transaction._Fs() as fs:
-            self.assertEqual(transaction._resume(TXN, fs, self.lock_fd)["phase"], "closed")
-        self.assertEqual(self.current_root("backend"), self.candidate + "/backend")
-        self.assertFalse(any("restart " in event or event.startswith("command bash") for event in self.events))
 
     def test_revalidate_commit_rejects_loaded_unit_drift_before_start(self):
         self.prepare_stopped_exposing()
+        self.active = True
+        self.stopped_units.clear()
+        self.writer_fixtures()
         original = self.command
         for field, value in (("FragmentPath", "/etc/systemd/system/unrelated.service"), ("NeedDaemonReload", "yes"),
                              ("WorkingDirectory", self.old + "/backend"), ("ExecStart", "{ path=/bin/true ; argv[]=/bin/true ; ignore_errors=no ; }"),
@@ -921,71 +1122,333 @@ class TransactionTests(unittest.TestCase):
                         return value.encode()
                     return original(arguments, **kwargs)
 
-                self.events.clear()
-                with patch.object(transaction, "_command", side_effect=drift), transaction._Fs() as fs:
-                    with self.assertRaises(transaction.TransactionError):
-                        transaction._resume(TXN, fs, self.lock_fd)
-                self.assertFalse(any(event.startswith("command systemctl start ") for event in self.events))
-                self.assertEqual(self.receipt()["phase"], "exposing")
-                self.assertTrue(self.path(transaction.MAINTENANCE_PATH).exists())
+                for maintained in (False, True):
+                    self.maintenance_fixture(maintained)
+                    with patch.object(transaction, "_command", side_effect=drift):
+                        self.assert_hold_preserves_scene()
 
-    def test_revalidate_commit_rejects_template_drift_and_failed_start(self):
+    def test_revalidate_commit_rejects_template_drift(self):
         self.prepare_stopped_exposing()
+        self.active = True
+        self.stopped_units.clear()
+        self.writer_fixtures()
         path = transaction.CONFIG["gateway_unit"][0]
         raw = self.path(path).read_bytes()
         self.write(path, raw + b"ExecStartPre=/bin/true\n")
-        self.events.clear()
-        with transaction._Fs() as fs:
-            self.expect_code("E_BINDING", lambda: transaction._resume(TXN, fs, self.lock_fd))
-        self.assertFalse(any(event.startswith("command systemctl start ") for event in self.events))
-        self.write(path, raw)
-        original = self.command
-
-        def fail_start(arguments, **kwargs):
-            if arguments[:2] == ["systemctl", "start"]:
-                raise transaction.TransactionError("E_SERVICES")
-            return original(arguments, **kwargs)
-
-        with patch.object(transaction, "_command", side_effect=fail_start), transaction._Fs() as fs:
-            self.expect_code("E_SERVICES", lambda: transaction._resume(TXN, fs, self.lock_fd))
-        self.assertFalse(self.active)
-        self.assertEqual(self.receipt()["phase"], "exposing")
+        for maintained in (False, True):
+            self.maintenance_fixture(maintained)
+            self.assert_hold_preserves_scene()
 
     def test_revalidate_commit_pointer_drift_never_starts(self):
         self.prepare_stopped_exposing()
         link = self.path(transaction.CURRENT["backend"])
         link.unlink()
         os.symlink(self.old + "/backend", link)
-        self.events.clear()
-        with transaction._Fs() as fs, self.assertRaises(transaction.TransactionError):
-            transaction._resume(TXN, fs, self.lock_fd)
-        self.assertFalse(any(event.startswith("command systemctl start ") for event in self.events))
+        for maintained in (False, True):
+            self.maintenance_fixture(maintained)
+            self.assert_hold_preserves_scene()
         self.assertEqual(self.current_root("backend"), self.old + "/backend")
 
-    def test_revalidate_commit_starts_only_inactive_service(self):
+    def test_revalidate_commit_second_service_states_never_restart(self):
+        self.prepare_stopped_exposing()
+        self.assert_recovery_states_hold()
+
+    def assert_recovery_states_hold(self):
+        self.active = True
+        self.writer_fixtures()
+        self.stopped_units = {"myagent-gateway.service"}
+        original = self.command
+        for state in ("inactive", "failed", "activating", "deactivating", "unknown", ""):
+            def drift(arguments, **kwargs):
+                if arguments[:3] == ["systemctl", "show", "myagent-gateway.service"] and "ActiveState" in arguments:
+                    return state.encode()
+                return original(arguments, **kwargs)
+            for maintained in (False, True):
+                with self.subTest(state=state, maintained=maintained):
+                    self.maintenance_fixture(maintained)
+                    with patch.object(transaction, "_command", side_effect=drift):
+                        self.assert_hold_preserves_scene()
+
+    def test_actual_writer_missing_or_wrong_bound_target_holds(self):
         self.prepare_stopped_exposing()
         self.active = True
-        self.stopped_units = {"myagent-gateway.service"}
-        self.events.clear()
-        with transaction._Fs() as fs:
-            self.assertEqual(transaction._resume(TXN, fs, self.lock_fd)["phase"], "closed")
-        self.assertEqual([event for event in self.events if event.startswith("command systemctl start ")],
-                         ["command systemctl start myagent-gateway.service"])
+        self.stopped_units.clear()
+        self.writer_fixtures()
+        process = "/proc/4102"
+        for filename, raw in (("cmdline", b"python\0-m\0unrelated\0"), ("cgroup", b"0::/unrelated.service\n"),
+                              ("stat", b"invalid\n"), ("environ", b"BRAIN_RELEASE_SHA=unrelated\0")):
+            path = self.path(process + "/" + filename)
+            original = path.read_bytes()
+            for replacement in (raw, None):
+                if replacement is None:
+                    path.unlink()
+                else:
+                    path.write_bytes(replacement)
+                for maintained in (False, True):
+                    with self.subTest(filename=filename, replacement=replacement, maintained=maintained):
+                        self.maintenance_fixture(maintained)
+                        self.assert_hold_preserves_scene()
+            path.write_bytes(original)
 
-    def test_revalidate_commit_start_success_but_service_exited_is_rejected(self):
+    def test_writer_cwd_executable_and_extra_cgroup_member_hold(self):
         self.prepare_stopped_exposing()
+        self.active = True
+        self.stopped_units.clear()
+        self.writer_fixtures()
+        for name, target in (("cwd", self.old + "/backend/ui/backend"), ("exe", self.old + "/backend/.venv/bin/python")):
+            path = self.path("/proc/4102/" + name)
+            original = os.readlink(path)
+            path.unlink()
+            os.symlink(str(self.path(target)), path)
+            for maintained in (False, True):
+                with self.subTest(name=name, maintained=maintained):
+                    self.maintenance_fixture(maintained)
+                    self.assert_hold_preserves_scene()
+            path.unlink()
+            os.symlink(original, path)
+        self.write("/sys/fs/cgroup/system.slice/myagent-gateway.service/cgroup.procs", b"4102\n9999\n")
+        self.assert_hold_preserves_scene()
+
+    def test_loaded_pid_and_instance_must_match_actual_writer(self):
+        self.prepare_stopped_exposing()
+        self.active = True
+        self.stopped_units.clear()
+        self.writer_fixtures()
         original = self.command
+        for field, value in (("MainPID", "0"), ("ExecMainPID", "9999"), ("InvocationID", "0" * 32),
+                             ("ControlGroup", "/system.slice/unrelated.service"), ("ExecStart", "pid=0")):
+            for maintained in (False, True):
+                with self.subTest(field=field, maintained=maintained):
+                    def drift(arguments, **kwargs):
+                        raw = original(arguments, **kwargs)
+                        if arguments[:3] == ["systemctl", "show", "myagent-gateway.service"] and field in arguments:
+                            return raw.replace(b"pid=4102", b"pid=0") if field == "ExecStart" else value.encode()
+                        return raw
+                    self.maintenance_fixture(maintained)
+                    with patch.object(transaction, "_command", side_effect=drift):
+                        self.assert_hold_preserves_scene()
 
-        def exits_immediately(arguments, **kwargs):
-            if arguments == ["systemctl", "start", "myagent-gateway.service"]:
-                return b""
-            return original(arguments, **kwargs)
+    def test_writer_changes_during_second_unit_proof_hold_before_mutation(self):
+        self.prepare_stopped_exposing()
+        self.active = True
+        self.stopped_units.clear()
+        self.writer_fixtures()
+        original = self.command
+        changed = False
+        for maintained in (False, True):
+            changed = False
+            def drift(arguments, **kwargs):
+                nonlocal changed
+                if arguments[:3] == ["systemctl", "show", "myagent-gateway.service"] and "MainPID" in arguments:
+                    changed = True
+                if arguments[:3] == ["systemctl", "show", "myagent-world.service"] and "InvocationID" in arguments and changed:
+                    return b"b" * 32
+                return original(arguments, **kwargs)
+            self.maintenance_fixture(maintained)
+            with patch.object(transaction, "_command", side_effect=drift):
+                self.assert_hold_preserves_scene()
 
-        with patch.object(transaction, "_command", side_effect=exits_immediately), transaction._Fs() as fs:
-            self.expect_code("E_GATES", lambda: transaction._resume(TXN, fs, self.lock_fd))
+    def test_active_unit_unknown_child_cgroup_preserves_scene(self):
+        self.prepare_stopped_exposing()
+        self.active = True
+        self.stopped_units.clear()
+        self.writer_fixtures()
+        self.write("/sys/fs/cgroup/system.slice/myagent-world.service/unknown/cgroup.procs", b"9999\n")
+        for maintained in (False, True):
+            self.maintenance_fixture(maintained)
+            self.assert_hold_preserves_scene()
+
+    def test_empty_unit_unknown_child_cgroup_blocks_rollback(self):
+        self.deploy()
+        self.command(["systemctl", "stop", "myagent-gateway.service", "myagent-world.service"])
+        self.write("/sys/fs/cgroup/system.slice/myagent-world.service/unknown/cgroup.procs", b"9999\n")
+        self.assert_hold_preserves_scene()
+
+    def test_missing_cgroup_observation_root_is_not_empty_service_proof(self):
+        self.deploy()
+        self.command(["systemctl", "stop", "myagent-gateway.service", "myagent-world.service"])
+        shutil.rmtree(self.path("/sys/fs/cgroup/system.slice"))
+        self.assert_hold_preserves_scene()
+
+    def test_recovery_missing_record_preserves_same_lease(self):
+        self.deploy()
+        self.path(self.rollback + "/" + transaction.RECORD_NAME).unlink()
+        for maintained in (False, True):
+            self.maintenance_fixture(maintained)
+            self.assert_hold_preserves_scene()
+
+    def test_finalize_unknown_writer_does_not_fallback_to_isolation(self):
+        self.prepare_stopped_exposing()
+        self.active = True
+        self.stopped_units.clear()
+        self.writer_fixtures()
+        self.path("/proc/4102/cmdline").write_bytes(b"unrelated\0")
+        for maintained in (False, True):
+            with self.subTest(maintained=maintained):
+                self.maintenance_fixture(maintained)
+                self.assert_hold_preserves_scene(self.finalize)
+
+    def test_first_public_failure_isolates_bound_writer_and_empty_service(self):
+        self.deploy()
+        original = self.http
+        def failed_gateway(url, **kwargs):
+            if url == "https://hi-veblen.com/":
+                self.stopped_units.add("myagent-gateway.service")
+                self.write("/sys/fs/cgroup/system.slice/myagent-gateway.service/cgroup.procs", b"")
+                raise transaction.TransactionError("E_GATES")
+            return original(url, **kwargs)
+        with patch.object(transaction, "_http", side_effect=failed_gateway):
+            self.expect_code("E_COMMIT_UNCERTAIN", self.finalize)
         self.assertFalse(self.active)
-        self.assertEqual(self.receipt()["phase"], "exposing")
         self.assertTrue(self.path(transaction.MAINTENANCE_PATH).exists())
+
+    def test_maintained_failure_with_lost_writer_preserves_scene(self):
+        self.prepare_stopped_exposing()
+        self.active = True
+        self.stopped_units.clear()
+        self.writer_fixtures()
+        original = self.http
+        captured = None
+        def lose_writer(url, **kwargs):
+            nonlocal captured
+            if url == "https://lingxi.hi-veblen.com/api/session":
+                self.path("/proc/4102/cmdline").write_bytes(b"unrelated\0")
+                captured = self.material_snapshot()
+                raise transaction.TransactionError("E_GATES")
+            return original(url, **kwargs)
+        with patch.object(transaction, "_http", side_effect=lose_writer):
+            self.expect_code("E_GATES", self.finalize)
+        self.assertIsNotNone(captured)
+        self.assertEqual(self.material_snapshot(), captured)
+        self.assertTrue(self.active)
+
+    def test_successful_observation_cannot_reuse_lost_writer_proof(self):
+        self.deploy()
+        maintained = transaction._maintained_gates
+        captured = None
+        def lose_writer(*args, **kwargs):
+            nonlocal captured
+            result = maintained(*args, **kwargs)
+            if kwargs.get("observe", True):
+                self.path("/proc/4102/cmdline").write_bytes(b"unrelated\0")
+                captured = self.material_snapshot()
+            return result
+        with patch.object(transaction, "_maintained_gates", side_effect=lose_writer):
+            self.expect_code("E_COMMIT_UNCERTAIN", self.finalize)
+        self.assertIsNotNone(captured)
+        self.assertEqual(self.material_snapshot(), captured)
+        self.assertTrue(self.active)
+
+    def test_lease_drift_during_final_writer_read_prevents_first_mutation(self):
+        self.prepare_stopped_exposing()
+        self.active = True
+        self.stopped_units.clear()
+        self.writer_fixtures()
+        self.maintenance_fixture(False)
+        original = self.command
+        reads = 0
+        captured = None
+        def drift(arguments, **kwargs):
+            nonlocal reads, captured
+            if arguments[:3] == ["systemctl", "show", "myagent-gateway.service"] and "MainPID" in arguments:
+                reads += 1
+                if reads == 4:
+                    self.write(transaction.LEASE_PATH + "/owner", b"99-1\n", 0o600)
+                    captured = self.material_snapshot()
+            return original(arguments, **kwargs)
+        with patch.object(transaction, "_command", side_effect=drift), transaction._Fs() as fs:
+            self.expect_code("E_LEASE", lambda: transaction._resume(TXN, fs, self.lock_fd))
+        self.assertIsNotNone(captured)
+        self.assertEqual(self.material_snapshot(), captured)
+        self.assertTrue(self.active)
+
+    def test_current_drift_during_final_writer_read_prevents_first_mutation(self):
+        self.prepare_stopped_exposing()
+        self.active = True
+        self.stopped_units.clear()
+        self.writer_fixtures()
+        self.maintenance_fixture(False)
+        original = self.command
+        reads = 0
+        captured = None
+        def drift(arguments, **kwargs):
+            nonlocal reads, captured
+            if arguments[:3] == ["systemctl", "show", "myagent-gateway.service"] and "MainPID" in arguments:
+                reads += 1
+                if reads == 4:
+                    path = self.path(transaction.CURRENT["portal"])
+                    path.unlink()
+                    os.symlink(self.old + "/portal", path)
+                    captured = self.material_snapshot()
+            return original(arguments, **kwargs)
+        with patch.object(transaction, "_command", side_effect=drift), transaction._Fs() as fs:
+            self.expect_code("E_DRIFT", lambda: transaction._resume(TXN, fs, self.lock_fd))
+        self.assertIsNotNone(captured)
+        self.assertEqual(self.material_snapshot(), captured)
+        self.assertTrue(self.active)
+
+    def test_prepared_late_bound_mixed_current_cannot_isolate_active_writers(self):
+        self.capture()
+        original = self.command
+        reads = 0
+        captured = None
+        def drift(arguments, **kwargs):
+            nonlocal reads, captured
+            if arguments[:3] == ["systemctl", "show", "myagent-gateway.service"] and "MainPID" in arguments:
+                reads += 1
+                if reads == 4:
+                    os.replace(self.path(transaction._temporary_link(TXN, "portal", "candidate")),
+                               self.path(transaction.CURRENT["portal"]))
+                    captured = self.material_snapshot()
+            return original(arguments, **kwargs)
+        with patch.object(transaction, "_command", side_effect=drift), transaction._Fs() as fs:
+            self.expect_code("E_DRIFT", lambda: transaction._resume(TXN, fs, self.lock_fd))
+        self.assertIsNotNone(captured)
+        self.assertEqual(self.material_snapshot(), captured)
+        self.assertTrue(self.active)
+
+    def test_resume_fallback_with_lost_receipt_preserves_failure_scene(self):
+        self.prepare_stopped_exposing()
+        self.active = True
+        self.stopped_units.clear()
+        self.writer_fixtures()
+        self.maintenance_fixture(False)
+        write = transaction._Fs.write
+        captured = None
+        def interrupt(fs, path, *args, **kwargs):
+            nonlocal captured
+            result = write(fs, path, *args, **kwargs)
+            if path == transaction.MAINTENANCE_PATH:
+                self.path(self.upload + "/" + transaction.RECEIPT_NAME).unlink()
+                captured = self.material_snapshot()
+                raise OSError("注入已开始隔离后丢失回执")
+            return result
+        with patch.object(transaction._Fs, "write", new=interrupt), transaction._Fs() as fs:
+            with self.assertRaises(OSError):
+                transaction._resume(TXN, fs, self.lock_fd)
+        self.assertIsNotNone(captured)
+        self.assertEqual(self.material_snapshot(), captured)
+        self.assertTrue(self.active)
+
+    def test_finalize_public_failure_with_lost_writer_proof_preserves_scene(self):
+        self.deploy()
+        original = self.http
+        captured = None
+        def drift(url, **kwargs):
+            nonlocal captured
+            if url == "https://hi-veblen.com/":
+                self.path("/proc/4102/cmdline").write_bytes(b"unrelated\0")
+                captured = self.material_snapshot()
+                self.events.clear()
+                raise transaction.TransactionError("E_GATES")
+            return original(url, **kwargs)
+        with patch.object(transaction, "_http", side_effect=drift):
+            self.expect_code("E_COMMIT_UNCERTAIN", self.finalize)
+        self.assertIsNotNone(captured)
+        self.assertEqual(self.material_snapshot(), captured)
+        self.assertTrue(self.active)
+        self.assertFalse([event for event in self.events if not event.startswith(("command systemctl show ",
+                                                                                "command systemctl is-enabled "))])
 
     def test_watcher_contract_is_not_single_health_sample(self):
         self.deploy()

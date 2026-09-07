@@ -69,8 +69,8 @@ DIR_FD_SUPPORTED = all(function in os.supports_dir_fd
 
 
 def _observation_policy() -> tuple[float, float, float]:
-    # 发布专用时长、间隔和超时尚待契约裁决，不能借用 watcher 的通用默认值。
-    raise TransactionError("E_GATES", "HOLD：发布专用 P6 观察策略尚未冻结")
+    # D084 已冻结 P1 政策；完整观察门尚未接入，不能借用 watcher 的通用默认值。
+    raise TransactionError("E_GATES", "HOLD：P1 完整发布观察门尚未实现")
 
 
 class TransactionError(RuntimeError):
@@ -1247,14 +1247,16 @@ def _isolate(fs: _Fs, *, stop: bool = True) -> None:
             _services_stopped()
 
 
-def _isolate_if_uncommitted(transaction: _Transaction) -> None:
+def _isolate_if_uncommitted(transaction: _Transaction, lease_fd: int | None) -> None:
     try:
         _, persisted, _ = transaction.load()
         if persisted["phase"] in TERMINAL_PHASES:
             # terminal rename 可能已经成功；只读复验后保留业务结果，后续仅续清理。
             return
+        _revalidate_target_services(transaction, lease_fd, require_active=False)
     except (OSError, TransactionError):
-        pass
+        # 缺失或漂移的材料不能证明 writer 归属；失败兜底也不能修改未知现场。
+        return
     _isolate(transaction.fs)
 
 
@@ -1615,6 +1617,8 @@ def finalize_transaction(*, txn_id: str, lock_fd: int, lease_fd: int | None) -> 
             _require(phase in ("deploying", "restored", "exposing", "committing"), "E_STATE")
             # 旧两行仅原首次 finalize 可正常推进；中断后的回调不得拿它自动恢复。
             _require(phase in ("deploying", "restored") or record["rollback_floor"]["auto_rollback_allowed"], "E_FLOOR")
+            # 恢复及首次 finalize 的共同只读门；不凭 current 文本或健康响应认定实际进程。
+            _revalidate_target_services(transaction, lease_fd)
             try:
                 transaction.barrier(receipt)
                 if phase in ("exposing", "committing"):
@@ -1622,14 +1626,16 @@ def finalize_transaction(*, txn_id: str, lock_fd: int, lease_fd: int | None) -> 
                 maintained = _maintained_gates(transaction, record, receipt)
             except (OSError, TransactionError, ValueError) as error:
                 if phase in ("exposing", "committing"):
-                    _isolate_if_uncommitted(transaction)
+                    _isolate_if_uncommitted(transaction, lease_fd)
                 raise TransactionError("E_GATES", "维护态门失败，保留恢复材料") from error
             try:
+                _revalidate_target_services(transaction, lease_fd)
                 if phase in ("deploying", "restored"):
                     receipt, identity = transaction.advance(record, receipt, identity, "exposing")
                 # 原子发布和目录 fsync 全部返回之后才允许第一个正常流量副作用。
                 fs.remove(MAINTENANCE_PATH, fs.info(MAINTENANCE_PATH))
                 opened = _public_gates(transaction, record, receipt, maintained["run_epoch"])
+                _revalidate_target_services(transaction, lease_fd)
                 _verify_bundle(fs, record["previous" if receipt["operation"] == "rollback" else "candidate"])
                 _verify_intended_links(transaction, record, receipt, complete=True)
                 _require(_unit_phases(fs) == (record["previous_phase" if receipt["operation"] == "rollback" else "phase"],
@@ -1663,7 +1669,7 @@ def finalize_transaction(*, txn_id: str, lock_fd: int, lease_fd: int | None) -> 
             except (OSError, TransactionError, ValueError) as error:
                 # 不凭内存 phase 推断刚才 rename 的结果；驱动下一步必须持锁复读正式回执。
                 try:
-                    _isolate_if_uncommitted(transaction)
+                    _isolate_if_uncommitted(transaction, lease_fd)
                 except (OSError, TransactionError):
                     pass
                 raise TransactionError("E_COMMIT_UNCERTAIN", "exposing 或后继提交结果待确认，禁止通用 EXIT 回滚") from error
@@ -1765,42 +1771,164 @@ def _open_lease(fs: _Fs) -> int | None:
         return os.dup(fd)
 
 
-def _revalidate_target_services(transaction: _Transaction) -> dict[str, str]:
-    """恢复前证明已加载 unit 仍启动同一绑定目标；未知模板或加载状态保持隔离。"""
+def _cgroup_members(fs: _Fs, path: str) -> list[bytes]:
+    members, _ = fs.read(path + "/cgroup.procs")
+    with fs.directory(path) as fd:
+        _require(not any(stat.S_ISDIR(os.stat(name, dir_fd=fd, follow_symlinks=False).st_mode)
+                         for name in os.listdir(fd)), "E_BINDING", "unit 含未证明的子 cgroup")
+    return members.split()
+
+
+def _writer_identity(fs: _Fs, backend: dict[str, Any], role: str, command: str,
+                     phases: dict[str, str], hashes: list[str], show: Any) -> tuple[str, bytes, str]:
+    """只读绑定 systemd 实例与内核进程；不把 proc 当作 root 所有的发布制品。"""
+    pid, invocation, group = show("MainPID"), show("InvocationID"), show("ControlGroup")
+    _require(re.fullmatch(r"[1-9][0-9]*", pid) is not None and show("ExecMainPID") == pid, "E_BINDING")
+    _require(re.fullmatch(r"[0-9a-f]{32}", invocation) is not None and invocation != "0" * 32, "E_BINDING")
+    _require(group == "/system.slice/myagent-" + role + ".service", "E_BINDING")
+    with fs.directory("/proc") as proc:
+        process = os.open(pid, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC, dir_fd=proc)
+        try:
+            identity = os.fstat(process)
+
+            def read(name: str) -> bytes:
+                fd = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC | os.O_NONBLOCK, dir_fd=process)
+                try:
+                    _require(stat.S_ISREG(os.fstat(fd).st_mode), "E_BINDING")
+                    chunks, length = [], 0
+                    while True:
+                        chunk = os.read(fd, min(65536, 4 * 1024 * 1024 + 1 - length))
+                        if not chunk:
+                            return b"".join(chunks)
+                        chunks.append(chunk)
+                        length += len(chunk)
+                        _require(length <= 4 * 1024 * 1024, "E_BINDING")
+                finally:
+                    os.close(fd)
+
+            def started() -> bytes:
+                raw = read("stat")
+                fields = raw.rpartition(b") ")[2].split()
+                _require(raw.startswith(pid.encode() + b" (") and len(fields) >= 20
+                         and fields[19].isdigit() and int(fields[19]) > 0, "E_BINDING")
+                return fields[19]
+
+            start = started()
+            _require(read("cmdline") == b"\0".join(part.encode("ascii") for part in command.split()) + b"\0", "E_BINDING")
+            _require(read("cgroup") == ("0::" + group + "\n").encode("ascii"), "E_BINDING")
+            _require(_cgroup_members(fs, "/sys/fs/cgroup" + group) == [pid.encode("ascii")],
+                     "E_BINDING", "unit 含未证明归属的额外进程")
+            root = backend["directory"]["path"]
+            expected_cwd = fs.ref(root + ("/ui/backend" if role == "gateway" else ""))["identity"]
+            _same(_identity(os.stat("cwd", dir_fd=process)), expected_cwd, directory_children=True)
+            # venv 的解释器可以是链接；它的 inode 只是与 cwd/argv/cgroup 联合使用的证据。
+            with fs.parent(root + "/.venv/bin/python") as (parent, name):
+                expected_exe = os.stat(name, dir_fd=parent)
+            actual_exe = os.stat("exe", dir_fd=process)
+            _require(stat.S_ISREG(expected_exe.st_mode) and (actual_exe.st_dev, actual_exe.st_ino) ==
+                     (expected_exe.st_dev, expected_exe.st_ino), "E_BINDING")
+            expected = {"BRAIN_RELEASE_SHA": backend["revision"], "LINGXI_PERSONA_SCHEMA_PHASE": phases["persona_schema"],
+                        "LINGXI_PERSONA_GROWTH_PHASE": phases["persona_growth"], "LINGXI_WORLD_LEDGER_SCHEMA_PHASE": phases["world_ledger"],
+                        "LINGXI_PERSONA_GROWTH_CANARY_HASHES": ",".join(hashes)}
+            entries = read("environ").split(b"\0")
+            for key, value in expected.items():
+                prefix = key.encode("ascii") + b"="
+                _require([entry for entry in entries if entry.startswith(prefix)] == [prefix + value.encode("ascii")], "E_PHASE")
+            _require(started() == start and show("MainPID") == pid and show("ExecMainPID") == pid
+                     and show("InvocationID") == invocation and show("ControlGroup") == group, "E_DRIFT")
+            current = os.stat(pid, dir_fd=proc, follow_symlinks=False)
+            _require((current.st_dev, current.st_ino) == (identity.st_dev, identity.st_ino), "E_DRIFT")
+            return pid, start, invocation
+        finally:
+            os.close(process)
+
+
+def _empty_unit_identity(fs: _Fs, role: str, show: Any) -> tuple[str, bytes, str]:
+    """仅用于原回滚或失败隔离；R0 恢复不能以此获得 start 资格。"""
+    group = "/system.slice/myagent-" + role + ".service"
+    _require(show("MainPID") == "0" and show("ControlGroup") in ("", group), "E_BINDING")
+    path = "/sys/fs/cgroup" + group
+    # 先证明观察入口存在；缺失整个 cgroup 层级不能当作服务组已空。
+    with fs.directory("/sys/fs/cgroup/system.slice"):
+        pass
+    if fs.exists(path):
+        _require(_cgroup_members(fs, path) == [], "E_BINDING")
+    return "0", b"", show("InvocationID")
+
+
+def _revalidate_target_services(transaction: _Transaction, lease_fd: int | None,
+                                *, allow_missing_lease: bool = False, require_active: bool = True,
+                                rollback_recovery: bool = False) -> dict[str, str]:
+    """业务副作用前只读证明加载配置与 writer；R0 额外要求双 active。"""
     fs = transaction.fs
     record, receipt, _ = transaction.load()
-    _require(receipt["phase"] in ("exposing", "committing"), "E_STATE")
+    _lock(fs, transaction.lock_fd)
+    _lease(fs, transaction.txn_id, lease_fd, allow_missing=allow_missing_lease)
+    _require(receipt["phase"] in (PRE_EXPOSING if rollback_recovery else ("deploying", "restored", "exposing", "committing")), "E_STATE")
     rollback = receipt["operation"] == "rollback"
+    if rollback_recovery:
+        _require(record["rollback_floor"]["auto_rollback_allowed"], "E_FLOOR")
+        _verify_backups(transaction, record)
+        _verify_intended_links(transaction, record, receipt)
+        _require(_pre_exposing_consistent(transaction, record, receipt), "E_STATE")
+        # 合法切链中断可为 mixed；运行进程仍须绑定此刻 backend 指向的真实目录。
+        backend_target = _link_target(fs, CURRENT["backend"], fs.link(CURRENT["backend"]))
+        rollback = backend_target == record["previous"]["backend"]["directory"]["path"]
     bundle = record["previous" if rollback else "candidate"]
     phases = record["previous_phase" if rollback else "phase"]
     hashes = record["previous_canary_hashes" if rollback else "canary_hashes"]
+    template_bundles = [bundle]
+    if rollback_recovery:
+        # 切链与配置恢复有合法先后顺序；已加载配置可仍为记录中的任一已知版本。
+        phases, hashes = _unit_phases(fs)
+        template_bundles = [record[name] for name, phase_key, hashes_key in (
+            ("previous", "previous_phase", "previous_canary_hashes"), ("candidate", "phase", "canary_hashes"))
+            if (record[phase_key], record[hashes_key]) == (phases, hashes)]
+        _require(bool(template_bundles), "E_PHASE")
+        for known in template_bundles:
+            _verify_bundle(fs, known)
     _verify_bundle(fs, bundle)
-    _verify_intended_links(transaction, record, receipt, complete=True)
+    _verify_intended_links(transaction, record, receipt, complete=not rollback_recovery)
     _require(_unit_phases(fs) == (phases, hashes), "E_PHASE")
-    _require(fs.read(MAINTENANCE_PATH)[0] == b"", "E_GATES")
-    _command(["nginx", "-t"])
-    _require(_http("https://lingxi.hi-veblen.com/api/session", method="POST", data=b'{"token":"release-preflight-invalid"}',
-                   headers={"Content-Type": "application/json"})[0] == 503, "E_GATES")
-    _require(_http("https://lingxi.hi-veblen.com/ws/release-maintenance-probe")[0] == 503, "E_GATES")
+    if fs.exists(MAINTENANCE_PATH):
+        _require(fs.read(MAINTENANCE_PATH)[0] == b"", "E_IDENTITY")
     replacements = {"LINGXI_PERSONA_SCHEMA_PHASE": phases["persona_schema"], "LINGXI_PERSONA_GROWTH_PHASE": phases["persona_growth"],
                     "LINGXI_WORLD_LEDGER_SCHEMA_PHASE": phases["world_ledger"], "LINGXI_PERSONA_GROWTH_CANARY_HASHES": ",".join(hashes)}
     python = CURRENT["backend"] + "/.venv/bin/python"
     commands = {"world": python + " -m brain.workspace.world_server",
                 "gateway": python + " -m uvicorn app:app --host 127.0.0.1 --port 8000 --workers 1 --proxy-headers --no-access-log --ws-max-size 16384"}
     states = {}
+    writers = {}
+    loaded_properties = {}
+    unit_images = {}
+    def verify_active_links() -> None:
+        expected_links = ((receipt["restore_plan"]["replacement_links"] if receipt["operation"] == "rollback"
+                           else record["current_links"]) if rollback_recovery and rollback else None)
+        if expected_links is not None:
+            _require(all(fs.link(CURRENT[slot]) == expected_links[slot] for slot in SLOTS), "E_DRIFT")
+        else:
+            _verify_intended_links(transaction, record, receipt, complete=True)
     for role, command in commands.items():
         unit = "myagent-" + role + ".service"
         path = CONFIG[role + "_unit"][0]
+        properties = loaded_properties[role] = {}
 
         def show(property_name: str) -> str:
-            return _command(["systemctl", "show", unit, "-p", property_name, "--value"]).decode("utf-8").strip()
+            value = _command(["systemctl", "show", unit, "-p", property_name, "--value"]).decode("utf-8").strip()
+            _require(property_name not in properties or properties[property_name] == value, "E_DRIFT")
+            properties[property_name] = value
+            return value
 
         # 使用绑定 release 内的模板及原安装器的四项纯字节替换，不安装或重载 unit。
-        rendered, _ = fs.read(bundle["backend"]["directory"]["path"] + "/ops/systemd/" + unit)
-        for key, value in replacements.items():
-            rendered = rendered.replace(("@" + key + "@").encode("ascii"), value.encode("ascii"))
+        templates = []
+        for known in template_bundles:
+            rendered, _ = fs.read(known["backend"]["directory"]["path"] + "/ops/systemd/" + unit)
+            for key, value in replacements.items():
+                rendered = rendered.replace(("@" + key + "@").encode("ascii"), value.encode("ascii"))
+            templates.append(rendered)
         raw, identity = fs.read(path)
-        _require(raw == rendered and stat.S_IMODE(identity["mode"]) == 0o644, "E_BINDING")
+        unit_images[role] = raw, identity
+        _require(raw in templates and stat.S_IMODE(identity["mode"]) == 0o644, "E_BINDING")
         if receipt["phase"] == "committing":
             _require(_digest(raw) == receipt["terminal"]["proof"]["unit_sha256"][role], "E_DRIFT")
         working_directory = CURRENT["backend"] + ("/ui/backend" if role == "gateway" else "")
@@ -1823,27 +1951,54 @@ def _revalidate_target_services(transaction: _Transaction) -> dict[str, str]:
                 expected_files.extend([value.removeprefix("-"), "(ignore_errors=yes)" if value.startswith("-") else "(ignore_errors=no)"])
         _require(shlex.split(show("EnvironmentFiles")) == expected_files, "E_BINDING")
         states[unit] = show("ActiveState")
-        _require(states[unit] in ("active", "inactive", "failed"), "E_SERVICES")
+        _require(states[unit] in (("active",) if require_active else ("active", "inactive", "failed")),
+                 "E_SERVICES", "HOLD：服务状态未满足本次动作资格")
         _command(["systemctl", "is-enabled", "--quiet", unit])
+        if states[unit] == "active":
+            writers[role] = _writer_identity(fs, bundle["backend"], role, command, phases, hashes, show)
+            _require(" ; pid=" + writers[role][0] + " ; " in loaded, "E_BINDING")
+            # active writer 不允许仅以 mixed 的 frontend/current 关系放行。
+            verify_active_links()
+        else:
+            writers[role] = _empty_unit_identity(fs, role, show)
+    refreshed_record, refreshed, _ = transaction.load()
+    _require(refreshed_record == record and refreshed == receipt, "E_DRIFT")
+    _verify_intended_links(transaction, record, receipt, complete=not rollback_recovery)
+    _require(_unit_phases(fs) == (phases, hashes), "E_PHASE")
+    _lock(fs, transaction.lock_fd)
+    _lease(fs, transaction.txn_id, lease_fd, allow_missing=allow_missing_lease)
+    # 材料及加载配置复读完毕，再确认两者仍是同一次 writer；尾部不再调用 phase 命令。
+    for role, command in commands.items():
+        unit = "myagent-" + role + ".service"
+        def show(property_name: str) -> str:
+            return _command(["systemctl", "show", unit, "-p", property_name, "--value"]).decode("utf-8").strip()
+        _require(all(show(key) == value for key, value in loaded_properties[role].items()), "E_DRIFT")
+        _require(fs.read(CONFIG[role + "_unit"][0]) == unit_images[role], "E_DRIFT")
+        _require(show("ActiveState") == states[unit], "E_DRIFT")
+        current_writer = (_writer_identity(fs, bundle["backend"], role, command, phases, hashes, show)
+                          if states[unit] == "active" else _empty_unit_identity(fs, role, show))
+        _require(current_writer == writers[role], "E_DRIFT")
+    # 外部只读命令完成后，仅用 fd 文件读取重验材料，避免尾轮取证掩盖现场漂移。
+    refreshed_record, refreshed, _ = transaction.load()
+    _require(refreshed_record == record and refreshed == receipt, "E_DRIFT")
+    _verify_intended_links(transaction, record, receipt, complete=not rollback_recovery)
+    if "active" in states.values():
+        verify_active_links()
+    _verify_bundle(fs, bundle)
+    _require(all(fs.read(CONFIG[role + "_unit"][0]) == unit_images[role] for role in commands), "E_DRIFT")
+    _lock(fs, transaction.lock_fd)
+    _lease(fs, transaction.txn_id, lease_fd, allow_missing=allow_missing_lease)
     return states
 
 
 def _resume(txn_id: str, fs: _Fs, lock_fd: int, *, cleanup_only: bool = False) -> dict[str, Any]:
     lease_fd = _open_lease(fs)
-    business_unfinished = False
+    isolation_started = False
     try:
-        if lease_fd is not None:
-            # 先单独确认同事务 owner；随后材料损坏也必须阻断本事务的 writer。
-            try:
-                _lease(fs, txn_id, lease_fd)
-                business_unfinished = True
-            except TransactionError:
-                pass
         transaction = _Transaction(fs, txn_id, lock_fd)
         _, persisted, _ = transaction.load()
         if persisted["phase"] != "closed":
             _lease(fs, txn_id, lease_fd, allow_missing=True, releasing=persisted["phase"] == "lease-releasing")
-        business_unfinished = persisted["phase"] not in TERMINAL_PHASES
         state = verify_previous(txn_id=txn_id, purpose="recovery", lock_fd=lock_fd, lease_fd=lease_fd)
         action = state["action"]
         if action == "none":
@@ -1851,12 +2006,14 @@ def _resume(txn_id: str, fs: _Fs, lock_fd: int, *, cleanup_only: bool = False) -
         if cleanup_only:
             _require(action in ("resume-cleanup", "finish-lease"), "E_STATE", "清理入口不得执行业务恢复")
         if action == "manual-recovery":
-            _isolate(fs)
             raise TransactionError("E_STATE", "HOLD：需要人工恢复，已保留现场")
         if action in ("resume-rollback", "revalidate-commit"):
-            # 已冻结门缺失时先隔离并停止，不能带着默认观察预算继续切换。
-            _isolate(fs, stop=action == "resume-rollback")
+            # 分类和 lease 不证明 writer；政策与双 unit 全部通过后才允许修改维护态。
             _observation_policy()
+            _revalidate_target_services(transaction, lease_fd, allow_missing_lease=True,
+                                        require_active=action == "revalidate-commit", rollback_recovery=action == "resume-rollback")
+            isolation_started = True
+            _isolate(fs, stop=action == "resume-rollback")
         if lease_fd is None and action != "finish-lease":
             # /run 重建只续接经过完整只读分类的同一事务，绝不按 PID/时间抢占。
             fs.mkdir(LEASE_PATH)
@@ -1870,16 +2027,11 @@ def _resume(txn_id: str, fs: _Fs, lock_fd: int, *, cleanup_only: bool = False) -
             _command(["nginx", "-t"])
             _command(["systemctl", "reload", "nginx"])
             _command(["systemctl", "restart", "myagent-world.service", "myagent-gateway.service"])
-        elif action == "revalidate-commit":
-            # 先验证两个 unit；每次 start 前重验同目标。已运行服务保留当前 epoch。
-            for unit in _revalidate_target_services(transaction):
-                if _revalidate_target_services(transaction)[unit] in ("inactive", "failed"):
-                    _command(["systemctl", "start", unit])
         return finalize_transaction(txn_id=txn_id, lock_fd=lock_fd, lease_fd=lease_fd)
     except (OSError, TransactionError):
-        if business_unfinished and not cleanup_only:
+        if isolation_started and not cleanup_only:
             try:
-                _isolate_if_uncommitted(_Transaction(fs, txn_id, lock_fd))
+                _isolate_if_uncommitted(_Transaction(fs, txn_id, lock_fd), lease_fd)
             except (OSError, TransactionError):
                 pass
         raise
