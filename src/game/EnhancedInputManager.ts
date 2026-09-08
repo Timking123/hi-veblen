@@ -438,6 +438,12 @@ export class EnhancedInputManager {
     }
   }
 
+  /** 画布旋转或缩放后，同步触控的绘制和命中区域。 */
+  resize(): void {
+    this.mobileController?.updateConfig(this.canvas.width, this.canvas.height)
+    this.reset()
+  }
+
   /**
    * 重置输入状态
    */

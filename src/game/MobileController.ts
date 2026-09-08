@@ -102,31 +102,35 @@ export class MobileController {
   /**
    * 创建默认配置
    */
-  private createDefaultConfig(): MobileControllerConfig {
-    const canvasWidth = this.canvas.width
-    const canvasHeight = this.canvas.height
+  private createDefaultConfig(
+    canvasWidth = this.canvas.width,
+    canvasHeight = this.canvas.height
+  ): MobileControllerConfig {
+    // 矮画布先减少底部留白，再收紧间距，保持三个圆形按钮完整且互不遮挡。
+    const bottomInset = Math.min(80, Math.max(35, canvasHeight - 195))
+    const buttonSpacing = Math.min(80, Math.max(0, (canvasHeight - bottomInset - 35) / 2))
 
     return {
       joystick: {
-        x: 100,
-        y: canvasHeight - 100,
-        radius: 60,
+        x: Math.min(100, canvasWidth / 3),
+        y: canvasHeight - Math.min(100, canvasHeight / 2),
+        radius: Math.min(60, canvasWidth / 5, canvasHeight / 4),
         deadZone: 0.1
       },
       buttons: {
         fire: {
           x: canvasWidth - 80,
-          y: canvasHeight - 80,
+          y: canvasHeight - bottomInset,
           size: 60
         },
         missile: {
           x: canvasWidth - 80,
-          y: canvasHeight - 160,
+          y: canvasHeight - bottomInset - buttonSpacing,
           size: 55
         },
         nuke: {
           x: canvasWidth - 80,
-          y: canvasHeight - 240,
+          y: canvasHeight - bottomInset - buttonSpacing * 2,
           size: 55
         }
       }
@@ -216,9 +220,7 @@ export class MobileController {
 
     for (let i = 0; i < event.changedTouches.length; i++) {
       const touch = event.changedTouches[i]
-      const rect = this.canvas.getBoundingClientRect()
-      const x = touch.clientX - rect.left
-      const y = touch.clientY - rect.top
+      const { x, y } = this.toCanvasPoint(touch)
 
       // 创建触摸点记录
       const touchPoint: TouchPoint = {
@@ -253,9 +255,7 @@ export class MobileController {
 
       if (!touchPoint) continue
 
-      const rect = this.canvas.getBoundingClientRect()
-      const x = touch.clientX - rect.left
-      const y = touch.clientY - rect.top
+      const { x, y } = this.toCanvasPoint(touch)
 
       // 更新触摸点位置
       touchPoint.x = x
@@ -297,6 +297,8 @@ export class MobileController {
    */
   private isInJoystickArea(x: number, y: number): boolean {
     if (!this.joystickArea) return false
+    // 摇杆的扩大范围不能抢走右侧按钮；开始、移动和结束使用同一归属判定。
+    if (this.getButtonAtPosition(x, y) !== null) return false
 
     const dx = x - this.joystickArea.x
     const dy = y - this.joystickArea.y
@@ -309,35 +311,29 @@ export class MobileController {
    * 判断坐标是否在按钮区域内
    */
   private isInButtonArea(x: number, y: number): boolean {
-    for (const [, area] of this.buttonAreas) {
-      const dx = x - area.x
-      const dy = y - area.y
-      const distance = Math.sqrt(dx * dx + dy * dy)
-
-      if (distance <= area.radius * 1.5) {
-        // 扩大触摸区域
-        return true
-      }
-    }
-
-    return false
+    return this.getButtonAtPosition(x, y) !== null
   }
 
   /**
    * 获取触摸点所在的按钮
    */
   private getButtonAtPosition(x: number, y: number): string | null {
+    let nearest: string | null = null
+    let nearestRatio = 1.5
     for (const [buttonName, area] of this.buttonAreas) {
       const dx = x - area.x
       const dy = y - area.y
       const distance = Math.sqrt(dx * dx + dy * dy)
 
-      if (distance <= area.radius * 1.5) {
-        return buttonName
+      // 可见圆内的触点优先于邻居扩大区域，重叠的扩大区域按相对距离归属。
+      const ratio = distance / area.radius
+      if (ratio <= nearestRatio) {
+        nearest = buttonName
+        nearestRatio = ratio
       }
     }
 
-    return null
+    return nearest
   }
 
   /**
@@ -675,32 +671,24 @@ export class MobileController {
    * 更新配置（响应画布尺寸变化）
    */
   public updateConfig(canvasWidth: number, canvasHeight: number): void {
-    this.config = {
-      joystick: {
-        x: 100,
-        y: canvasHeight - 100,
-        radius: 60,
-        deadZone: 0.1
-      },
-      buttons: {
-        fire: {
-          x: canvasWidth - 80,
-          y: canvasHeight - 80,
-          size: 60
-        },
-        missile: {
-          x: canvasWidth - 80,
-          y: canvasHeight - 160,
-          size: 55
-        },
-        nuke: {
-          x: canvasWidth - 80,
-          y: canvasHeight - 240,
-          size: 55
-        }
-      }
-    }
-
+    this.config = this.createDefaultConfig(canvasWidth, canvasHeight)
+    // 旋屏前的触点不再对应新坐标，必须释放，防止恢复后持续移动或开火。
+    this.touchPoints.clear()
+    this.joystickState = { active: false, x: 0, y: 0, angle: 0, distance: 0 }
+    this.buttonState = { fire: false, missile: false, nuke: false }
     this.updateTouchAreas()
+  }
+
+  /** 将浏览器坐标换算为画布内容坐标，排除边框和 CSS 缩放。 */
+  private toCanvasPoint(touch: Touch): { x: number; y: number } {
+    const rect = this.canvas.getBoundingClientRect()
+    const width = rect.width - this.canvas.clientLeft * 2
+    const height = rect.height - this.canvas.clientTop * 2
+    return {
+      x: (touch.clientX - rect.left - this.canvas.clientLeft) *
+        (width > 0 ? this.canvas.width / width : 1),
+      y: (touch.clientY - rect.top - this.canvas.clientTop) *
+        (height > 0 ? this.canvas.height / height : 1),
+    }
   }
 }

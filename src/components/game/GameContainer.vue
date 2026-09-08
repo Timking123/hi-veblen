@@ -30,15 +30,27 @@
           <div class="missile-text">{{ missileCount }}</div>
         </div>
 
-        <!-- 音乐开关按钮 -->
-        <button
-          class="music-toggle-button"
-          @click="toggleMusic"
-          :title="isMusicEnabled ? '关闭音乐' : '开启音乐'"
-        >
-          <span class="music-icon">{{ isMusicEnabled ? '♪' : '🔇' }}</span>
-          <span class="music-status">{{ isMusicEnabled ? 'ON' : 'OFF' }}</span>
-        </button>
+        <div class="hud-actions">
+          <!-- 音乐开关按钮 -->
+          <button
+            class="music-toggle-button"
+            @click="toggleMusic"
+            :title="isMusicEnabled ? '关闭音乐' : '开启音乐'"
+            :aria-label="isMusicEnabled ? '关闭音乐' : '开启音乐'"
+            :aria-pressed="isMusicEnabled"
+          >
+            <span class="music-icon">{{ isMusicEnabled ? '♪' : '🔇' }}</span>
+            <span class="music-status">{{ isMusicEnabled ? 'ON' : 'OFF' }}</span>
+          </button>
+          <button
+            class="pause-game-button"
+            aria-label="暂停游戏"
+            :disabled="!isGameReady"
+            @click="pauseGame"
+          >
+            {{ isGameReady ? '暂停' : '准备中' }}
+          </button>
+        </div>
       </div>
 
       <!-- 左下角：核弹进度条 -->
@@ -65,24 +77,15 @@
     <div v-if="showFPS" class="fps-counter">FPS: {{ fps }}</div>
 
     <!-- 操作提示 -->
-    <div v-if="showControls" class="controls-overlay">
+    <div v-if="showControls && !isPaused && !isGameOver && !hasError" class="controls-overlay">
       <div class="controls-panel">
-        <h3>操作说明</h3>
-        <div class="control-item">
-          <span class="key">W A S D</span>
-          <span class="desc">移动</span>
-        </div>
-        <div class="control-item">
-          <span class="key">J</span>
-          <span class="desc">发射机炮</span>
-        </div>
-        <div class="control-item">
-          <span class="key">K</span>
-          <span class="desc">发射导弹</span>
-        </div>
-        <div class="control-item">
-          <span class="key">空格</span>
-          <span class="desc">发射核弹</span>
+        <h3>{{ usesTouchControls ? '触屏操作' : '操作说明' }}</h3>
+        <button class="controls-close" aria-label="收起操作说明" @click="showControls = false">
+          ×
+        </button>
+        <div class="control-item" v-for="hint in controlHints" :key="hint.key">
+          <span class="key">{{ hint.key }}</span>
+          <span class="desc">{{ hint.description }}</span>
         </div>
       </div>
     </div>
@@ -237,7 +240,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, onMounted, onUnmounted, watch } from 'vue'
+import { computed, ref, onMounted, onUnmounted, watch } from 'vue'
 import { useEasterEggStore } from '@/stores/easterEgg'
 import { GameEngine } from '@/game/GameEngine'
 import { EnhancedInputManager } from '@/game/EnhancedInputManager'
@@ -272,6 +275,7 @@ const gameCanvas = ref<HTMLCanvasElement | null>(null)
 
 // 游戏状态
 const isGameActive = ref(false)
+const isGameReady = ref(false)
 const isPaused = ref(false)
 const isGameOver = ref(false)
 const isStageTransitioning = ref(false)
@@ -287,6 +291,22 @@ const currentStage = ref(1)
 const totalStages = ref(3)
 const remainingEnemies = ref(0)
 const showControls = ref(false)
+const usesTouchControls = ref(false)
+const controlHints = computed(() =>
+  usesTouchControls.value
+    ? [
+        { key: '左侧摇杆', description: '移动' },
+        { key: '长按 FIRE', description: '发射机炮' },
+        { key: '点击 MSL', description: '发射导弹' },
+        { key: '点击 NUKE', description: '发射核弹' },
+      ]
+    : [
+        { key: 'W A S D', description: '移动' },
+        { key: 'J', description: '发射机炮' },
+        { key: 'K', description: '发射导弹' },
+        { key: '空格', description: '发射核弹' },
+      ]
+)
 const playerHealth = ref(10)
 const playerMaxHealth = ref(10)
 const missileCount = ref(10)
@@ -362,6 +382,7 @@ const initGame = (): void => {
 
     // 创建增强输入管理器（传递 canvas 以支持移动端控制）
     inputManager = new EnhancedInputManager(gameCanvas.value)
+    usesTouchControls.value = inputManager.getInputState().source === 'touch'
 
     // 获取缩放后的 Canvas 尺寸
     const canvasWidth = gameEngine.getCanvasWidth()
@@ -454,6 +475,7 @@ const startGame = async (): Promise<void> => {
   try {
     console.log('[游戏容器] 启动游戏')
     isGameActive.value = true
+    isGameReady.value = false
     isPaused.value = false
     isGameOver.value = false
     isStageTransitioning.value = false
@@ -510,6 +532,7 @@ const startGame = async (): Promise<void> => {
     setupPlayerControls()
 
     gameEngine.start()
+    isGameReady.value = !hasError.value
 
     // 启动 FPS 更新
     if (showFPS.value) {
@@ -1203,7 +1226,7 @@ const handleGameComplete = (): void => {
  * 暂停游戏
  */
 const pauseGame = (): void => {
-  if (!gameEngine || isGameOver.value || hasGameCompleted.value) return
+  if (!gameEngine || !isGameReady.value || isGameOver.value || hasGameCompleted.value) return
 
   console.log('[游戏容器] 暂停游戏')
   isPaused.value = true
@@ -1214,7 +1237,7 @@ const pauseGame = (): void => {
  * 恢复游戏
  */
 const resumeGame = (): void => {
-  if (!gameEngine || isGameOver.value || hasGameCompleted.value) return
+  if (!gameEngine || !isGameReady.value || isGameOver.value || hasGameCompleted.value) return
 
   console.log('[游戏容器] 恢复游戏')
   isPaused.value = false
@@ -1296,6 +1319,7 @@ const exitGame = (): void => {
  * 清理游戏资源
  */
 const cleanupGame = (): void => {
+  isGameReady.value = false
   gameEngine?.setForegroundRenderer(null)
   gameEngine?.setOnError(null)
 
@@ -1372,6 +1396,7 @@ const handleWindowResize = (): void => {
     // 调整画布尺寸
     if (gameEngine) {
       gameEngine.resizeCanvas()
+      inputManager?.resize()
     }
 
     // 如果游戏正在运行且未暂停，暂时暂停游戏
@@ -1687,6 +1712,7 @@ defineExpose({
   left: 0;
   width: 100vw;
   height: 100vh;
+  height: 100dvh;
   background: #000;
   display: none;
   justify-content: center;
@@ -1729,14 +1755,14 @@ defineExpose({
 
 .hud-top-left {
   position: absolute;
-  top: 20px;
-  left: 20px;
+  top: calc(20px + var(--safe-area-inset-top, 0px));
+  left: calc(20px + var(--safe-area-inset-left, 0px));
 }
 
 .hud-top-right {
   position: absolute;
-  top: 20px;
-  right: 20px;
+  top: calc(20px + var(--safe-area-inset-top, 0px));
+  right: calc(20px + var(--safe-area-inset-right, 0px));
   display: flex;
   flex-direction: column;
   gap: 15px;
@@ -1745,14 +1771,14 @@ defineExpose({
 
 .hud-bottom-left {
   position: absolute;
-  bottom: 20px;
-  left: 20px;
+  bottom: calc(20px + var(--safe-area-inset-bottom, 0px));
+  left: calc(20px + var(--safe-area-inset-left, 0px));
 }
 
 .hud-bottom-right {
   position: absolute;
-  bottom: 20px;
-  right: 20px;
+  bottom: calc(20px + var(--safe-area-inset-bottom, 0px));
+  right: calc(20px + var(--safe-area-inset-right, 0px));
 }
 
 /* 生命值显示 */
@@ -1934,6 +1960,35 @@ defineExpose({
   transform: scale(0.95);
 }
 
+.hud-actions {
+  display: flex;
+  gap: 8px;
+}
+
+.pause-game-button,
+.controls-close {
+  min-width: 44px;
+  min-height: 44px;
+  border: 2px solid #00ff00;
+  border-radius: 4px;
+  background: #000;
+  color: #00ff00;
+  font: bold 12px monospace;
+  cursor: pointer;
+  pointer-events: auto;
+}
+
+.hud-actions button:focus-visible,
+.controls-close:focus-visible {
+  outline: 3px solid white;
+  outline-offset: 3px;
+}
+
+.pause-game-button:disabled {
+  cursor: wait;
+  opacity: 0.6;
+}
+
 .music-icon {
   font-size: 20px;
   color: #ffff00;
@@ -2043,9 +2098,10 @@ defineExpose({
 }
 
 .fps-counter {
+  pointer-events: none;
   position: absolute;
-  top: 20px;
-  right: 20px;
+  bottom: calc(100px + var(--safe-area-inset-bottom, 0px));
+  right: calc(20px + var(--safe-area-inset-right, 0px));
   color: #0f0;
   font-family: 'Press Start 2P', monospace;
   font-size: 12px;
@@ -2062,6 +2118,8 @@ defineExpose({
   transform: translate(-50%, -50%);
   z-index: 10002;
   animation: fadeInOut 5s ease-in-out;
+  width: min(360px, calc(100% - 32px));
+  pointer-events: none;
 }
 
 @keyframes fadeInOut {
@@ -2080,13 +2138,23 @@ defineExpose({
 }
 
 .controls-panel {
+  position: relative;
   background: rgba(0, 0, 0, 0.9);
   border: 4px solid #00ff00;
   border-radius: 8px;
-  padding: 30px 40px;
+  padding: 24px;
   font-family: 'Press Start 2P', monospace;
   color: #00ff00;
   box-shadow: 0 0 30px rgba(0, 255, 0, 0.5);
+}
+
+.controls-close {
+  position: absolute;
+  top: 0;
+  right: 0;
+  border: 0;
+  background: transparent;
+  font-size: 24px;
 }
 
 .controls-panel h3 {
@@ -2099,14 +2167,15 @@ defineExpose({
 .control-item {
   display: flex;
   align-items: center;
-  gap: 20px;
+  gap: 12px;
   margin: 15px 0;
   font-size: 12px;
 }
 
 .key {
   display: inline-block;
-  min-width: 100px;
+  flex: 1;
+  min-width: 0;
   padding: 8px 12px;
   background: #000;
   border: 2px solid #00ff00;
@@ -2118,6 +2187,115 @@ defineExpose({
 
 .desc {
   color: #00ff00;
+  white-space: nowrap;
+}
+
+/* 紧凑 HUD 保留数值和触控入口，左右两列始终留有间距。 */
+@media (max-width: 768px), (max-height: 500px) {
+  .hud-top-left,
+  .hud-bottom-left {
+    left: calc(8px + var(--safe-area-inset-left, 0px));
+    width: min(
+      280px,
+      calc(100% - 136px - var(--safe-area-inset-left, 0px) - var(--safe-area-inset-right, 0px))
+    );
+  }
+
+  .hud-top-right,
+  .hud-bottom-right {
+    right: calc(8px + var(--safe-area-inset-right, 0px));
+  }
+
+  .hud-top-left,
+  .hud-top-right {
+    top: calc(8px + var(--safe-area-inset-top, 0px));
+  }
+  .hud-bottom-left,
+  .hud-bottom-right {
+    bottom: calc(8px + var(--safe-area-inset-bottom, 0px));
+  }
+  .hud-top-right {
+    gap: 6px;
+  }
+  .health-display,
+  .score-display,
+  .missile-display,
+  .nuke-progress,
+  .stage-info {
+    padding: 6px 8px;
+    border-width: 2px;
+    gap: 6px;
+  }
+  .health-display,
+  .missile-display {
+    min-height: 28px;
+  }
+  .health-bar,
+  .nuke-bar {
+    flex: 1;
+    width: auto;
+    min-width: 12px;
+    height: 12px;
+  }
+  .health-text,
+  .nuke-text,
+  .score-number {
+    min-width: 0;
+    font-size: 12px;
+  }
+  .score-display {
+    display: flex;
+    justify-content: space-between;
+    margin-top: 6px;
+  }
+  .score-number {
+    overflow-wrap: anywhere;
+  }
+  .missile-display {
+    align-self: stretch;
+    justify-content: center;
+  }
+  .missile-icon {
+    font-size: 20px;
+  }
+  .missile-text {
+    min-width: 24px;
+    font-size: 16px;
+  }
+  .hud-actions {
+    gap: 6px;
+  }
+  .music-toggle-button {
+    min-height: 44px;
+    padding: 4px 6px;
+    border-width: 2px;
+    gap: 4px;
+  }
+  .music-status {
+    min-width: 24px;
+  }
+  .stage-info {
+    gap: 4px;
+  }
+  .controls-panel {
+    padding: 16px;
+    border-width: 2px;
+  }
+  .controls-panel h3 {
+    margin-bottom: 12px;
+  }
+  .control-item {
+    margin: 8px 0;
+  }
+  .key {
+    padding: 6px;
+    white-space: nowrap;
+  }
+  .fps-counter {
+    bottom: calc(64px + var(--safe-area-inset-bottom, 0px));
+    padding: 4px;
+    font-size: 10px;
+  }
 }
 
 .stage-transition-overlay,
