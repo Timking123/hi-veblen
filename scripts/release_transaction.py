@@ -269,6 +269,117 @@ def _bc_validate_metadata(raw: bytes, *, budget: _BCBudget | None = None) -> int
     return len(raw)
 
 
+# 仅供未接线的接收组件共用；不可由输入指定或按函数调用重领额度。
+_BC_IO_SCOPE = "bc-input"
+_BC_IO_WORK = 4 * _BC_CHUNK + 16384
+_BC_IO_EOF_WORK = 16384
+_BC_IO_RESULT_BASE = 1024
+_BC_IO_COUNT_FEE = 256
+
+
+class _BCReadResult(NamedTuple):
+    raw: bytes
+    scan_bytes: int
+
+
+def _bc_io_read(stream: BinaryIO, requested: int, budget: _BCBudget, resource: str) -> bytes:
+    budget._check("scan", budget.live)
+    raw = stream.read(requested)
+    _require(type(raw) is bytes, "E_ARCHIVE")
+    # 即使底层违反 read(n) 返回约定，也先记实际字节，正式资源拒绝优先。
+    budget.add(resource, len(raw), scope=_BC_IO_SCOPE)
+    _require(len(raw) <= requested, "E_ARCHIVE")
+    return raw
+
+
+def _bc_io_work(stream: BinaryIO, sink: BinaryIO | None, size: int, budget: _BCBudget,
+                resource: str, mode: str) -> _BCReadResult | int | None:
+    if mode == "eof":
+        _require(not _bc_io_read(stream, 1, budget, resource), "E_ARCHIVE")
+        return None
+    if mode == "read":
+        buffer = bytearray(size)
+        offset = 0
+        while offset < size:
+            raw = _bc_io_read(stream, min(_BC_CHUNK, size - offset), budget, resource)
+            _require(bool(raw), "E_ARCHIVE")
+            buffer[offset:offset + len(raw)] = raw
+            offset += len(raw)
+        return _BCReadResult(bytes(buffer), _BC_IO_RESULT_BASE + size)
+    copied = 0
+    while copied < size:
+        raw = _bc_io_read(stream, min(_BC_CHUNK, size - copied), budget, resource)
+        _require(bool(raw), "E_ARCHIVE")
+        view = memoryview(raw)
+        written = 0
+        while written < len(view):
+            budget._check("scan", budget.live)
+            count = sink.write(view[written:])
+            _require(type(count) is int and 0 < count <= len(view) - written, "E_ARCHIVE")
+            written += count
+        # 当前块写完后才允许下一次 read；短写不再记一次输入字节。
+        copied += written
+        view.release()
+    return copied
+
+
+def _bc_io_run(stream: BinaryIO, sink: BinaryIO | None, size: int, budget: _BCBudget,
+               resource: str, mode: str) -> _BCReadResult | int | None:
+    _require(isinstance(budget, _BCBudget), "E_ARCHIVE")
+    failure = None
+    try:
+        budget._check("scan", budget.live)
+        _require(type(resource) is str and resource in ("metadata", "compressed"), "E_ARCHIVE")
+        _require(type(size) is int and size >= 0 and mode in ("read", "copy", "eof"), "E_ARCHIVE")
+        # 先查单项声明，再相加，避免为巨型非法整数构造不必要的和。
+        budget._check(resource, size)
+        budget._check(resource, budget._counts.get((resource, _BC_IO_SCOPE), 0) + size)
+        _require(mode != "read" or size <= _BC_CHUNK, "E_ARCHIVE")
+        # 在任何底层调用前支付该固定计数域的槽位；零长度仍不调用流。
+        budget.add(resource, 0, scope=_BC_IO_SCOPE)
+        work = _BC_IO_EOF_WORK if mode == "eof" else _BC_IO_WORK
+        retained = _BC_IO_RESULT_BASE + size if mode == "read" else _BC_IO_COUNT_FEE if mode == "copy" else 0
+        budget.reserve_scan(work)
+        if retained:
+            budget.reserve_scan(retained)
+        result = _bc_io_work(stream, sink, size, budget, resource, mode)
+        budget._check("scan", budget.live)
+        # 内层正常返回后其缓冲与视图已经收束；返回对象的费用仍保持。
+        budget.release_scan(work)
+        return result
+    except _BCResourceError as error:
+        budget._failed = True
+        failure = ("E_RESOURCE", error.resource, error.limit, error.observed)
+    except TransactionError as error:
+        budget._failed = True
+        failure = ("E_RESOURCE" if error.code == "E_RESOURCE" else "E_ARCHIVE",)
+    except Exception:
+        budget._failed = True
+        failure = ("E_ARCHIVE",)
+    except BaseException:
+        budget._failed = True
+        raise
+    # 错误对象可能被底层实现保留并带有 traceback，失败时不声称工作区已回收。
+    # 离开 except 后仅由标量重建错误，不链接底层异常；调用者既有的 except 上下文由 Python 管理。
+    if len(failure) == 4:
+        raise _BCResourceError(failure[1], failure[2], failure[3]) from None
+    raise TransactionError(failure[0], "有界输入输出失败，保留现场") from None
+
+
+def _bc_read_exact(stream: BinaryIO, size: int, *, budget: _BCBudget, resource: str) -> _BCReadResult:
+    """只物化至多64KiB的精确段；返回字节仍保留其扫描费用，不自动探测EOF。"""
+    return _bc_io_run(stream, None, size, budget, resource, "read")
+
+
+def _bc_copy_exact(stream: BinaryIO, sink: BinaryIO, size: int, *, budget: _BCBudget, resource: str) -> int:
+    """以固定块读写调用者的流；不关闭、flush/fsync或补偿已经发生的输出。"""
+    return _bc_io_run(stream, sink, size, budget, resource, "copy")
+
+
+def _bc_require_eof(stream: BinaryIO, *, budget: _BCBudget, resource: str) -> None:
+    """仅探测一个字节，实际额外输入计入同一域；不消费完整尾部。"""
+    return _bc_io_run(stream, None, 0, budget, resource, "eof")
+
 class _BCArchiveEntry(NamedTuple):
     path: str
     kind: str

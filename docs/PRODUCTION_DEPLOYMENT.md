@@ -144,6 +144,10 @@ workflow 的 deploy job 显式检出本次 `github.sha` 维护源，关闭凭据
 
 本片不覆盖 SCP 接收过程的逐块上限、venv 构建时缓存/临时文件峰值、完整 B/C 新帧、连续挂载身份及单进程持锁调度。小样本与缩小预算只能证明对应逻辑；真实 GiB 边界、物理树和代表性制品容量分别记录，不从常量或整数计数断言推出正常运行保证。Windows 的 Linux 用例跳过不能关闭 POSIX 门，CI 必须使用 `--require-posix`。D087 组件资格不解除 P1、完整 B/C、原正式审查或生产发布 HOLD。
 
+有界接收 I/O 基础另提供三个尚未接线的私有入口：`_bc_read_exact` 只物化最多 65536 字节的小段；`_bc_copy_exact` 用最多 65536 字节的块完整写入调用者提供的 sink；`_bc_require_eof` 单独探测一个字节，只有空返回才证明完整 EOF。三个入口按固定资源域共享同一预算，调用前拒绝超大声明，实际读入才累计；正数短写全部完成后才读取下一块。工作区及仍存活返回对象先计费，任一失败锁存预算并保留尚未确认回收的费用，释放工作区不能恢复成功资格。
+
+这些入口不解释帧、不打开路径或关闭借用流、不自动 flush/fsync、不补偿部分输出，也不产生业务回执；现有前导、公开 CLI 与发布调用点尚未使用它们。底层普通 I/O 异常转换为固定脱敏错误，未知 BaseException 锁存后原样传播。Python 可自动保留调用者本来活跃的 except 上下文，标准 traceback 通过 from None 抑制展示，不能宣称隔离调用者自己的运行时对象。纯流测试与常量块实际 2 GiB 三点仅支持组件接收边界，不证明 gzip 解析、SCP 接收链、目标主机容量或进程 RSS 硬限制。
+
 ## 离线验证与未验证边界
 
 在 root Linux 私有临时根运行 `python3 -B scripts/test_release_transaction.py --require-posix`。测试使用真实目录 fd、no-follow、flock、rename、fsync 和 SIGKILL；仅私有根入口、独立制品来源、服务和网络边界使用夹具。Windows 不能替代这些 POSIX 门，CI 不允许全量 skip 后报成功。

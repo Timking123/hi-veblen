@@ -653,6 +653,426 @@ class ResourceTests(unittest.TestCase):
         self.assertTrue(budget._failed)
 
 
+class ResourceIOTests(unittest.TestCase):
+    """只用受控二进制流检查接收组件，不启用 wire 或生产调用点。"""
+    class Reader:
+        def __init__(self, raw=b"", *, quantum=65536):
+            self.raw, self.quantum, self.offset = raw, quantum, 0
+            self.requests = []
+            self.closed = False
+
+        def read(self, size):
+            self.requests.append(size)
+            count = min(size, self.quantum, len(self.raw) - self.offset)
+            raw = self.raw[self.offset:self.offset + count]
+            self.offset += count
+            return raw
+
+    class Sink:
+        def __init__(self, *, quantum=65536):
+            self.quantum = quantum
+            self.raw = bytearray()
+            self.requests = []
+            self.closed = False
+
+        def write(self, raw):
+            self.requests.append(len(raw))
+            count = min(self.quantum, len(raw))
+            self.raw.extend(raw[:count])
+            return count
+
+    @staticmethod
+    def counted(budget, resource):
+        return sum(value for (name, _), value in budget._counts.items() if name == resource)
+
+    def assert_sticky(self, budget):
+        reader, sink = self.Reader(b"must remain"), self.Sink()
+        for action in (
+                lambda: transaction._bc_read_exact(reader, 1, budget=budget, resource="metadata"),
+                lambda: transaction._bc_copy_exact(reader, sink, 1, budget=budget, resource="compressed"),
+                lambda: transaction._bc_require_eof(reader, budget=budget, resource="metadata")):
+            with self.assertRaises(transaction.TransactionError) as caught:
+                action()
+            self.assertEqual(caught.exception.code, "E_RESOURCE")
+        self.assertEqual(reader.requests, [])
+        self.assertEqual(sink.requests, [])
+        self.assertTrue(budget._failed)
+
+    def test_exact_read_accepts_fragmented_binary_without_stealing_next_segment(self):
+        raw = b"\x00\xff" + "分段数据".encode("utf-8")
+        reader = self.Reader(raw + b"NEXT", quantum=3)
+        budget = transaction._BCBudget()
+        result = transaction._bc_read_exact(reader, len(raw), budget=budget, resource="metadata")
+        self.assertEqual(result.raw, raw)
+        self.assertEqual(reader.offset, len(raw))
+        self.assertEqual(self.counted(budget, "metadata"), len(raw))
+        self.assertGreater(result.scan_bytes, len(raw))
+        self.assertLessEqual(max(reader.requests), 65536)
+        self.assertFalse(reader.closed)
+        with self.assertRaises((AttributeError, TypeError)):
+            result.raw = b"changed"
+
+    def test_copy_completes_each_short_write_before_next_read(self):
+        events = []
+        reader, sink = self.Reader(b"abcdefghiTAIL", quantum=4), self.Sink(quantum=2)
+        old_read, old_write = reader.read, sink.write
+        def read(size):
+            events.append("read")
+            return old_read(size)
+        def write(raw):
+            events.append("write")
+            return old_write(raw)
+        reader.read, sink.write = read, write
+        budget = transaction._BCBudget()
+        self.assertEqual(transaction._bc_copy_exact(reader, sink, 9, budget=budget, resource="compressed"), 9)
+        self.assertEqual(bytes(sink.raw), b"abcdefghi")
+        self.assertEqual(events, ["read", "write", "write", "read", "write", "write", "read", "write"])
+        self.assertEqual(self.counted(budget, "compressed"), 9)
+        self.assertEqual(reader.offset, 9)
+        self.assertFalse(reader.closed or sink.closed)
+
+    def test_eof_checks_one_byte_and_never_drains_trailing_content(self):
+        empty = self.Reader()
+        transaction._bc_require_eof(empty, budget=transaction._BCBudget(), resource="metadata")
+        self.assertEqual(empty.requests, [1])
+        reader, budget = self.Reader(b"TAIL"), transaction._BCBudget()
+        with self.assertRaises(transaction.TransactionError) as caught:
+            transaction._bc_require_eof(reader, budget=budget, resource="metadata")
+        self.assertEqual(caught.exception.code, "E_ARCHIVE")
+        self.assertEqual((reader.requests, reader.offset), ([1], 1))
+        self.assertEqual(self.counted(budget, "metadata"), 1)
+        self.assert_sticky(budget)
+
+    def test_zero_length_is_checked_but_does_not_touch_stream_or_sink(self):
+        reader, sink = self.Reader(b"still here"), self.Sink()
+        budget = transaction._BCBudget()
+        result = transaction._bc_read_exact(reader, 0, budget=budget, resource="metadata")
+        self.assertEqual(result.raw, b"")
+        self.assertEqual(transaction._bc_copy_exact(reader, sink, 0, budget=budget, resource="compressed"), 0)
+        self.assertEqual((reader.requests, sink.requests), ([], []))
+        self.assertEqual(self.counted(budget, "metadata"), 0)
+        self.assertEqual(self.counted(budget, "compressed"), 0)
+
+    def test_metadata_actual_64k_boundaries_for_read_copy_and_eof(self):
+        for length in (65535, 65536, 65537):
+            raw = ("中" * (length // 3)).encode("utf-8") + b"x" * (length % 3)
+            for operation in ("read", "copy"):
+                with self.subTest(length=length, operation=operation):
+                    reader, sink, budget = self.Reader(raw, quantum=4093), self.Sink(quantum=2039), transaction._BCBudget()
+                    def run():
+                        if operation == "read":
+                            return transaction._bc_read_exact(reader, length, budget=budget, resource="metadata").raw
+                        return transaction._bc_copy_exact(reader, sink, length, budget=budget, resource="metadata")
+                    if length > 65536:
+                        with self.assertRaises(transaction._BCResourceError) as caught:
+                            run()
+                        self.assertEqual((caught.exception.resource, caught.exception.limit, caught.exception.observed),
+                                         ("metadata", 65536, 65537))
+                        self.assertEqual((reader.requests, sink.requests), ([], []))
+                    else:
+                        result = run()
+                        self.assertEqual(result if operation == "read" else bytes(sink.raw), raw)
+                        transaction._bc_require_eof(reader, budget=budget, resource="metadata")
+                        self.assertEqual(self.counted(budget, "metadata"), length)
+        reader, budget = self.Reader(b"x" * 65537), transaction._BCBudget()
+        transaction._bc_read_exact(reader, 65536, budget=budget, resource="metadata")
+        with self.assertRaises(transaction._BCResourceError) as caught:
+            transaction._bc_require_eof(reader, budget=budget, resource="metadata")
+        self.assertEqual(caught.exception.observed, 65537)
+        self.assert_sticky(budget)
+
+    def test_small_read_workspace_limit_is_not_a_fabricated_compressed_overflow(self):
+        reader, budget = self.Reader(b"x" * 65537), transaction._BCBudget()
+        with self.assertRaises(transaction.TransactionError) as caught:
+            transaction._bc_read_exact(reader, 65537, budget=budget, resource="compressed")
+        self.assertEqual(caught.exception.code, "E_ARCHIVE")
+        self.assertNotIsInstance(caught.exception, transaction._BCResourceError)
+        self.assertEqual(reader.requests, [])
+        self.assert_sticky(budget)
+
+    def test_multiple_legal_segments_share_one_input_counter_across_all_entries(self):
+        reader, sink = self.Reader(b"abcdeX"), self.Sink()
+        budget = transaction._BCBudget(limits={"metadata": 5})
+        serial = budget._serial
+        first = transaction._bc_read_exact(reader, 2, budget=budget, resource="metadata")
+        self.assertEqual(first.raw, b"ab")
+        self.assertEqual(transaction._bc_copy_exact(reader, sink, 3, budget=budget, resource="metadata"), 3)
+        self.assertEqual(bytes(sink.raw), b"cde")
+        self.assertEqual(budget._serial, serial)
+        with self.assertRaises(transaction._BCResourceError) as caught:
+            transaction._bc_require_eof(reader, budget=budget, resource="metadata")
+        self.assertEqual((caught.exception.limit, caught.exception.observed), (5, 6))
+        self.assertEqual(budget._serial, serial)
+        self.assert_sticky(budget)
+
+    def test_declared_remainder_overflow_precedes_read_and_write(self):
+        budget = transaction._BCBudget(limits={"compressed": 7})
+        transaction._bc_copy_exact(self.Reader(b"12345"), self.Sink(), 5, budget=budget, resource="compressed")
+        reader, sink = self.Reader(b"abc"), self.Sink()
+        with self.assertRaises(transaction._BCResourceError) as caught:
+            transaction._bc_copy_exact(reader, sink, 3, budget=budget, resource="compressed")
+        self.assertEqual(caught.exception.observed, 8)
+        self.assertEqual((reader.requests, sink.requests), ([], []))
+        self.assertEqual(self.counted(budget, "compressed"), 5)
+        self.assert_sticky(budget)
+
+    def test_early_eof_preserves_read_count_and_partial_sink(self):
+        for operation in ("read", "copy"):
+            reader, sink, budget = self.Reader(b"abc", quantum=2), self.Sink(), transaction._BCBudget()
+            with self.subTest(operation=operation), self.assertRaises(transaction.TransactionError) as caught:
+                if operation == "read":
+                    transaction._bc_read_exact(reader, 4, budget=budget, resource="metadata")
+                else:
+                    transaction._bc_copy_exact(reader, sink, 4, budget=budget, resource="metadata")
+            self.assertEqual(caught.exception.code, "E_ARCHIVE")
+            self.assertEqual(self.counted(budget, "metadata"), 3)
+            self.assertEqual(bytes(sink.raw), b"" if operation == "read" else b"abc")
+            self.assert_sticky(budget)
+
+    def test_invalid_parameters_fail_before_any_io_including_zero_length(self):
+        for resource, size in (("file", 0), (None, 0), ({}, 0), ("metadata", True),
+                               ("metadata", -1), ("metadata", 1.0), ("compressed", None)):
+            for operation in ("read", "copy"):
+                reader, sink, budget = self.Reader(b"data"), self.Sink(), transaction._BCBudget()
+                with self.subTest(resource=resource, size=size, operation=operation), self.assertRaises(transaction.TransactionError):
+                    if operation == "read":
+                        transaction._bc_read_exact(reader, size, budget=budget, resource=resource)
+                    else:
+                        transaction._bc_copy_exact(reader, sink, size, budget=budget, resource=resource)
+                self.assertEqual((reader.requests, sink.requests), ([], []))
+                self.assert_sticky(budget)
+
+    def test_oversized_read_is_counted_before_interface_error_and_never_written(self):
+        for limit, expected in ((10, "E_ARCHIVE"), (1, "E_RESOURCE")):
+            reader, sink, budget = self.Reader(), self.Sink(), transaction._BCBudget(limits={"metadata": limit})
+            reader.read = lambda size: b"too long"
+            with self.assertRaises(transaction.TransactionError) as caught:
+                transaction._bc_copy_exact(reader, sink, 1, budget=budget, resource="metadata")
+            self.assertEqual(caught.exception.code, expected)
+            if expected == "E_RESOURCE":
+                self.assertEqual(caught.exception.observed, 8)
+            else:
+                self.assertEqual(self.counted(budget, "metadata"), 8)
+            self.assertEqual(sink.requests, [])
+            self.assert_sticky(budget)
+
+    def test_invalid_read_returns_lock_budget_without_sink_output(self):
+        for returned in (None, "text", bytearray(b"x"), memoryview(b"x"), 1, True):
+            reader, sink, budget = self.Reader(), self.Sink(), transaction._BCBudget()
+            reader.read = lambda size, returned=returned: returned
+            with self.subTest(kind=type(returned).__name__), self.assertRaises(transaction.TransactionError) as caught:
+                transaction._bc_copy_exact(reader, sink, 1, budget=budget, resource="compressed")
+            self.assertEqual(caught.exception.code, "E_ARCHIVE")
+            self.assertEqual(sink.requests, [])
+            self.assert_sticky(budget)
+
+    def test_invalid_write_returns_stop_before_next_read(self):
+        for returned in (0, None, True, False, -1, 1.0, "1", 4):
+            reader, sink, budget = self.Reader(b"abcdef", quantum=3), self.Sink(), transaction._BCBudget()
+            calls = []
+            def write(raw):
+                calls.append(len(raw))
+                return returned
+            sink.write = write
+            with self.subTest(returned=returned), self.assertRaises(transaction.TransactionError) as caught:
+                transaction._bc_copy_exact(reader, sink, 6, budget=budget, resource="compressed")
+            self.assertEqual(caught.exception.code, "E_ARCHIVE")
+            self.assertEqual((len(reader.requests), calls), (1, [3]))
+            self.assertEqual(self.counted(budget, "compressed"), 3)
+            self.assert_sticky(budget)
+
+    def test_io_exception_is_redacted_and_preserves_prior_partial_write(self):
+        reader, sink, budget = self.Reader(b"abcdef", quantum=4), self.Sink(quantum=2), transaction._BCBudget()
+        write = sink.write
+        def failed(raw):
+            if sink.raw:
+                raise OSError("synthetic-private-content")
+            return write(raw)
+        sink.write = failed
+        with self.assertRaises(transaction.TransactionError) as caught:
+            transaction._bc_copy_exact(reader, sink, 6, budget=budget, resource="compressed")
+        self.assertEqual(caught.exception.code, "E_ARCHIVE")
+        self.assertNotIn("synthetic-private-content", str(caught.exception))
+        self.assertIsNone(caught.exception.__context__)
+        self.assertIsNone(caught.exception.__cause__)
+        self.assertEqual(bytes(sink.raw), b"ab")
+        self.assertEqual(self.counted(budget, "compressed"), 4)
+        self.assertEqual(len(reader.requests), 1)
+        self.assert_sticky(budget)
+
+    def test_read_exceptions_and_base_exception_never_revive_budget(self):
+        class StopRead(BaseException):
+            pass
+        for error in (OSError("private read"), RuntimeError("private read"), StopRead("stop")):
+            reader, budget = self.Reader(), transaction._BCBudget()
+            def failed(size):
+                raise error
+            reader.read = failed
+            if isinstance(error, Exception):
+                with self.assertRaises(transaction.TransactionError) as caught:
+                    transaction._bc_read_exact(reader, 1, budget=budget, resource="metadata")
+                self.assertEqual(caught.exception.code, "E_ARCHIVE")
+                self.assertIsNone(caught.exception.__context__)
+            else:
+                with self.assertRaises(StopRead) as caught:
+                    transaction._bc_read_exact(reader, 1, budget=budget, resource="metadata")
+                self.assertIs(caught.exception, error)
+            self.assertGreater(budget.live, 65536)
+            self.assert_sticky(budget)
+
+    def test_scan_failure_precedes_io_and_preserves_preexisting_result(self):
+        budget = transaction._BCBudget(limits={"scan": 512 * 1024})
+        first = transaction._bc_read_exact(self.Reader(b"x" * 65536), 65536, budget=budget, resource="compressed")
+        self.assertEqual(first.raw, b"x" * 65536)
+        budget.reserve_scan(300000)
+        reader, sink = self.Reader(b"y"), self.Sink()
+        with self.assertRaises(transaction._BCResourceError) as caught:
+            transaction._bc_copy_exact(reader, sink, 1, budget=budget, resource="compressed")
+        self.assertEqual(caught.exception.resource, "scan")
+        self.assertEqual((reader.requests, sink.requests), ([], []))
+        self.assertEqual(first.raw, b"x" * 65536)
+        self.assertGreaterEqual(budget.live, first.scan_bytes)
+        self.assert_sticky(budget)
+
+    def test_retained_results_are_paid_until_actual_release_and_domains_survive(self):
+        budget = transaction._BCBudget()
+        first = transaction._bc_read_exact(self.Reader(b"a" * 30000), 30000, budget=budget, resource="compressed")
+        live = budget.live
+        second = transaction._bc_read_exact(self.Reader(b"b" * 30000), 30000, budget=budget, resource="compressed")
+        self.assertGreaterEqual(budget.live - live, second.scan_bytes)
+        self.assertEqual(first.raw, b"a" * 30000)
+        fee = first.scan_bytes
+        first = None
+        before = budget.live
+        budget.release_scan(fee)
+        self.assertEqual(before - budget.live, fee)
+        self.assertEqual(self.counted(budget, "compressed"), 60000)
+        self.assertGreaterEqual(budget.live, second.scan_bytes)
+
+    def test_physical_buffers_and_returned_objects_fit_prepaid_scan_peak(self):
+        import tracemalloc
+        reader = self.Reader(b"x" * 65536, quantum=4093)
+        budget = transaction._BCBudget()
+        tracemalloc.start()
+        try:
+            result = transaction._bc_read_exact(reader, 65536, budget=budget, resource="compressed")
+            _, peak = tracemalloc.get_traced_memory()
+        finally:
+            tracemalloc.stop()
+        # 独立对象尺寸与构造期峰值分别对照；不是进程RSS硬限制。
+        deep = sys.getsizeof(result) + sys.getsizeof(result.raw) + sys.getsizeof(result.scan_bytes)
+        self.assertLessEqual(deep, result.scan_bytes)
+        self.assertLessEqual(peak, budget.peak)
+        self.assertGreater(budget.peak, budget.live)
+
+    def test_allocated_copy_blocks_and_short_views_fit_prepaid_peak(self):
+        import tracemalloc
+        owner = self
+        total = 3 * 65536 + 37
+        tile = bytes(range(256)) * 257
+        sink_hash = hashlib.sha256()
+        events = []
+        state = {"read": 0, "written": 0, "writes": 0, "prior_id": None}
+        class FreshReader:
+            def read(self, size):
+                owner.assertEqual(state["read"], state["written"])
+                begin = state["read"] % 256
+                # 长度比 tile 小，实际新建 bytes；上个 raw 在赋值完成前仍存活。
+                raw = tile[begin:begin + min(size, total - state["read"])]
+                owner.assertIsNot(raw, tile)
+                owner.assertNotEqual(id(raw), state["prior_id"])
+                state["prior_id"] = id(raw)
+                state["read"] += len(raw)
+                events.append(len(raw))
+                return raw
+        class HashSink:
+            def write(self, raw):
+                count = min(4093, len(raw))
+                sink_hash.update(raw[:count])
+                state["written"] += count
+                state["writes"] += 1
+                return count
+        reader, sink, budget = FreshReader(), HashSink(), transaction._BCBudget()
+        before = budget.live
+        tracemalloc.start()
+        try:
+            copied = transaction._bc_copy_exact(reader, sink, total, budget=budget, resource="compressed")
+            _, peak = tracemalloc.get_traced_memory()
+        finally:
+            tracemalloc.stop()
+        expected = hashlib.sha256(bytes(range(256)) * (total // 256) + bytes(range(total % 256))).hexdigest()
+        self.assertEqual(sink_hash.hexdigest(), expected)
+        self.assertEqual((copied, state["read"], state["written"]), (total, total, total))
+        self.assertEqual(events, [65536, 65536, 65536, 37])
+        self.assertGreater(state["writes"], len(events))
+        self.assertLessEqual(peak, budget.peak)
+        self.assertGreaterEqual(budget.live - before, sys.getsizeof(copied))
+        self.assertEqual(self.counted(budget, "compressed"), total)
+
+    def test_external_exception_keeps_copy_buffers_paid_and_sticky(self):
+        saved = OSError("synthetic-retained-private-body")
+        reader, budget = self.Reader(b"x" * 65536, quantum=65536), transaction._BCBudget()
+        state = {"writes": 0, "bytes": 0}
+        class FailedSink:
+            def write(self, raw):
+                state["writes"] += 1
+                if state["writes"] == 1:
+                    state["bytes"] += 7
+                    return 7
+                raise saved
+        before = budget.live
+        with self.assertRaises(transaction.TransactionError) as caught:
+            transaction._bc_copy_exact(reader, FailedSink(), 65536, budget=budget, resource="compressed")
+        self.assertEqual(caught.exception.code, "E_ARCHIVE")
+        self.assertNotIn("synthetic-retained-private-body", str(caught.exception))
+        self.assertIsNone(caught.exception.__context__)
+        self.assertIsNone(caught.exception.__cause__)
+        frames = []
+        current = saved.__traceback__
+        while current is not None:
+            frames.append(current.tb_frame)
+            current = current.tb_next
+        work = next(frame for frame in frames if frame.f_code.co_name == "_bc_io_work")
+        raw, view = work.f_locals["raw"], work.f_locals["view"]
+        self.assertEqual((len(raw), len(view), view.obj is raw), (65536, 65536, True))
+        retained = sys.getsizeof(raw) + sys.getsizeof(view)
+        self.assertGreaterEqual(budget.live - before, retained)
+        self.assertEqual(budget.live, budget.peak)
+        self.assertEqual((len(reader.requests), state["writes"], state["bytes"]), (1, 2, 7))
+        self.assert_sticky(budget)
+        self.assertEqual((len(reader.requests), state["writes"]), (1, 2))
+
+    def test_callers_active_context_is_suppressed_without_linking_io_error(self):
+        import traceback
+        outer = OSError("synthetic-caller-context")
+        inner = OSError("synthetic-source-private-body")
+        reader, budget = self.Reader(), transaction._BCBudget()
+        def failed(size):
+            raise inner
+        reader.read = failed
+        try:
+            raise outer
+        except OSError:
+            with self.assertRaises(transaction.TransactionError) as caught:
+                transaction._bc_read_exact(reader, 1, budget=budget, resource="metadata")
+        # Python 保留调用者既有上下文；标准 traceback 展示须抑制它，并且不链接底层异常。
+        error = caught.exception
+        self.assertIs(error.__context__, outer)
+        self.assertIsNot(error.__context__, inner)
+        self.assertIsNone(error.__cause__)
+        self.assertTrue(error.__suppress_context__)
+        displayed = "".join(traceback.format_exception(error))
+        self.assertNotIn("synthetic-caller-context", displayed)
+        self.assertNotIn("synthetic-source-private-body", displayed)
+        self.assertEqual(error.code, "E_ARCHIVE")
+        self.assert_sticky(budget)
+
+    def test_component_is_not_wired_into_generated_remote_prelude(self):
+        prelude = transaction._bc_workflow_prelude()
+        for name in ("_BCReadResult", "_bc_read_exact", "_bc_copy_exact", "_bc_require_eof"):
+            self.assertNotIn(name, prelude)
+
+
 @unittest.skipUnless(POSIX, "需要 root Linux 实际 dir-fd 扫描；Windows 明确跳过")
 class ResourceTreeTests(unittest.TestCase):
     def setUp(self):
