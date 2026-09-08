@@ -436,6 +436,8 @@ export class AuditTool {
       }
     } catch (error) {
       console.error('生成报告失败:', error)
+      // 报告是命令交付物；写入失败必须传播到 CLI 的非零退出码。
+      throw error
     }
   }
 

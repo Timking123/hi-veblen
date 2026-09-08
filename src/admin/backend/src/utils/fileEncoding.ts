@@ -98,38 +98,52 @@ export function validateFilename(filename: string): ValidationResult {
  * @returns 规范化后的文件名
  */
 export function normalizeFilename(filename: string): string {
-  // 移除路径遍历字符
-  let normalized = filename.replace(/\.\.[/\\]/g, '')
-  
-  // 移除或替换危险字符
-  normalized = normalized.replace(/[<>:"|?*\x00-\x1F]/g, '_')
-  
-  // 移除前导和尾随空格
-  normalized = normalized.trim()
-  
-  // 移除前导点（隐藏文件）
-  while (normalized.startsWith('.')) {
-    normalized = normalized.substring(1)
+  // UTF-8 往返修复孤立代理项；清理后必须满足 validateFilename 的同一组约束。
+  let normalized = Buffer.from(filename, 'utf8').toString('utf8')
+    .replace(/\.\.[/\\]/g, '')
+    .replace(/^[.\s]+|[.\s]+$/g, '')
+
+  if (!normalized || /^[<>:"|?*\x00-\x1F]+$/.test(normalized)) {
+    return 'unnamed_file'
   }
-  
-  // 如果清理后为空，使用默认名称
-  if (!normalized) {
-    normalized = 'unnamed_file'
+
+  normalized = normalized.replace(/[/\\<>:"|?*\x00-\x1F]/g, '_').replace(/\.{2,}/g, '_')
+  const reservedName = /^(CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])(\.|$)/i
+  if (reservedName.test(normalized)) {
+    normalized = '_' + normalized
   }
-  
-  // 限制长度（保留扩展名）
-  const maxLength = 200 // 留一些余地给扩展名
-  if (normalized.length > maxLength) {
-    const lastDotIndex = normalized.lastIndexOf('.')
-    if (lastDotIndex > 0) {
-      const ext = normalized.substring(lastDotIndex)
-      const nameWithoutExt = normalized.substring(0, lastDotIndex)
-      normalized = nameWithoutExt.substring(0, maxLength - ext.length) + ext
+
+  // 按 Unicode 码点截断，避免切断多字节字符或 emoji。
+  const truncate = (value: string, budget: number): string => {
+    let result = ''
+    let bytes = 0
+    for (const character of value) {
+      const size = Buffer.byteLength(character, 'utf8')
+      if (bytes + size > budget) break
+      result += character
+      bytes += size
+    }
+    return result
+  }
+  const maxBytes = 255
+  if (Buffer.byteLength(normalized, 'utf8') > maxBytes) {
+    const dot = normalized.lastIndexOf('.')
+    const extension = dot > 0 ? normalized.slice(dot) : ''
+    const extensionBytes = Buffer.byteLength(extension, 'utf8')
+    if (extension && extensionBytes < maxBytes) {
+      const stem = truncate(normalized.slice(0, dot), maxBytes - extensionBytes)
+      normalized = (stem || '_') + extension
+      if (Buffer.byteLength(normalized, 'utf8') > maxBytes) {
+        normalized = truncate(normalized, maxBytes)
+      }
     } else {
-      // 没有扩展名，直接截断
-      normalized = normalized.substring(0, maxLength)
+      normalized = truncate(normalized, maxBytes)
     }
   }
-  
+  normalized = normalized.replace(/[.\s]+$/g, '') || 'unnamed_file'
+  // 截断主文件名也可能产生保留名；补前缀后再次控制字节上限。
+  if (reservedName.test(normalized)) {
+    normalized = truncate('_' + normalized, maxBytes).replace(/[.\s]+$/g, '')
+  }
   return normalized
 }

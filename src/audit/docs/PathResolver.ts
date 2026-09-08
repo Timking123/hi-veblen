@@ -100,8 +100,8 @@ export class PathResolver {
     // 执行所有替换（从后往前替换，避免位置偏移）
     let newContent = content
     for (const { oldText, newText } of replacements) {
-      // 使用字符串替换而不是正则替换，避免特殊字符问题
-      newContent = newContent.replace(oldText, newText)
+      // 回调返回原文，避免链接文字中的 $ 被解释为替换指令。
+      newContent = newContent.replace(oldText, () => newText)
     }
 
     // 如果有更新，写入文件

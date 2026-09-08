@@ -41,7 +41,9 @@ export class Logger {
 
   constructor(module: string) {
     this.module = module
-    this.logDir = path.resolve(__dirname, '../../logs')
+    this.logDir = process.env.NODE_ENV === 'test' && process.env.TEST_LOG_DIR
+      ? path.resolve(process.env.TEST_LOG_DIR)
+      : path.resolve(__dirname, '../../logs')
     
     // 从环境变量读取最低日志级别，默认为 INFO
     const envLevel = process.env.LOG_LEVEL?.toUpperCase() || 'INFO'

@@ -29,20 +29,21 @@ describe('Projectile Speed Property Tests', () => {
     it('should move every 100ms', () => {
       const bullet = new Bullet(100, 100, 2, 20, 'player', 0)
       const initialY = bullet.y
+      const interval = SHOOTING_CONFIG.BULLET_MOVE_INTERVAL
       
       // 立即更新，不应该移动
       bullet.update(0)
       expect(bullet.y).toBe(initialY)
       
       // 前进 99ms，仍然不应该移动
-      vi.advanceTimersByTime(99)
+      vi.advanceTimersByTime(interval - 1)
       bullet.update(0)
       expect(bullet.y).toBe(initialY)
       
       // 前进到 100ms，应该移动
       vi.advanceTimersByTime(1)
       bullet.update(0)
-      expect(bullet.y).toBeLessThan(initialY) // 向上移动，y 减小
+      expect(bullet.y).toBe(initialY - bullet.speed)
     })
 
     it('should maintain 100ms interval across multiple moves', () => {
@@ -60,7 +61,7 @@ describe('Projectile Speed Property Tests', () => {
       
       // 应该移动了 5 次（100ms, 200ms, 300ms, 400ms, 500ms）
       // 加上初始位置，应该有 6 个不同的位置
-      expect(movePositions.length).toBeGreaterThanOrEqual(5)
+      expect(movePositions).toEqual([100, 80, 60, 40, 20, 0])
     })
 
     it('should use exactly 100ms move interval', () => {
@@ -102,20 +103,21 @@ describe('Projectile Speed Property Tests', () => {
     it('should move every 150ms', () => {
       const missile = new Missile(100, 100, 5, 12, 3, 'player', 0)
       const initialY = missile.y
+      const interval = SHOOTING_CONFIG.MISSILE_MOVE_INTERVAL
       
       // 立即更新，不应该移动
       missile.update(0)
       expect(missile.y).toBe(initialY)
       
       // 前进 149ms，仍然不应该移动
-      vi.advanceTimersByTime(149)
+      vi.advanceTimersByTime(interval - 1)
       missile.update(0)
       expect(missile.y).toBe(initialY)
       
       // 前进到 150ms，应该移动
       vi.advanceTimersByTime(1)
       missile.update(0)
-      expect(missile.y).toBeLessThan(initialY) // 向上移动，y 减小
+      expect(missile.y).toBe(initialY - missile.speed)
     })
 
     it('should maintain 150ms interval across multiple moves', () => {
@@ -133,7 +135,7 @@ describe('Projectile Speed Property Tests', () => {
       
       // 应该移动了 5 次（150ms, 300ms, 450ms, 600ms, 750ms）
       // 加上初始位置，应该有 6 个不同的位置
-      expect(movePositions.length).toBeGreaterThanOrEqual(5)
+      expect(movePositions).toEqual([100, 88, 76, 64, 52, 40])
     })
 
     it('should use exactly 150ms move interval', () => {
@@ -207,6 +209,8 @@ describe('Projectile Speed Property Tests', () => {
       
       // 子弹应该移动得更远（300ms 内子弹移动 3 次，导弹移动 2 次）
       expect(bulletDistance).toBeGreaterThan(missileDistance)
+      expect(bulletDistance).toBe(60)
+      expect(missileDistance).toBe(24)
     })
   })
 })

@@ -184,6 +184,9 @@ const clearError = (field: keyof MessageFormData) => {
 
 // Handle form submission（处理表单提交）
 const handleSubmit = async () => {
+  // 在同一渲染周期的连续提交中也只保留一个请求。
+  if (isSubmitting.value) return
+
   // Reset success/error message（重置成功/错误消息）
   submitSuccess.value = false
   submitError.value = ''

@@ -203,7 +203,9 @@ export interface ResumeOperationResult {
 /**
  * 文件存储根目录
  */
-const FILE_ROOT = path.resolve(__dirname, '../../../file')
+const FILE_ROOT = process.env.NODE_ENV === 'test' && process.env.TEST_FILE_ROOT
+  ? path.resolve(process.env.TEST_FILE_ROOT)
+  : path.resolve(__dirname, '../../../file')
 
 /**
  * 允许的文件扩展名（用于安全检查）

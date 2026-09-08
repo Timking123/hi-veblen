@@ -38,6 +38,16 @@ export class PlayerAircraft implements Entity {
     this.canvasHeight = SCENE_CONFIG.CANVAS_HEIGHT_V2
   }
 
+  /** 同步当前所属画布，并在缩小画布时立即把玩家限制在可见范围。 */
+  setCanvasBounds(width: number, height: number): void {
+    if (!Number.isFinite(width) || !Number.isFinite(height) || width <= 0 || height <= 0) {
+      throw new RangeError('画布尺寸必须为正有限数')
+    }
+    this.canvasWidth = width
+    this.canvasHeight = height
+    clampEntityToBounds(this, 0, 0, width, height)
+  }
+
   /**
    * 移动玩家（V2 版本）
    * 单次按键移动 1 像素块，长按每 200ms 移动 1 像素块

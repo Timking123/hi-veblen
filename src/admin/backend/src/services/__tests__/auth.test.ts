@@ -5,7 +5,7 @@
  * 验证需求: 1.1, 1.2, 1.3
  */
 
-import { initDatabase, closeDatabase, resetDatabase, getDatabase } from '../../database/init'
+import { initDatabase, closeDatabase, resetDatabase } from '../../database/init'
 import {
   login,
   logout,
@@ -15,7 +15,6 @@ import {
   findUserByUsername,
   lockConfig
 } from '../auth'
-import { hashPasswordSync } from '../../utils/crypto'
 
 describe('认证服务 (Auth Service)', () => {
   beforeAll(async () => {
@@ -34,8 +33,8 @@ describe('认证服务 (Auth Service)', () => {
 
   describe('login（登录）', () => {
     it('应该使用正确的用户名和密码成功登录', async () => {
-      // 默认管理员账户: admin / admin123
-      const result = await login('admin', 'admin123')
+      // 默认管理员账户: admin / test-only-admin-password
+      const result = await login('admin', 'test-only-admin-password')
 
       expect(result.success).toBe(true)
       expect(result.token).toBeDefined()
@@ -44,7 +43,7 @@ describe('认证服务 (Auth Service)', () => {
     })
 
     it('应该在用户名错误时返回失败', async () => {
-      const result = await login('wronguser', 'admin123')
+      const result = await login('wronguser', 'test-only-admin-password')
 
       expect(result.success).toBe(false)
       expect(result.errorCode).toBe('USER_NOT_FOUND')
@@ -66,7 +65,7 @@ describe('认证服务 (Auth Service)', () => {
     })
 
     it('应该在登录成功后更新最后登录时间', async () => {
-      await login('admin', 'admin123')
+      await login('admin', 'test-only-admin-password')
       
       const user = findUserByUsername('admin')
       expect(user?.lastLogin).not.toBeNull()
@@ -94,7 +93,7 @@ describe('认证服务 (Auth Service)', () => {
       }
 
       // 尝试使用正确密码登录
-      const result = await login('admin', 'admin123')
+      const result = await login('admin', 'test-only-admin-password')
 
       expect(result.success).toBe(false)
       expect(result.errorCode).toBe('ACCOUNT_LOCKED')
@@ -121,7 +120,7 @@ describe('认证服务 (Auth Service)', () => {
       await login('admin', 'wrongpassword')
 
       // 然后成功登录
-      await login('admin', 'admin123')
+      await login('admin', 'test-only-admin-password')
 
       // 检查失败次数已重置
       const lockStatus = checkAccountLock('admin')
@@ -148,7 +147,7 @@ describe('认证服务 (Auth Service)', () => {
   describe('logout（登出）', () => {
     it('应该成功登出', async () => {
       // 先登录
-      const loginResult = await login('admin', 'admin123')
+      const loginResult = await login('admin', 'test-only-admin-password')
       expect(loginResult.success).toBe(true)
 
       // 登出
@@ -158,13 +157,13 @@ describe('认证服务 (Auth Service)', () => {
 
   describe('changePassword（修改密码）', () => {
     it('应该使用正确的旧密码成功修改密码', async () => {
-      const result = await changePassword(1, 'admin123', 'newpassword123')
+      const result = await changePassword(1, 'test-only-admin-password', 'newpassword123')
 
       expect(result.success).toBe(true)
     })
 
     it('应该在修改密码后能使用新密码登录', async () => {
-      await changePassword(1, 'admin123', 'newpassword123')
+      await changePassword(1, 'test-only-admin-password', 'newpassword123')
 
       const loginResult = await login('admin', 'newpassword123')
       expect(loginResult.success).toBe(true)
@@ -178,14 +177,14 @@ describe('认证服务 (Auth Service)', () => {
     })
 
     it('应该在新密码与旧密码相同时返回失败', async () => {
-      const result = await changePassword(1, 'admin123', 'admin123')
+      const result = await changePassword(1, 'test-only-admin-password', 'test-only-admin-password')
 
       expect(result.success).toBe(false)
       expect(result.errorCode).toBe('SAME_PASSWORD')
     })
 
     it('应该在用户不存在时返回失败', async () => {
-      const result = await changePassword(999, 'admin123', 'newpassword123')
+      const result = await changePassword(999, 'test-only-admin-password', 'newpassword123')
 
       expect(result.success).toBe(false)
       expect(result.errorCode).toBe('USER_NOT_FOUND')

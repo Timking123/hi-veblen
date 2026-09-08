@@ -97,22 +97,21 @@ npm run dev
 
 ```bash
 npm run type-check
-npm run test -- src/views/__tests__/Home.test.ts
+npm run test
 npm run build
 npx playwright install chromium
-npx playwright test e2e/art-museum-experience.spec.ts --project=chromium
+npm run test:e2e:legacy
 ```
 
-截至 2026-07-14，Portal `3b0f010a0fb495504d0c3ffa01006f8bc33a8475` 的 [CI run `29301865888` attempt 2](https://github.com/Timking123/hi-veblen/actions/runs/29301865888/attempts/2) 四个 job 均为 success。attempt 1 因 GitHub 托管 runner 访问 APT 镜像超时而中断，未形成项目代码失败结论；同一提交重跑后四路通过。Lingxi `55255df61ae6aef89ce5d8e4d46ba637ca3cd632` 的 [CI run `29301558361`](https://github.com/Timking123/Lingxi/actions/runs/29301558361) 中，Web、Python 3.11 与 Python 3.12 三个确定性 job 全部通过。前三组门户检查负责阻断发布，`Legacy diagnostics (non-blocking)` 只保留旧全量诊断结果。
+应用全量检查分别纳入下列三个阻断任务。根 Vitest 只运行门户、游戏和审计工具；Admin 前端和后端各用自己的测试入口，避免重复收集或混用 Vitest/Jest。具体提交是否通过，必须读取该提交的 CI 结果；部署仍需单独执行发布流程。
 
 | 检查组 | 覆盖范围 | 是否阻断发布 |
 | --- | --- | --- |
-| `Release gate` | 根项目类型检查、Home 关键契约、生产构建与发布事务自检 | 是 |
-| `Admin quality` | 管理端类型检查、34 项测试与构建，后端生产构建 | 是 |
-| `Portal E2E` | Chromium 门户体验冒烟 | 是 |
-| `Legacy diagnostics (non-blocking)` | 旧全量 lint、unit 与 backend tests | 否，只保留完整诊断 |
+| `Release gate` | 根项目类型检查、lint、完整 Vitest 套件、生产构建与发布事务自检 | 是 |
+| `Admin quality` | 管理端前端类型检查、完整 Vitest 与构建；后端完整 Jest 与生产构建 | 是 |
+| `Portal E2E` | Chromium 门户体验及桌面/手机尺寸的联系页、独立留言和游戏组件流程 | 是 |
 
-`Legacy diagnostics (non-blocking)` 显示 success，只表示诊断命令跑完并保留了结果，不表示其中的 legacy 命令已经全部通过。历史计数、当前游戏子系统风险和依赖残留见 [已知质量边界](./docs/KNOWN_ISSUES.md)。
+独立组件测试使用合成 API、Canvas 故障和本地开发入口；联系页与门户体验使用生产构建。它们不证明真实留言落库、线上认证或部署成功。历史诊断与剩余运维边界见 [已知质量边界](./docs/KNOWN_ISSUES.md)，运行入口见 [端到端测试](./e2e/README.md)。
 
 ## 仓库结构
 

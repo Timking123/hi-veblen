@@ -1,3 +1,4 @@
+import { requireValue } from '../../__tests__/helpers'
 /**
  * 文件服务单元测试
  * 
@@ -627,12 +628,12 @@ describe('简历版本管理', () => {
       expect(isPdfFile('test.pdf', invalidPdfBuffer)).toBe(false)
     })
     
-    it('应该处理空文件或小文件', () => {
+    it('应该拒绝已提供内容但缺少完整 PDF 文件头的文件', () => {
       const emptyBuffer = Buffer.from('')
-      expect(isPdfFile('test.pdf', emptyBuffer)).toBe(true) // 只检查扩展名
+      expect(isPdfFile('test.pdf', emptyBuffer)).toBe(false)
       
       const smallBuffer = Buffer.from('%PD')
-      expect(isPdfFile('test.pdf', smallBuffer)).toBe(true) // 文件太小，只检查扩展名
+      expect(isPdfFile('test.pdf', smallBuffer)).toBe(false)
     })
   })
   
@@ -640,45 +641,45 @@ describe('简历版本管理', () => {
    * 需求: 5.1.1 - 提供简历上传功能（仅支持 PDF 格式）
    */
   describe('uploadResume（上传简历）', () => {
-    it('应该成功上传 PDF 简历', () => {
+    it('应该成功上传 PDF 简历', async () => {
       const pdfContent = Buffer.from('%PDF-1.4 test resume content')
-      const result = uploadResume(pdfContent, 'my_resume.pdf')
+      const result = await uploadResume(pdfContent, 'my_resume.pdf')
       
       expect(result.success).toBe(true)
       expect(result.version).toBe(1)
     })
     
-    it('应该拒绝非 PDF 文件', () => {
+    it('应该拒绝非 PDF 文件', async () => {
       const docContent = Buffer.from('This is a Word document')
-      const result = uploadResume(docContent, 'resume.doc')
+      const result = await uploadResume(docContent, 'resume.doc')
       
       expect(result.success).toBe(false)
       expect(result.error).toContain('PDF')
     })
     
-    it('应该拒绝伪装成 PDF 的文件', () => {
+    it('应该拒绝伪装成 PDF 的文件', async () => {
       const fakeContent = Buffer.from('This is not a real PDF file')
-      const result = uploadResume(fakeContent, 'fake.pdf')
+      const result = await uploadResume(fakeContent, 'fake.pdf')
       
       expect(result.success).toBe(false)
     })
     
-    it('应该自动递增版本号', () => {
+    it('应该自动递增版本号', async () => {
       const pdfContent = Buffer.from('%PDF-1.4 test content')
       
-      const result1 = uploadResume(pdfContent, 'resume_v1.pdf')
+      const result1 = await uploadResume(pdfContent, 'resume_v1.pdf')
       expect(result1.version).toBe(1)
       
-      const result2 = uploadResume(pdfContent, 'resume_v2.pdf')
+      const result2 = await uploadResume(pdfContent, 'resume_v2.pdf')
       expect(result2.version).toBe(2)
       
-      const result3 = uploadResume(pdfContent, 'resume_v3.pdf')
+      const result3 = await uploadResume(pdfContent, 'resume_v3.pdf')
       expect(result3.version).toBe(3)
     })
     
-    it('第一个上传的简历应该自动设置为当前使用', () => {
+    it('第一个上传的简历应该自动设置为当前使用', async () => {
       const pdfContent = Buffer.from('%PDF-1.4 test content')
-      uploadResume(pdfContent, 'first_resume.pdf')
+      await uploadResume(pdfContent, 'first_resume.pdf')
       
       const active = getActiveResume()
       expect(active).not.toBeNull()
@@ -696,45 +697,45 @@ describe('简历版本管理', () => {
       expect(versions).toEqual([])
     })
     
-    it('应该返回所有上传的简历版本', () => {
+    it('应该返回所有上传的简历版本', async () => {
       const pdfContent = Buffer.from('%PDF-1.4 test content')
       
-      uploadResume(pdfContent, 'resume1.pdf')
-      uploadResume(pdfContent, 'resume2.pdf')
-      uploadResume(pdfContent, 'resume3.pdf')
+      await uploadResume(pdfContent, 'resume1.pdf')
+      await uploadResume(pdfContent, 'resume2.pdf')
+      await uploadResume(pdfContent, 'resume3.pdf')
       
       const versions = getResumeVersions()
       
       expect(versions.length).toBe(3)
       // 应该按版本号降序排列
-      expect(versions[0].version).toBe(3)
-      expect(versions[1].version).toBe(2)
-      expect(versions[2].version).toBe(1)
+      expect(requireValue(versions[0]).version).toBe(3)
+      expect(requireValue(versions[1]).version).toBe(2)
+      expect(requireValue(versions[2]).version).toBe(1)
     })
     
-    it('版本信息应该包含所有必要字段', () => {
+    it('版本信息应该包含所有必要字段', async () => {
       const pdfContent = Buffer.from('%PDF-1.4 test content')
-      uploadResume(pdfContent, 'my_resume.pdf')
+      await uploadResume(pdfContent, 'my_resume.pdf')
       
       const versions = getResumeVersions()
       const version = versions[0]
       
-      expect(version.id).toBeDefined()
-      expect(version.version).toBe(1)
-      expect(version.filename).toBe('my_resume.pdf')
-      expect(version.filePath).toContain('resume')
-      expect(version.fileSize).toBeGreaterThan(0)
-      expect(version.isActive).toBe(true)
-      expect(version.downloadCount).toBe(0)
-      expect(version.createdAt).toBeDefined()
+      expect(requireValue(version).id).toBeDefined()
+      expect(requireValue(version).version).toBe(1)
+      expect(requireValue(version).filename).toBe('my_resume.pdf')
+      expect(requireValue(version).filePath).toContain('resume')
+      expect(requireValue(version).fileSize).toBeGreaterThan(0)
+      expect(requireValue(version).isActive).toBe(true)
+      expect(requireValue(version).downloadCount).toBe(0)
+      expect(requireValue(version).createdAt).toBeDefined()
     })
     
-    it('应该限制最多 5 个版本', () => {
+    it('应该限制最多 5 个版本', async () => {
       const pdfContent = Buffer.from('%PDF-1.4 test content')
       
       // 上传 7 个版本
       for (let i = 1; i <= 7; i++) {
-        uploadResume(pdfContent, `resume_${i}.pdf`)
+        await uploadResume(pdfContent, `resume_${i}.pdf`)
       }
       
       const versions = getResumeVersions()
@@ -742,9 +743,9 @@ describe('简历版本管理', () => {
       // 应该只保留最新的 5 个版本
       expect(versions.length).toBe(5)
       // 最新的版本应该是 7
-      expect(versions[0].version).toBe(7)
+      expect(requireValue(versions[0]).version).toBe(7)
       // 最旧的版本应该是 3（1 和 2 被删除了）
-      expect(versions[4].version).toBe(3)
+      expect(requireValue(versions[4]).version).toBe(3)
     })
   })
   
@@ -752,15 +753,15 @@ describe('简历版本管理', () => {
    * 需求: 5.1.3 - 提供设置当前使用简历的功能
    */
   describe('setActiveResume（设置当前简历）', () => {
-    it('应该成功设置当前使用的简历', () => {
+    it('应该成功设置当前使用的简历', async () => {
       const pdfContent = Buffer.from('%PDF-1.4 test content')
       
-      uploadResume(pdfContent, 'resume1.pdf')
-      uploadResume(pdfContent, 'resume2.pdf')
-      uploadResume(pdfContent, 'resume3.pdf')
+      await uploadResume(pdfContent, 'resume1.pdf')
+      await uploadResume(pdfContent, 'resume2.pdf')
+      await uploadResume(pdfContent, 'resume3.pdf')
       
       // 设置版本 2 为当前使用
-      const result = setActiveResume(2)
+      const result = await setActiveResume(2)
       
       expect(result.success).toBe(true)
       
@@ -768,25 +769,25 @@ describe('简历版本管理', () => {
       expect(active?.version).toBe(2)
     })
     
-    it('应该返回错误当版本不存在时', () => {
-      const result = setActiveResume(999)
+    it('应该返回错误当版本不存在时', async () => {
+      const result = await setActiveResume(999)
       
       expect(result.success).toBe(false)
       expect(result.error).toContain('不存在')
     })
     
-    it('设置新的当前简历应该取消之前的当前状态', () => {
+    it('设置新的当前简历应该取消之前的当前状态', async () => {
       const pdfContent = Buffer.from('%PDF-1.4 test content')
       
-      uploadResume(pdfContent, 'resume1.pdf')
-      uploadResume(pdfContent, 'resume2.pdf')
+      await uploadResume(pdfContent, 'resume1.pdf')
+      await uploadResume(pdfContent, 'resume2.pdf')
       
       // 第一个版本默认是当前的
       let versions = getResumeVersions()
       expect(versions.find(v => v.version === 1)?.isActive).toBe(true)
       
       // 设置版本 2 为当前
-      setActiveResume(2)
+      await setActiveResume(2)
       
       versions = getResumeVersions()
       expect(versions.find(v => v.version === 1)?.isActive).toBe(false)
@@ -803,9 +804,9 @@ describe('简历版本管理', () => {
       expect(active).toBeNull()
     })
     
-    it('应该返回当前使用的简历', () => {
+    it('应该返回当前使用的简历', async () => {
       const pdfContent = Buffer.from('%PDF-1.4 test content')
-      uploadResume(pdfContent, 'current_resume.pdf')
+      await uploadResume(pdfContent, 'current_resume.pdf')
       
       const active = getActiveResume()
       
@@ -819,13 +820,13 @@ describe('简历版本管理', () => {
    * 需求: 5.1.4 - 显示简历下载统计
    */
   describe('incrementResumeDownloadCount（增加下载次数）', () => {
-    it('应该成功增加下载次数', () => {
+    it('应该成功增加下载次数', async () => {
       const pdfContent = Buffer.from('%PDF-1.4 test content')
-      uploadResume(pdfContent, 'resume.pdf')
+      await uploadResume(pdfContent, 'resume.pdf')
       
       // 初始下载次数应该是 0
       let versions = getResumeVersions()
-      expect(versions[0].downloadCount).toBe(0)
+      expect(requireValue(versions[0]).downloadCount).toBe(0)
       
       // 增加下载次数
       incrementResumeDownloadCount(1)
@@ -833,7 +834,7 @@ describe('简历版本管理', () => {
       incrementResumeDownloadCount(1)
       
       versions = getResumeVersions()
-      expect(versions[0].downloadCount).toBe(3)
+      expect(requireValue(versions[0]).downloadCount).toBe(3)
     })
     
     it('应该返回错误当版本不存在时', () => {
@@ -853,11 +854,11 @@ describe('简历版本管理', () => {
       expect(total).toBe(0)
     })
     
-    it('应该返回所有版本的总下载次数', () => {
+    it('应该返回所有版本的总下载次数', async () => {
       const pdfContent = Buffer.from('%PDF-1.4 test content')
       
-      uploadResume(pdfContent, 'resume1.pdf')
-      uploadResume(pdfContent, 'resume2.pdf')
+      await uploadResume(pdfContent, 'resume1.pdf')
+      await uploadResume(pdfContent, 'resume2.pdf')
       
       // 版本 1 下载 3 次
       incrementResumeDownloadCount(1)
@@ -877,9 +878,9 @@ describe('简历版本管理', () => {
    * 需求: 5.1.1 - 提供简历上传功能（仅支持 PDF 格式）
    */
   describe('getResumeForDownload（获取简历下载）', () => {
-    it('应该返回简历文件信息', () => {
+    it('应该返回简历文件信息', async () => {
       const pdfContent = Buffer.from('%PDF-1.4 test content')
-      uploadResume(pdfContent, 'download_test.pdf')
+      await uploadResume(pdfContent, 'download_test.pdf')
       
       const result = getResumeForDownload(1)
       
@@ -900,11 +901,11 @@ describe('简历版本管理', () => {
   })
   
   describe('deleteResumeVersion（删除简历版本）', () => {
-    it('应该成功删除简历版本', () => {
+    it('应该成功删除简历版本', async () => {
       const pdfContent = Buffer.from('%PDF-1.4 test content')
       
-      uploadResume(pdfContent, 'resume1.pdf')
-      uploadResume(pdfContent, 'resume2.pdf')
+      await uploadResume(pdfContent, 'resume1.pdf')
+      await uploadResume(pdfContent, 'resume2.pdf')
       
       const result = deleteResumeVersion(1)
       
@@ -912,18 +913,18 @@ describe('简历版本管理', () => {
       
       const versions = getResumeVersions()
       expect(versions.length).toBe(1)
-      expect(versions[0].version).toBe(2)
+      expect(requireValue(versions[0]).version).toBe(2)
     })
     
-    it('删除当前简历后应该自动设置最新版本为当前', () => {
+    it('删除当前简历后应该自动设置最新版本为当前', async () => {
       const pdfContent = Buffer.from('%PDF-1.4 test content')
       
-      uploadResume(pdfContent, 'resume1.pdf')
-      uploadResume(pdfContent, 'resume2.pdf')
-      uploadResume(pdfContent, 'resume3.pdf')
+      await uploadResume(pdfContent, 'resume1.pdf')
+      await uploadResume(pdfContent, 'resume2.pdf')
+      await uploadResume(pdfContent, 'resume3.pdf')
       
       // 设置版本 2 为当前
-      setActiveResume(2)
+      await setActiveResume(2)
       
       // 删除当前版本
       deleteResumeVersion(2)
@@ -953,13 +954,9 @@ import {
   uploadAudio,
   getImagesByCategory,
   getAudioByType,
-  deleteImage,
-  deleteAudio,
   getImageCategories,
   getAudioTypes,
-  ImageCategory,
-  AudioType
-} from '../file'
+  } from '../file'
 
 describe('图片处理', () => {
   /**

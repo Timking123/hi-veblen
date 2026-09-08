@@ -1,3 +1,4 @@
+import { requireValue } from './helpers'
 /**
  * 备份路由单元测试
  * 验证备份 API 路由的基本功能
@@ -11,7 +12,7 @@ import path from 'path'
 import fs from 'fs'
 
 // 测试用的备份目录
-const TEST_BACKUP_DIR = path.resolve(__dirname, '../../test-backups')
+const TEST_BACKUP_DIR = path.join(process.env.TEST_SUITE_ROOT!, 'test-backups')
 
 describe('备份路由测试', () => {
   beforeAll(async () => {
@@ -65,7 +66,7 @@ describe('备份路由测试', () => {
       expect(backup).toHaveProperty('filename')
       expect(backup).toHaveProperty('size')
       expect(backup).toHaveProperty('createdAt')
-      expect(backup.filename).toMatch(/^admin_\d{4}-\d{2}-\d{2}_\d{6}_\d{3}\.db$/)
+      expect(requireValue(backup).filename).toMatch(/^admin_\d{4}-\d{2}-\d{2}_\d{6}_\d{3}\.db$/)
     })
 
     it('应该正确清理旧备份（保留最近 7 个）', () => {

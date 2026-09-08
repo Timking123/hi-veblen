@@ -164,4 +164,4 @@ program
   })
 
 // 解析命令行参数
-program.parse()
+await program.parseAsync()

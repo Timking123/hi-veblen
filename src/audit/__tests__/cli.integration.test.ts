@@ -5,13 +5,28 @@
  */
 
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
-import { execSync } from 'child_process'
+import { spawnSync } from 'child_process'
 import * as fs from 'fs-extra'
 import * as path from 'path'
 import * as os from 'os'
 
 describe('CLI Integration Tests', () => {
   let tempDir: string
+  const cliPath = path.resolve('src/audit/cli.ts')
+  const tsxPath = path.resolve('node_modules/tsx/dist/cli.mjs')
+  const runCLI = (...args: string[]) => {
+    // 使用锁定安装的解释器；临时 cwd 不能触发 npx 联网下载。
+    const result = spawnSync(process.execPath, [tsxPath, cliPath, ...args], {
+      encoding: 'utf-8', cwd: tempDir, timeout: 15000,
+    })
+    expect(result.error).toBeUndefined()
+    return result
+  }
+  const help = (...args: string[]) => {
+    const result = runCLI(...args)
+    expect(result.status, result.stderr).toBe(0)
+    return result.stdout
+  }
 
   beforeEach(async () => {
     // 为每个测试创建临时目录
@@ -25,9 +40,7 @@ describe('CLI Integration Tests', () => {
 
   describe('audit 命令', () => {
     it('should display help for audit command', () => {
-      const output = execSync('npx tsx src/audit/cli.ts audit --help', {
-        encoding: 'utf-8'
-      })
+      const output = help('audit', '--help')
 
       expect(output).toContain('运行代码审计')
       expect(output).toContain('--comments')
@@ -40,34 +53,44 @@ describe('CLI Integration Tests', () => {
       const testFile = path.join(tempDir, 'test.ts')
       fs.writeFileSync(testFile, '// 测试文件\nfunction test() {}', 'utf-8')
 
-      // 获取 CLI 的绝对路径
-      const cliPath = path.resolve(process.cwd(), 'src/audit/cli.ts')
+      const result = runCLI('audit', '--debug')
+      expect(result.status, result.stderr).toBe(0)
+      const report = fs.readJsonSync(path.join(tempDir, 'audit-report.json'))
+      expect(report.success).toBe(true)
+      expect(report.summary.totalFiles).toBe(1)
+      expect(report.checks).toEqual([expect.objectContaining({
+        name: 'debug', passed: true, issues: [], metrics: { debugCodeCount: 0 },
+      })])
+    })
 
-      // 运行审计命令（使用绝对路径）
-      // 只验证命令能够执行，不验证输出
-      let executed = false
-      try {
-        execSync(`npx tsx "${cliPath}" audit --debug`, {
-          encoding: 'utf-8',
-          cwd: tempDir,
-          stdio: 'pipe'
-        })
-        executed = true
-      } catch (error) {
-        // 审计可能失败（因为代码质量问题），但命令已执行
-        executed = true
-      }
+    it('报告无法写入时必须返回失败退出码', () => {
+      const occupied = path.join(tempDir, 'occupied')
+      fs.writeFileSync(occupied, '保留原有文件', 'utf-8')
+      const result = runCLI('audit', '--debug', '--output', path.join(occupied, 'report'))
+      expect(result.status).toBe(1)
+      expect(result.stderr).toContain('审计失败')
+      expect(fs.readFileSync(occupied, 'utf-8')).toBe('保留原有文件')
+    })
 
-      // 验证命令已执行
-      expect(executed).toBe(true)
+    it('真实子进程必须读到调试代码和待办哨兵', () => {
+      const testFile = path.join(tempDir, 'sentinel.ts')
+      fs.writeFileSync(testFile, "console.debug('合成哨兵')\n// FIXME: 合成待办\n", 'utf-8')
+      const result = runCLI('audit', '--debug', '--todos')
+      // FIXME 属于高优先级问题，真实质量门应拒绝该合成输入。
+      expect(result.status, result.stderr).toBe(1)
+      const report = fs.readJsonSync(path.join(tempDir, 'audit-report.json'))
+      expect(report.success).toBe(false)
+      expect(report.summary.totalFiles).toBe(1)
+      expect(report.checks).toEqual(expect.arrayContaining([
+        expect.objectContaining({ name: 'debug', passed: false, issues: [expect.objectContaining({ file: testFile, line: 1, rule: 'no-debug-code' })] }),
+        expect.objectContaining({ name: 'todos', issues: [expect.objectContaining({ file: testFile, line: 2 })] }),
+      ]))
     })
   })
 
   describe('migrate-eslint 命令', () => {
     it('should display help for migrate-eslint command', () => {
-      const output = execSync('npx tsx src/audit/cli.ts migrate-eslint --help', {
-        encoding: 'utf-8'
-      })
+      const output = help('migrate-eslint', '--help')
 
       expect(output).toContain('迁移 ESLint 配置')
       expect(output).toContain('--dry-run')
@@ -77,9 +100,7 @@ describe('CLI Integration Tests', () => {
 
   describe('organize-docs 命令', () => {
     it('should display help for organize-docs command', () => {
-      const output = execSync('npx tsx src/audit/cli.ts organize-docs --help', {
-        encoding: 'utf-8'
-      })
+      const output = help('organize-docs', '--help')
 
       expect(output).toContain('整理文档结构')
       expect(output).toContain('--dry-run')
@@ -89,17 +110,13 @@ describe('CLI Integration Tests', () => {
 
   describe('版本和帮助', () => {
     it('should display version', () => {
-      const output = execSync('npx tsx src/audit/cli.ts --version', {
-        encoding: 'utf-8'
-      })
+      const output = help('--version')
 
       expect(output).toContain('1.0.0')
     })
 
     it('should display help', () => {
-      const output = execSync('npx tsx src/audit/cli.ts --help', {
-        encoding: 'utf-8'
-      })
+      const output = help('--help')
 
       expect(output).toContain('代码审计和文档整理工具')
       expect(output).toContain('audit')

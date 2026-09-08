@@ -1,3 +1,4 @@
+import { requireValue } from '../../__tests__/helpers'
 /**
  * 文件编码处理器单元测试
  * 测试各种特殊字符和多语言文件名
@@ -27,7 +28,7 @@ describe('encodeContentDisposition（编码 Content-Disposition）', () => {
     expect(match).toBeTruthy()
     
     if (match) {
-      const decoded = decodeURIComponent(match[1])
+      const decoded = decodeURIComponent(requireValue(match[1]))
       expect(decoded).toBe(filename)
     }
   })
@@ -40,7 +41,7 @@ describe('encodeContentDisposition（编码 Content-Disposition）', () => {
     expect(match).toBeTruthy()
     
     if (match) {
-      const decoded = decodeURIComponent(match[1])
+      const decoded = decodeURIComponent(requireValue(match[1]))
       expect(decoded).toBe(filename)
     }
   })
@@ -53,7 +54,7 @@ describe('encodeContentDisposition（编码 Content-Disposition）', () => {
     expect(match).toBeTruthy()
     
     if (match) {
-      const decoded = decodeURIComponent(match[1])
+      const decoded = decodeURIComponent(requireValue(match[1]))
       expect(decoded).toBe(filename)
     }
   })
@@ -77,7 +78,7 @@ describe('encodeContentDisposition（编码 Content-Disposition）', () => {
     if (asciiMatch) {
       const asciiFallback = asciiMatch[1]
       // fallback 应该只包含 ASCII 字符
-      expect(/^[\x00-\x7F]+$/.test(asciiFallback)).toBe(true)
+      expect(/^[\x00-\x7F]+$/.test(requireValue(asciiFallback))).toBe(true)
       // 应该保留扩展名
       expect(asciiFallback).toContain('.pdf')
     }
@@ -91,7 +92,7 @@ describe('encodeContentDisposition（编码 Content-Disposition）', () => {
     expect(match).toBeTruthy()
     
     if (match) {
-      const decoded = decodeURIComponent(match[1])
+      const decoded = decodeURIComponent(requireValue(match[1]))
       expect(decoded).toBe(filename)
     }
   })
@@ -104,7 +105,7 @@ describe('encodeContentDisposition（编码 Content-Disposition）', () => {
     expect(match).toBeTruthy()
     
     if (match) {
-      const decoded = decodeURIComponent(match[1])
+      const decoded = decodeURIComponent(requireValue(match[1]))
       expect(decoded).toBe(filename)
     }
   })
@@ -117,7 +118,7 @@ describe('encodeContentDisposition（编码 Content-Disposition）', () => {
     expect(match).toBeTruthy()
     
     if (match) {
-      const decoded = decodeURIComponent(match[1])
+      const decoded = decodeURIComponent(requireValue(match[1]))
       expect(decoded).toBe(filename)
     }
   })
@@ -249,6 +250,24 @@ describe('validateFilename（验证文件名）', () => {
 })
 
 describe('normalizeFilename（规范化文件名）', () => {
+  it.each([
+    '\\ ',
+    'CON',
+    '测'.repeat(100) + '.pdf',
+    '📄'.repeat(100) + '.pdf',
+    '\ud800.pdf',
+    'a.' + '扩'.repeat(100),
+    'CONA.' + 'a'.repeat(251),
+    'COM1A.' + 'a'.repeat(250),
+    'nulA.' + 'a'.repeat(251),
+    'conA.' + '扩'.repeat(83) + 'aa'
+  ])('固定反例规范化后满足验证器且重复执行不变：%s', input => {
+    const normalized = normalizeFilename(input)
+    expect(validateFilename(normalized)).toEqual({ valid: true, errors: [] })
+    expect(normalizeFilename(normalized)).toBe(normalized)
+    expect(Buffer.byteLength(normalized, 'utf8')).toBeLessThanOrEqual(255)
+  })
+
   it('应该移除路径遍历字符', () => {
     const testCases = [
       { input: '../file.pdf', expected: 'file.pdf' },
@@ -258,6 +277,7 @@ describe('normalizeFilename（规范化文件名）', () => {
     
     for (const { input, expected } of testCases) {
       const result = normalizeFilename(input)
+      expect(result).toBe(expected)
       expect(result).not.toContain('..')
       expect(result).not.toContain('/')
       expect(result).not.toContain('\\')

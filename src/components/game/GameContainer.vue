@@ -358,6 +358,7 @@ const initGame = (): void => {
     gameEngine = new GameEngine(gameCanvas.value, {
       scaleMultiplier: 1.5, // 场景扩大 50%
     })
+    gameEngine.setOnError(showError)
 
     // 创建增强输入管理器（传递 canvas 以支持移动端控制）
     inputManager = new EnhancedInputManager(gameCanvas.value)
@@ -964,6 +965,7 @@ const applyPlayerDamage = (damage: number): boolean => {
 
   lastIncomingDamageTime.value = now
   player.takeDamage(damage)
+  gameEngine?.getEffectSystem().triggerScreenShake()
   return true
 }
 
@@ -1295,6 +1297,7 @@ const exitGame = (): void => {
  */
 const cleanupGame = (): void => {
   gameEngine?.setForegroundRenderer(null)
+  gameEngine?.setOnError(null)
 
   if (controlsHintTimeout !== null) {
     clearTimeout(controlsHintTimeout)

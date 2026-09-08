@@ -172,6 +172,11 @@ describe('messageStorage 属性测试', () => {
   })
 
   describe('Property 2: 留言存储往返一致性', () => {
+    it.each(['\\n ', '\\\\n', '\\n\n下一行', '\\\\\\n', '结尾\\'])('连续反斜杠和换行应按单个转义序列解码：%s', message => {
+      const data = { nickname: '合成访客', contact: 'qa@example.invalid', message, timestamp: '2020-01-01T00:00:00.000Z' }
+      expect(deserializeMessage(serializeMessage(data))).toEqual(data)
+    })
+
     it('序列化后反序列化应得到等价对象', () => {
       fc.assert(
         fc.property(messageDataArb, (data) => {

@@ -1012,8 +1012,11 @@ jobs:
       - name: Type check
         run: npm run type-check
 
-      - name: Test portal contract
-        run: npm run test -- src/views/__tests__/Home.test.ts
+      - name: Check portal lint
+        run: npx eslint . --ext .vue,.js,.jsx,.cjs,.mjs,.ts,.tsx,.cts,.mts
+
+      - name: Test full portal and audit suites
+        run: npm run test
 
       - name: Build portal
         run: npm run build:skip-check
@@ -1057,6 +1060,9 @@ jobs:
           npm run type-check --prefix src/admin/frontend
           npm run test:run --prefix src/admin/frontend
           npm run build --prefix src/admin/frontend
+
+      - name: Test full admin backend
+        run: npm test --prefix src/admin/backend -- --runInBand
 
       - name: Build admin backend
         shell: bash
@@ -1113,8 +1119,8 @@ jobs:
       - name: Install Chromium
         run: npx playwright install --with-deps chromium
 
-      - name: Run portal smoke
-        run: npx playwright test e2e/art-museum-experience.spec.ts --project=chromium
+      - name: Run portal and isolated component acceptance
+        run: npm run test:e2e:legacy
         env:
           VITE_LINGXI_URL: https://lingxi.hi-veblen.com/
 
@@ -1126,46 +1132,3 @@ jobs:
           path: playwright-report/
           if-no-files-found: ignore
           retention-days: 3
-
-  legacy-diagnostics:
-    name: Legacy diagnostics (non-blocking)
-    runs-on: ubuntu-latest
-    continue-on-error: true
-    timeout-minutes: 30
-    steps:
-      - name: Checkout
-        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
-        with:
-          persist-credentials: false
-
-      - name: Setup Node.js
-        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
-        with:
-          node-version: '22'
-          cache: npm
-          cache-dependency-path: |
-            package-lock.json
-            src/admin/backend/package-lock.json
-
-      - name: Install diagnostic dependencies
-        run: |
-          npm ci
-          npm ci --prefix src/admin/backend
-
-      - name: Run inherited full-suite diagnostics
-        shell: bash
-        run: |
-          set +e
-          npx eslint . --ext .vue,.js,.jsx,.cjs,.mjs,.ts,.tsx,.cts,.mts
-          lint_status=$?
-          npm run test
-          root_test_status=$?
-          npm test --prefix src/admin/backend -- --runInBand
-          backend_test_status=$?
-          printf 'lint=%s root_tests=%s backend_tests=%s\n' \
-            "$lint_status" "$root_test_status" "$backend_test_status"
-          if test "$lint_status" -ne 0 || \
-            test "$root_test_status" -ne 0 || \
-            test "$backend_test_status" -ne 0; then
-            echo "::warning::Legacy diagnostics remain non-blocking: lint=$lint_status root_tests=$root_test_status backend_tests=$backend_test_status"
-          fi

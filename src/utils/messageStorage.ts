@@ -151,10 +151,10 @@ export function deserializeMessage(content: string): MessageData | null {
   const nickname = lines[0]
   const contact = lines[1]
   // 恢复留言内容中的特殊字符
-  // 先恢复换行符，再恢复反斜杠，与序列化顺序相反
-  const message = lines[2]
-    .replace(/\\n/g, '\n')   // 先恢复换行符
-    .replace(/\\\\/g, '\\')  // 再恢复反斜杠
+  // 单次消费完整转义，避免把字面量反斜杠后的 n 再解释成换行。
+  const message = lines[2].replace(/\\(\\|n)/g, (_match, escaped: string) =>
+    escaped === 'n' ? '\n' : '\\'
+  )
   const timestamp = lines[3]
   
   // 验证必要字段不为空

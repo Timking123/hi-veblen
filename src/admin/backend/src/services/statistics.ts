@@ -118,10 +118,11 @@ export function getPVUV(period: TimePeriod): PVUVStats {
   const db = getDatabase()
   const startDate = getPeriodStartDate(period)
 
+  // 统一解析 SQLite 与 ISO 时间格式，避免 UTC 同日空格和 T 的字典序误判。
   // 获取 PV（总访问次数）
   const pvResult = db.exec(`
     SELECT COUNT(*) as pv FROM visits 
-    WHERE created_at >= ?
+    WHERE julianday(created_at) >= julianday(?)
   `, [startDate])
 
   let pv = 0
@@ -132,7 +133,7 @@ export function getPVUV(period: TimePeriod): PVUVStats {
   // 获取 UV（唯一访客数，基于 session_id）
   const uvResult = db.exec(`
     SELECT COUNT(DISTINCT session_id) as uv FROM visits 
-    WHERE created_at >= ? AND session_id IS NOT NULL
+    WHERE julianday(created_at) >= julianday(?) AND session_id IS NOT NULL
   `, [startDate])
 
   let uv = 0

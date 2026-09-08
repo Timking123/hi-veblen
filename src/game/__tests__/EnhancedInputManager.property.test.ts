@@ -6,20 +6,21 @@
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { EnhancedInputManager } from '../EnhancedInputManager'
-import { MOVEMENT_CONFIG, SHOOTING_CONFIG } from '../constants'
+import { MOVEMENT_CONFIG, SHOOTING_CONFIG, PIXEL_BLOCK_CONFIG } from '../constants'
 
 describe('EnhancedInputManager Property Tests', () => {
   let inputManager: EnhancedInputManager
   let canvas: HTMLCanvasElement
   
   beforeEach(() => {
+    vi.useFakeTimers()
+    vi.setSystemTime(new Date('2026-09-08T00:00:00.000Z'))
     // 创建模拟 canvas
     canvas = document.createElement('canvas')
     canvas.width = 800
     canvas.height = 600
     
     inputManager = new EnhancedInputManager(canvas)
-    vi.useFakeTimers()
   })
   
   afterEach(() => {
@@ -47,11 +48,11 @@ describe('EnhancedInputManager Property Tests', () => {
     /**
      * Feature: game-v2-upgrade, Property 12: 单次按键移动距离
      * 
-     * *对于任何*单次方向键按下，玩家飞船应该移动恰好 1 像素块的距离。
+     * 输入管理器返回单位方向；V3 将消费该方向的移动距离提升为 2 像素块。
      * 
      * **验证需求: 8.1**
      */
-    it('should move exactly 1 pixel block on single key press', () => {
+    it('单次按键应该返回单位方向，并保持 V3 的双倍移动距离', () => {
       // 测试所有方向键
       const directions = ['w', 'a', 's', 'd']
       
@@ -69,6 +70,7 @@ describe('EnhancedInputManager Property Tests', () => {
         // 验证移动向量的长度为 1（单位向量）
         const magnitude = Math.abs(movement.x) + Math.abs(movement.y)
         expect(magnitude).toBe(1)
+        expect(magnitude * MOVEMENT_CONFIG.PLAYER_MOVE_DISTANCE).toBe(PIXEL_BLOCK_CONFIG.SIZE * 2)
         
         // 清理
         simulateKeyUp(key)
@@ -97,11 +99,11 @@ describe('EnhancedInputManager Property Tests', () => {
     /**
      * Feature: game-v2-upgrade, Property 13: 长按移动速率
      * 
-     * *对于任何*长按方向键的情况，玩家飞船应该每 200ms 移动 1 像素块。
+     * 当前实现以 100ms 重复输入；V3 提速提交 02d0121 保留此间隔并将距离加倍。
      * 
      * **验证需求: 8.2**
      */
-    it('should move every 200ms when key is held', () => {
+    it('长按应该每 100ms 产生一次移动输入', () => {
       // 按下 D 键
       simulateKeyDown('d')
       
@@ -109,32 +111,31 @@ describe('EnhancedInputManager Property Tests', () => {
       const movement1 = inputManager.getMovementInput()
       expect(movement1.x).toBe(1)
       
-      // 等待 100ms（不足 200ms）
-      vi.advanceTimersByTime(100)
+      // 等待 99ms，仍未达到重复间隔。
+      vi.advanceTimersByTime(99)
       const movement2 = inputManager.getMovementInput()
       expect(movement2.x).toBe(0) // 不应该移动
       
-      // 再等待 100ms（总共 200ms）
-      vi.advanceTimersByTime(100)
+      // 恰好到 100ms 时产生下一次移动。
+      vi.advanceTimersByTime(1)
       const movement3 = inputManager.getMovementInput()
       expect(movement3.x).toBe(1) // 应该移动
       
-      // 再等待 200ms
-      vi.advanceTimersByTime(200)
+      // 再经过一个完整间隔。
+      vi.advanceTimersByTime(100)
       const movement4 = inputManager.getMovementInput()
       expect(movement4.x).toBe(1) // 应该再次移动
     })
 
     it('should respect PLAYER_MOVE_INTERVAL constant', () => {
       const interval = MOVEMENT_CONFIG.PLAYER_MOVE_INTERVAL
-      expect(interval).toBe(200)
+      expect(interval).toBe(100)
       
       // 按下 W 键
       simulateKeyDown('w')
+      // 先消费本帧首次输入，再由帧末 update 清除瞬时状态。
+      expect(inputManager.getMovementInput().y).toBe(-1)
       inputManager.update(0)
-      
-      // 第一次移动
-      inputManager.getMovementInput()
       
       // 等待 interval - 1 ms
       vi.advanceTimersByTime(interval - 1)

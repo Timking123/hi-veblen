@@ -1,3 +1,4 @@
+import { requireValue } from '../../__tests__/helpers'
 /**
  * Logger 工具类属性测试
  * 使用 fast-check 进行基于属性的测试
@@ -7,7 +8,7 @@
  */
 
 import * as fc from 'fast-check'
-import { Logger, createLogger } from '../logger'
+import { createLogger } from '../logger'
 
 describe('Logger 属性测试', () => {
   let originalLogLevel: string | undefined
@@ -83,7 +84,7 @@ describe('Logger 属性测试', () => {
             // 1. 应该是有效的 JSON
             let log: any
             expect(() => {
-              log = JSON.parse(output)
+              log = JSON.parse(requireValue(output))
             }).not.toThrow()
 
             // 2. 必须包含四个必需字段
@@ -129,7 +130,7 @@ describe('Logger 属性测试', () => {
             logger.info(message, data)
 
             const output = consoleOutput[consoleOutput.length - 1]
-            const log = JSON.parse(output)
+            const log = JSON.parse(requireValue(output))
 
             // data 字段应该存在且匹配
             expect(log).toHaveProperty('data')
@@ -193,7 +194,7 @@ describe('Logger 属性测试', () => {
             const wasLogged = afterCount > beforeCount
 
             // 验证过滤逻辑
-            const shouldLog = levelValues[logLevel] >= levelValues[configLevel]
+            const shouldLog = requireValue(levelValues[logLevel]) >= requireValue(levelValues[configLevel])
             expect(wasLogged).toBe(shouldLog)
           }
         ),
@@ -239,7 +240,7 @@ describe('Logger 属性测试', () => {
 
             // 计算应该输出的日志数量
             const expectedCount = logCalls.filter(
-              call => levelValues[call.level] >= levelValues[configLevel]
+              call => requireValue(levelValues[call.level]) >= requireValue(levelValues[configLevel])
             ).length
 
             // 验证实际输出数量
@@ -250,7 +251,7 @@ describe('Logger 属性测试', () => {
             for (const output of consoleOutput) {
               const log = JSON.parse(output)
               expect(levelValues[log.level]).toBeGreaterThanOrEqual(
-                levelValues[configLevel]
+                requireValue(levelValues[configLevel])
               )
             }
           }

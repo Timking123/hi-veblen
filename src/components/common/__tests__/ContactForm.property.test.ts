@@ -1,7 +1,32 @@
-import { describe, it, expect } from 'vitest'
-import { mount } from '@vue/test-utils'
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
+import { mount, flushPromises, enableAutoUnmount } from '@vue/test-utils'
 import * as fc from 'fast-check'
+import axios from 'axios'
 import ContactForm from '../ContactForm.vue'
+
+// 组件测试只使用合成响应，禁止留言请求进入真实后端。
+vi.mock('axios', () => ({
+  default: {
+    post: vi.fn().mockResolvedValue({ data: { success: true, id: 1 } }),
+    isAxiosError: vi.fn().mockReturnValue(false),
+  },
+}))
+
+enableAutoUnmount(afterEach)
+beforeEach(() => {
+  vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+  vi.mocked(axios.post)
+    .mockReset()
+    .mockResolvedValue({ data: { success: true, id: 1 } })
+  vi.mocked(axios.isAxiosError)
+    .mockReset()
+    .mockImplementation(error => Boolean(error?.isAxiosError))
+})
+afterEach(() => {
+  vi.clearAllTimers()
+  vi.useRealTimers()
+  vi.restoreAllMocks()
+})
 
 /**
  * Feature: contact-page-update
@@ -25,6 +50,82 @@ const expandForm = async (wrapper: ReturnType<typeof mount>) => {
 }
 
 describe('ContactForm Property Tests', () => {
+  describe('合成 API 的提交生命周期', () => {
+    const fillForm = async () => {
+      const wrapper = mount(ContactForm)
+      await expandForm(wrapper)
+      await wrapper.get('[data-testid="nickname-input"]').setValue(' 测试访客 ')
+      await wrapper.get('[data-testid="contact-input"]').setValue(' visitor@example.test ')
+      await wrapper.get('[data-testid="message-input"]').setValue(' 合成留言内容 ')
+      return wrapper
+    }
+
+    it('请求未完成时禁止连发，响应成功后恢复按钮并收起表单', async () => {
+      let resolveRequest!: (value: { data: { success: boolean } }) => void
+      vi.mocked(axios.post).mockImplementation(
+        () =>
+          new Promise(resolve => {
+            resolveRequest = resolve
+          })
+      )
+      const wrapper = await fillForm()
+      try {
+        await wrapper.get('form').trigger('submit')
+        expect(wrapper.get('[data-testid="submit-button"]').attributes('disabled')).toBeDefined()
+        expect(wrapper.find('[data-testid="success-message"]').exists()).toBe(false)
+        await wrapper.get('form').trigger('submit')
+        expect(axios.post).toHaveBeenCalledTimes(1)
+      } finally {
+        resolveRequest({ data: { success: true } })
+        await flushPromises()
+      }
+      expect(wrapper.find('[data-testid="success-message"]').exists()).toBe(true)
+      expect(wrapper.get('[data-testid="submit-button"]').attributes('disabled')).toBeUndefined()
+      await vi.advanceTimersByTimeAsync(1999)
+      expect(wrapper.find('form').exists()).toBe(true)
+      await vi.advanceTimersByTimeAsync(1)
+      expect(wrapper.find('form').exists()).toBe(false)
+      expect(wrapper.find('[data-testid="expand-button"]').exists()).toBe(true)
+    })
+
+    it.each([
+      {
+        name: '业务拒绝',
+        response: { data: { success: false, errors: ['合成校验失败'] } },
+        message: '合成校验失败',
+      },
+      {
+        name: '服务器错误',
+        error: {
+          isAxiosError: true,
+          response: { status: 503, data: { message: '合成服务不可用' } },
+        },
+        message: '合成服务不可用',
+      },
+      { name: '超时', error: { isAxiosError: true, code: 'ECONNABORTED' }, message: '请求超时' },
+      { name: '网络异常', error: { isAxiosError: true, request: {} }, message: '网络错误' },
+      { name: '未知异常', error: new Error('合成异常'), message: '留言提交失败' },
+    ])('$name 后保留输入并允许重试成功', async ({ response, error, message }) => {
+      vi.spyOn(console, 'error').mockImplementation(() => {})
+      if (response) vi.mocked(axios.post).mockResolvedValueOnce(response)
+      else vi.mocked(axios.post).mockRejectedValueOnce(error)
+      const wrapper = await fillForm()
+      await wrapper.get('form').trigger('submit')
+      await flushPromises()
+      expect(wrapper.get('[data-testid="error-message"]').text()).toContain(message)
+      expect(wrapper.find('[data-testid="success-message"]').exists()).toBe(false)
+      expect(wrapper.get<HTMLInputElement>('[data-testid="nickname-input"]').element.value).toBe(
+        ' 测试访客 '
+      )
+      expect(wrapper.get('[data-testid="submit-button"]').attributes('disabled')).toBeUndefined()
+      await wrapper.get('[data-testid="retry-button"]').trigger('click')
+      await flushPromises()
+      expect(axios.post).toHaveBeenCalledTimes(2)
+      expect(wrapper.find('[data-testid="error-message"]').exists()).toBe(false)
+      expect(wrapper.find('[data-testid="success-message"]').exists()).toBe(true)
+    })
+  })
+
   describe('Property: Form Validation Validity（表单验证有效性）', () => {
     it('should validate required fields on submit（提交时验证必填字段）', async () => {
       await fc.assert(
@@ -34,7 +135,7 @@ describe('ContactForm Property Tests', () => {
             contact: fc.string(),
             message: fc.string(),
           }),
-          async (formData) => {
+          async formData => {
             const wrapper = mount(ContactForm)
 
             // 先展开表单
@@ -77,11 +178,7 @@ describe('ContactForm Property Tests', () => {
 
             // Property: If all fields are valid, no errors should be shown
             // 属性：如果所有字段都有效，不应显示错误
-            if (
-              formData.nickname.trim() &&
-              formData.contact.trim() &&
-              formData.message.trim()
-            ) {
+            if (formData.nickname.trim() && formData.contact.trim() && formData.message.trim()) {
               // After successful submission, errors should not exist or be empty
               // 成功提交后，错误应不存在或为空
               if (nicknameError.exists()) {
@@ -102,69 +199,66 @@ describe('ContactForm Property Tests', () => {
 
     it('should clear errors when user starts typing（用户输入时清除错误）', async () => {
       await fc.assert(
-        fc.asyncProperty(
-          fc.string(),
-          async (newValue) => {
-            const wrapper = mount(ContactForm)
+        fc.asyncProperty(fc.string(), async newValue => {
+          const wrapper = mount(ContactForm)
 
-            // 先展开表单
-            await expandForm(wrapper)
+          // 先展开表单
+          await expandForm(wrapper)
 
-            // Submit empty form to trigger errors（提交空表单触发错误）
-            const form = wrapper.find('[data-testid="contact-form"]')
-            await form.trigger('submit')
-            await wrapper.vm.$nextTick()
+          // Submit empty form to trigger errors（提交空表单触发错误）
+          const form = wrapper.find('[data-testid="contact-form"]')
+          await form.trigger('submit')
+          await wrapper.vm.$nextTick()
 
-            // Property: Errors should be visible after submitting empty form
-            // 属性：提交空表单后应显示错误
-            let nicknameError = wrapper.find('[data-testid="nickname-error"]')
-            let contactError = wrapper.find('[data-testid="contact-error"]')
-            let messageError = wrapper.find('[data-testid="message-error"]')
+          // Property: Errors should be visible after submitting empty form
+          // 属性：提交空表单后应显示错误
+          let nicknameError = wrapper.find('[data-testid="nickname-error"]')
+          let contactError = wrapper.find('[data-testid="contact-error"]')
+          let messageError = wrapper.find('[data-testid="message-error"]')
 
-            expect(nicknameError.exists()).toBe(true)
-            expect(contactError.exists()).toBe(true)
-            expect(messageError.exists()).toBe(true)
+          expect(nicknameError.exists()).toBe(true)
+          expect(contactError.exists()).toBe(true)
+          expect(messageError.exists()).toBe(true)
 
-            // Start typing in nickname field（在称呼字段中输入）
-            const nicknameInput = wrapper.find('[data-testid="nickname-input"]')
-            await nicknameInput.setValue(newValue)
-            await nicknameInput.trigger('input')
-            await wrapper.vm.$nextTick()
+          // Start typing in nickname field（在称呼字段中输入）
+          const nicknameInput = wrapper.find('[data-testid="nickname-input"]')
+          await nicknameInput.setValue(newValue)
+          await nicknameInput.trigger('input')
+          await wrapper.vm.$nextTick()
 
-            // Property: Nickname error should be cleared after input
-            // 属性：输入后称呼错误应被清除
-            nicknameError = wrapper.find('[data-testid="nickname-error"]')
-            if (nicknameError.exists()) {
-              expect(nicknameError.text()).toBe('')
-            }
-
-            // Start typing in contact field（在联系方式字段中输入）
-            const contactInput = wrapper.find('[data-testid="contact-input"]')
-            await contactInput.setValue(newValue)
-            await contactInput.trigger('input')
-            await wrapper.vm.$nextTick()
-
-            // Property: Contact error should be cleared after input
-            // 属性：输入后联系方式错误应被清除
-            contactError = wrapper.find('[data-testid="contact-error"]')
-            if (contactError.exists()) {
-              expect(contactError.text()).toBe('')
-            }
-
-            // Start typing in message field（在留言字段中输入）
-            const messageInput = wrapper.find('[data-testid="message-input"]')
-            await messageInput.setValue(newValue)
-            await messageInput.trigger('input')
-            await wrapper.vm.$nextTick()
-
-            // Property: Message error should be cleared after input
-            // 属性：输入后留言错误应被清除
-            messageError = wrapper.find('[data-testid="message-error"]')
-            if (messageError.exists()) {
-              expect(messageError.text()).toBe('')
-            }
+          // Property: Nickname error should be cleared after input
+          // 属性：输入后称呼错误应被清除
+          nicknameError = wrapper.find('[data-testid="nickname-error"]')
+          if (nicknameError.exists()) {
+            expect(nicknameError.text()).toBe('')
           }
-        ),
+
+          // Start typing in contact field（在联系方式字段中输入）
+          const contactInput = wrapper.find('[data-testid="contact-input"]')
+          await contactInput.setValue(newValue)
+          await contactInput.trigger('input')
+          await wrapper.vm.$nextTick()
+
+          // Property: Contact error should be cleared after input
+          // 属性：输入后联系方式错误应被清除
+          contactError = wrapper.find('[data-testid="contact-error"]')
+          if (contactError.exists()) {
+            expect(contactError.text()).toBe('')
+          }
+
+          // Start typing in message field（在留言字段中输入）
+          const messageInput = wrapper.find('[data-testid="message-input"]')
+          await messageInput.setValue(newValue)
+          await messageInput.trigger('input')
+          await wrapper.vm.$nextTick()
+
+          // Property: Message error should be cleared after input
+          // 属性：输入后留言错误应被清除
+          messageError = wrapper.find('[data-testid="message-error"]')
+          if (messageError.exists()) {
+            expect(messageError.text()).toBe('')
+          }
+        }),
         { numRuns: 20 }
       )
     })
@@ -177,7 +271,7 @@ describe('ContactForm Property Tests', () => {
             contact: fc.string(),
             message: fc.string(),
           }),
-          async (formData) => {
+          async formData => {
             const wrapper = mount(ContactForm)
 
             // 先展开表单
@@ -234,11 +328,17 @@ describe('ContactForm Property Tests', () => {
       await fc.assert(
         fc.asyncProperty(
           fc.record({
-            nickname: fc.stringMatching(/^[a-zA-Z\u4e00-\u9fa5 ]{2,50}$/).filter(s => s.trim().length > 0),
-            contact: fc.stringMatching(/^[a-zA-Z0-9@.\-_\u4e00-\u9fa5 ]{3,100}$/).filter(s => s.trim().length > 0),
-            message: fc.stringMatching(/^[a-zA-Z0-9\u4e00-\u9fa5 ,.!?]{10,500}$/).filter(s => s.trim().length > 0),
+            nickname: fc
+              .stringMatching(/^[a-zA-Z\u4e00-\u9fa5 ]{2,50}$/)
+              .filter(s => s.trim().length > 0),
+            contact: fc
+              .stringMatching(/^[a-zA-Z0-9@.\-_\u4e00-\u9fa5 ]{3,100}$/)
+              .filter(s => s.trim().length > 0),
+            message: fc
+              .stringMatching(/^[a-zA-Z0-9\u4e00-\u9fa5 ,.!?]{10,500}$/)
+              .filter(s => s.trim().length > 0),
           }),
-          async (formData) => {
+          async formData => {
             const wrapper = mount(ContactForm)
 
             // 先展开表单
@@ -258,10 +358,17 @@ describe('ContactForm Property Tests', () => {
             await form.trigger('submit')
             await wrapper.vm.$nextTick()
 
-            // Wait for async submission (form has 1000ms delay)
-            // 等待异步提交（表单有 1000ms 延迟）
-            await new Promise((resolve) => setTimeout(resolve, 1200))
-            await wrapper.vm.$nextTick()
+            // 等待合成 API 响应，不再假设旧版模拟提交的固定延迟。
+            await flushPromises()
+            expect(axios.post).toHaveBeenLastCalledWith(
+              `${import.meta.env.VITE_API_BASE_URL || '/api'}/messages/submit`,
+              {
+                nickname: formData.nickname.trim(),
+                contact: formData.contact.trim(),
+                message: formData.message.trim(),
+              },
+              { timeout: 10000, headers: { 'Content-Type': 'application/json' } }
+            )
 
             // Property: Success message should be visible after valid submission
             // 属性：有效提交后应显示成功消息
@@ -297,49 +404,46 @@ describe('ContactForm Property Tests', () => {
 
     it('should handle whitespace-only inputs as invalid（仅空格输入应视为无效）', async () => {
       await fc.assert(
-        fc.asyncProperty(
-          fc.integer({ min: 1, max: 20 }),
-          async (spaceCount) => {
-            const wrapper = mount(ContactForm)
+        fc.asyncProperty(fc.integer({ min: 1, max: 20 }), async spaceCount => {
+          const wrapper = mount(ContactForm)
 
-            // 先展开表单
-            await expandForm(wrapper)
+          // 先展开表单
+          await expandForm(wrapper)
 
-            // Create whitespace-only strings（创建仅空格字符串）
-            const whitespaceString = ' '.repeat(spaceCount)
+          // Create whitespace-only strings（创建仅空格字符串）
+          const whitespaceString = ' '.repeat(spaceCount)
 
-            const nicknameInput = wrapper.find('[data-testid="nickname-input"]')
-            const contactInput = wrapper.find('[data-testid="contact-input"]')
-            const messageInput = wrapper.find('[data-testid="message-input"]')
+          const nicknameInput = wrapper.find('[data-testid="nickname-input"]')
+          const contactInput = wrapper.find('[data-testid="contact-input"]')
+          const messageInput = wrapper.find('[data-testid="message-input"]')
 
-            await nicknameInput.setValue(whitespaceString)
-            await contactInput.setValue(whitespaceString)
-            await messageInput.setValue(whitespaceString)
+          await nicknameInput.setValue(whitespaceString)
+          await contactInput.setValue(whitespaceString)
+          await messageInput.setValue(whitespaceString)
 
-            // Submit form（提交表单）
-            const form = wrapper.find('[data-testid="contact-form"]')
-            await form.trigger('submit')
-            await wrapper.vm.$nextTick()
+          // Submit form（提交表单）
+          const form = wrapper.find('[data-testid="contact-form"]')
+          await form.trigger('submit')
+          await wrapper.vm.$nextTick()
 
-            // Property: All fields should show errors for whitespace-only input
-            // 属性：仅空格输入的所有字段应显示错误
-            const nicknameError = wrapper.find('[data-testid="nickname-error"]')
-            const contactError = wrapper.find('[data-testid="contact-error"]')
-            const messageError = wrapper.find('[data-testid="message-error"]')
+          // Property: All fields should show errors for whitespace-only input
+          // 属性：仅空格输入的所有字段应显示错误
+          const nicknameError = wrapper.find('[data-testid="nickname-error"]')
+          const contactError = wrapper.find('[data-testid="contact-error"]')
+          const messageError = wrapper.find('[data-testid="message-error"]')
 
-            expect(nicknameError.exists()).toBe(true)
-            expect(nicknameError.text()).toBeTruthy()
-            expect(contactError.exists()).toBe(true)
-            expect(contactError.text()).toBeTruthy()
-            expect(messageError.exists()).toBe(true)
-            expect(messageError.text()).toBeTruthy()
+          expect(nicknameError.exists()).toBe(true)
+          expect(nicknameError.text()).toBeTruthy()
+          expect(contactError.exists()).toBe(true)
+          expect(contactError.text()).toBeTruthy()
+          expect(messageError.exists()).toBe(true)
+          expect(messageError.text()).toBeTruthy()
 
-            // Property: Success message should not be shown
-            // 属性：不应显示成功消息
-            const successMessage = wrapper.find('[data-testid="success-message"]')
-            expect(successMessage.exists()).toBe(false)
-          }
-        ),
+          // Property: Success message should not be shown
+          // 属性：不应显示成功消息
+          const successMessage = wrapper.find('[data-testid="success-message"]')
+          expect(successMessage.exists()).toBe(false)
+        }),
         { numRuns: 20 }
       )
     })
@@ -358,7 +462,7 @@ describe('ContactForm Property Tests', () => {
         fc.asyncProperty(
           // 生成随机点击次数（1-20次）
           fc.integer({ min: 1, max: 20 }),
-          async (clickCount) => {
+          async clickCount => {
             const wrapper = mount(ContactForm)
 
             // 初始状态验证：表单应处于收起状态
@@ -369,7 +473,7 @@ describe('ContactForm Property Tests', () => {
             // 执行多次点击展开按钮
             for (let i = 0; i < clickCount; i++) {
               const expandButton = wrapper.find('[data-testid="expand-button"]')
-              
+
               // 如果展开按钮存在，点击它
               if (expandButton.exists()) {
                 await expandButton.trigger('click')
@@ -405,7 +509,7 @@ describe('ContactForm Property Tests', () => {
           // 生成随机的初始展开状态和后续点击次数
           fc.record({
             startExpanded: fc.boolean(),
-            additionalClicks: fc.integer({ min: 0, max: 10 })
+            additionalClicks: fc.integer({ min: 0, max: 10 }),
           }),
           async ({ startExpanded, additionalClicks }) => {
             const wrapper = mount(ContactForm)
@@ -448,7 +552,7 @@ describe('ContactForm Property Tests', () => {
         fc.asyncProperty(
           // 生成随机点击序列
           fc.array(fc.boolean(), { minLength: 1, maxLength: 10 }),
-          async (clickSequence) => {
+          async clickSequence => {
             const wrapper = mount(ContactForm)
 
             let hasClickedExpand = false
@@ -485,43 +589,40 @@ describe('ContactForm Property Tests', () => {
 
     it('should be idempotent - clicking expand multiple times has same effect as clicking once（幂等性 - 多次点击与单次点击效果相同）', async () => {
       await fc.assert(
-        fc.asyncProperty(
-          fc.integer({ min: 1, max: 50 }),
-          async (clickCount) => {
-            // 创建两个独立的组件实例
-            const wrapperSingle = mount(ContactForm)
-            const wrapperMultiple = mount(ContactForm)
+        fc.asyncProperty(fc.integer({ min: 1, max: 50 }), async clickCount => {
+          // 创建两个独立的组件实例
+          const wrapperSingle = mount(ContactForm)
+          const wrapperMultiple = mount(ContactForm)
 
-            // 单次点击
-            const singleExpandButton = wrapperSingle.find('[data-testid="expand-button"]')
-            await singleExpandButton.trigger('click')
-            await wrapperSingle.vm.$nextTick()
+          // 单次点击
+          const singleExpandButton = wrapperSingle.find('[data-testid="expand-button"]')
+          await singleExpandButton.trigger('click')
+          await wrapperSingle.vm.$nextTick()
 
-            // 多次点击
-            for (let i = 0; i < clickCount; i++) {
-              const multipleExpandButton = wrapperMultiple.find('[data-testid="expand-button"]')
-              if (multipleExpandButton.exists()) {
-                await multipleExpandButton.trigger('click')
-                await wrapperMultiple.vm.$nextTick()
-              }
+          // 多次点击
+          for (let i = 0; i < clickCount; i++) {
+            const multipleExpandButton = wrapperMultiple.find('[data-testid="expand-button"]')
+            if (multipleExpandButton.exists()) {
+              await multipleExpandButton.trigger('click')
+              await wrapperMultiple.vm.$nextTick()
             }
-
-            // Property: 幂等性 - 单次点击和多次点击的最终状态应该相同
-            const singleForm = wrapperSingle.find('[data-testid="contact-form"]')
-            const multipleForm = wrapperMultiple.find('[data-testid="contact-form"]')
-
-            expect(singleForm.exists()).toBe(multipleForm.exists())
-            expect(singleForm.exists()).toBe(true)
-
-            // 验证两个实例的表单字段都存在
-            expect(wrapperSingle.find('[data-testid="nickname-input"]').exists()).toBe(true)
-            expect(wrapperMultiple.find('[data-testid="nickname-input"]').exists()).toBe(true)
-            expect(wrapperSingle.find('[data-testid="contact-input"]').exists()).toBe(true)
-            expect(wrapperMultiple.find('[data-testid="contact-input"]').exists()).toBe(true)
-            expect(wrapperSingle.find('[data-testid="message-input"]').exists()).toBe(true)
-            expect(wrapperMultiple.find('[data-testid="message-input"]').exists()).toBe(true)
           }
-        ),
+
+          // Property: 幂等性 - 单次点击和多次点击的最终状态应该相同
+          const singleForm = wrapperSingle.find('[data-testid="contact-form"]')
+          const multipleForm = wrapperMultiple.find('[data-testid="contact-form"]')
+
+          expect(singleForm.exists()).toBe(multipleForm.exists())
+          expect(singleForm.exists()).toBe(true)
+
+          // 验证两个实例的表单字段都存在
+          expect(wrapperSingle.find('[data-testid="nickname-input"]').exists()).toBe(true)
+          expect(wrapperMultiple.find('[data-testid="nickname-input"]').exists()).toBe(true)
+          expect(wrapperSingle.find('[data-testid="contact-input"]').exists()).toBe(true)
+          expect(wrapperMultiple.find('[data-testid="contact-input"]').exists()).toBe(true)
+          expect(wrapperSingle.find('[data-testid="message-input"]').exists()).toBe(true)
+          expect(wrapperMultiple.find('[data-testid="message-input"]').exists()).toBe(true)
+        }),
         { numRuns: 20 }
       )
     })

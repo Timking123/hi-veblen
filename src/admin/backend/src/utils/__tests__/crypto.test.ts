@@ -20,6 +20,7 @@ describe('crypto 加密工具模块', () => {
       
       // bcrypt 哈希值以 $2a$ 或 $2b$ 开头
       expect(hash).toMatch(/^\$2[ab]\$/)
+      expect(hash).toMatch(/^\$2[ab]\$10\$/)
       // bcrypt 哈希值长度为 60 字符
       expect(hash.length).toBe(60)
     })

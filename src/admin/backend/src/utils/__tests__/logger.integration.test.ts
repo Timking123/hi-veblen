@@ -10,7 +10,7 @@ import path from 'path'
 import { createLogger } from '../logger'
 
 describe('Logger 集成测试 - 文件操作', () => {
-  const logDir = path.resolve(__dirname, '../../../logs')
+  const logDir = process.env.TEST_LOG_DIR!
 
   beforeAll(() => {
     // 确保测试前日志目录存在

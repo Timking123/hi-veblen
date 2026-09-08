@@ -28,6 +28,7 @@ export class GameEngine {
   private fpsUpdateTime: number = 0
   private onUpdateCallback: ((deltaTime: number) => void) | null = null
   private onGameOverCallback: ((score: number) => void) | null = null
+  private onErrorCallback: ((message: string) => void) | null = null
   private backgroundRenderer: ((ctx: CanvasRenderingContext2D) => void) | null = null
   private foregroundRenderer: ((ctx: CanvasRenderingContext2D) => void) | null = null
   private poolManager: PoolManager
@@ -166,11 +167,20 @@ export class GameEngine {
     // 更新 FPS
     this.updateFPS(currentTime)
 
-    // 更新游戏状态
-    this.update(deltaTime)
-
-    // 渲染游戏画面
-    this.render()
+    try {
+      this.update(deltaTime)
+      this.render()
+    } catch (error) {
+      // 异步动画帧也必须回到可重试的错误界面，不能带错继续调度。
+      console.error('[游戏引擎] 游戏循环异常:', error)
+      this.stop()
+      try {
+        this.onErrorCallback?.('游戏运行时发生错误，请重试或返回网站')
+      } catch (callbackError) {
+        console.error('[游戏引擎] 错误回调异常:', callbackError)
+      }
+      return
+    }
 
     // 请求下一帧
     this.animationFrameId = requestAnimationFrame(this.gameLoop)
@@ -338,37 +348,40 @@ export class GameEngine {
     
     // 应用震动偏移（仅用于渲染）
     this.ctx.save()
-    this.ctx.translate(shakeOffset.x, shakeOffset.y)
+    try {
+      this.ctx.translate(shakeOffset.x, shakeOffset.y)
     
-    // 渲染背景
-    if (this.backgroundRenderer) {
-      this.backgroundRenderer(this.ctx)
-    } else {
-      // 默认黑色背景
-      this.ctx.fillStyle = '#000000'
-      this.ctx.fillRect(0, 0, this.canvas.width, this.canvas.height)
-    }
+      // 渲染背景
+      if (this.backgroundRenderer) {
+        this.backgroundRenderer(this.ctx)
+      } else {
+        // 默认黑色背景
+        this.ctx.fillStyle = '#000000'
+        this.ctx.fillRect(0, 0, this.canvas.width, this.canvas.height)
+      }
 
-    // 优化：批量渲染可见实体，减少状态切换
-    // 将实体按类型分组可以进一步优化，但当前实现已足够高效
-    const visibleEntities = this.entities.filter(
-      entity => entity.isActive && this.isEntityVisible(entity)
-    )
+      // 优化：批量渲染可见实体，减少状态切换
+      // 将实体按类型分组可以进一步优化，但当前实现已足够高效
+      const visibleEntities = this.entities.filter(
+        entity => entity.isActive && this.isEntityVisible(entity)
+      )
     
-    for (const entity of visibleEntities) {
-      entity.render(this.ctx)
-    }
+      for (const entity of visibleEntities) {
+        entity.render(this.ctx)
+      }
     
-    // 渲染效果（爆炸动画）
-    this.effectSystem.render(this.ctx)
+      // 渲染效果（爆炸动画）
+      this.effectSystem.render(this.ctx)
 
-    // 渲染前景层（例如移动端虚拟控制器）
-    if (this.foregroundRenderer) {
-      this.foregroundRenderer(this.ctx)
-    }
+      // 渲染前景层（例如移动端虚拟控制器）
+      if (this.foregroundRenderer) {
+        this.foregroundRenderer(this.ctx)
+      }
     
-    // 恢复变换（移除震动偏移）
-    this.ctx.restore()
+      // 恢复变换（移除震动偏移）
+    } finally {
+      this.ctx.restore()
+    }
   }
 
   /**
@@ -383,6 +396,7 @@ export class GameEngine {
    * 添加实体
    */
   addEntity(entity: Entity): void {
+    entity.setCanvasBounds?.(this.canvas.width, this.canvas.height)
     this.entities.push(entity)
   }
 
@@ -555,6 +569,9 @@ export class GameEngine {
     // 应用缩放倍数
     this.canvas.width = Math.floor(canvasWidth)
     this.canvas.height = Math.floor(canvasHeight)
+    for (const entity of this.entities) {
+      entity.setCanvasBounds?.(this.canvas.width, this.canvas.height)
+    }
 
     console.log(`[游戏引擎] 画布尺寸调整: ${this.canvas.width}x${this.canvas.height}`)
   }
@@ -586,6 +603,11 @@ export class GameEngine {
    */
   setOnGameOver(callback: (score: number) => void): void {
     this.onGameOverCallback = callback
+  }
+
+  /** 设置运行失败通知，由界面提供重试与返回入口。 */
+  setOnError(callback: ((message: string) => void) | null): void {
+    this.onErrorCallback = callback
   }
 
   /**

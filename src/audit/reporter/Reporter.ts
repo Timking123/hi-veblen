@@ -3,7 +3,7 @@
  * 负责生成 JSON、HTML 和 JUnit XML 格式的审计报告
  */
 
-import * as fs from 'fs-extra'
+import fs from 'fs-extra'
 import * as path from 'path'
 import type { AuditResult } from '../types'
 
@@ -403,12 +403,13 @@ export class Reporter {
       const failures = check.issues.filter(i => i.severity === 'error').length
       const errors = 0 // 我们将所有错误归类为 failures
       const tests = check.issues.length || 1
+      const checkName = this.escapeXML(check.name)
 
       const testcases = check.issues.length > 0
         ? check.issues.map(issue => this.generateTestCase(check.name, issue)).join('\n')
-        : `    <testcase name="${check.name}" classname="audit.${check.name}" time="0" />`
+        : `    <testcase name="${checkName}" classname="audit.${checkName}" time="0" />`
 
-      return `  <testsuite name="${check.name}" tests="${tests}" failures="${failures}" errors="${errors}" time="0" timestamp="${timestamp}">
+      return `  <testsuite name="${checkName}" tests="${tests}" failures="${failures}" errors="${errors}" time="0" timestamp="${this.escapeXML(timestamp)}">
 ${testcases}
   </testsuite>`
     }).join('\n')
@@ -426,14 +427,14 @@ ${testsuites}
    * @returns XML 字符串
    */
   private generateTestCase(checkName: string, issue: any): string {
-    const testName = `${issue.file}:${issue.line}`
-    const className = `audit.${checkName}`
+    const testName = this.escapeXML(`${issue.file}:${issue.line}`)
+    const className = this.escapeXML(`audit.${checkName}`)
 
     if (issue.severity === 'error') {
       return `    <testcase name="${testName}" classname="${className}" time="0">
-      <failure message="${this.escapeXML(issue.message)}" type="${issue.rule || 'audit-error'}">
+      <failure message="${this.escapeXML(issue.message)}" type="${this.escapeXML(issue.rule || 'audit-error')}">
 ${this.escapeXML(issue.message)}
-Location: ${issue.file}:${issue.line}${issue.column !== undefined ? ':' + issue.column : ''}
+Location: ${this.escapeXML(issue.file)}:${issue.line}${issue.column !== undefined ? ':' + issue.column : ''}
       </failure>
     </testcase>`
     } else {

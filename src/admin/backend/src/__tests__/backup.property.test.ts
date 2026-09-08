@@ -1,3 +1,4 @@
+import { requireValue } from './helpers'
 /**
  * 备份系统属性测试（Property-Based Testing）
  * 使用 fast-check 库测试数据库备份系统的正确性属性
@@ -10,12 +11,12 @@
 
 import * as fc from 'fast-check'
 import { BackupSystem, resetBackupSystem } from '../services/backup'
-import { initDatabase, closeDatabase } from '../database/init'
+import { initDatabase, closeDatabase, getDatabase } from '../database/init'
 import path from 'path'
 import fs from 'fs'
 
 // 测试用的备份目录基础路径
-const TEST_BACKUP_BASE_DIR = path.resolve(__dirname, '../../test-backups-property')
+const TEST_BACKUP_BASE_DIR = path.join(process.env.TEST_SUITE_ROOT!, 'test-backups-property')
 
 // 当前测试使用的备份目录
 let currentTestBackupDir: string
@@ -55,16 +56,77 @@ function getBackupFileCount(dir: string): number {
  */
 function createMultipleBackups(backupSystem: BackupSystem, count: number): void {
   for (let i = 0; i < count; i++) {
-    backupSystem.createBackup()
-    // 稍微延迟以确保文件名不同（基于时间戳）
-    // 注意：在实际测试中，由于时间戳精度为秒，可能需要更长的延迟
-    // 但为了测试速度，我们接受可能的文件名冲突（会被覆盖）
+    expect(backupSystem.createBackup().success).toBe(true)
   }
 }
 
 // ========== 测试套件 ==========
 
 describe('Property 8: 备份文件数量上限', () => {
+  it('时间精度相同时新实例的备份不能被旧备份清理立即删除', () => {
+    const timestamp = new Date('2026-09-08T12:00:00.000Z')
+    jest.useFakeTimers().setSystemTime(timestamp)
+    const originalStat = fs.statSync
+    const statSpy = jest.spyOn(fs, 'statSync').mockImplementation(file => {
+      const stats = originalStat(file)
+      stats.birthtime = timestamp
+      return stats
+    })
+    try {
+      const first = new BackupSystem(currentTestBackupDir)
+      createMultipleBackups(first, 8)
+      getDatabase().run('UPDATE statistics SET resume_downloads = 99 WHERE id = 1')
+      const second = new BackupSystem(currentTestBackupDir).createBackup()
+      expect(second.success).toBe(true)
+      const secondPath = requireValue(second.path)
+      expect(fs.existsSync(secondPath)).toBe(true)
+      expect(first.listBackups()).toHaveLength(7)
+      expect(requireValue(first.listBackups()[0]).filename).toBe(path.basename(secondPath))
+      expect(fs.readFileSync(secondPath).equals(Buffer.from(getDatabase().export()))).toBe(true)
+    } finally {
+      statSpy.mockRestore()
+      jest.useRealTimers()
+    }
+  })
+
+  it('同一毫秒的新实例不能覆盖已有备份', () => {
+    jest.useFakeTimers().setSystemTime(new Date('2026-09-08T12:00:00.000Z'))
+    try {
+      const first = new BackupSystem(currentTestBackupDir).createBackup()
+      expect(first.success).toBe(true)
+      const firstPath = requireValue(first.path)
+      const firstContent = fs.readFileSync(firstPath)
+      getDatabase().run('UPDATE statistics SET resume_downloads = 99 WHERE id = 1')
+      const second = new BackupSystem(currentTestBackupDir).createBackup()
+      expect(second.success).toBe(true)
+      expect(second.path).not.toBe(firstPath)
+      expect(fs.readFileSync(firstPath).equals(firstContent)).toBe(true)
+    } finally {
+      jest.useRealTimers()
+    }
+  })
+
+  it('同一毫秒连续创建也应保留最新七份独立备份', () => {
+    jest.useFakeTimers().setSystemTime(new Date('2026-09-08T12:00:00.000Z'))
+    try {
+      const backupSystem = new BackupSystem(currentTestBackupDir)
+      const paths: string[] = []
+      for (let index = 0; index < 10; index++) {
+        getDatabase().run('UPDATE statistics SET resume_downloads = ? WHERE id = 1', [index])
+        const result = backupSystem.createBackup()
+        expect(result.success).toBe(true)
+        paths.push(requireValue(result.path))
+      }
+      expect(new Set(paths).size).toBe(10)
+      const kept = backupSystem.listBackups().map(backup => path.join(currentTestBackupDir, backup.filename))
+      expect(kept.slice().sort()).toEqual(paths.slice(-7).sort())
+      const latest = requireValue(paths[paths.length - 1])
+      expect(fs.readFileSync(latest).equals(Buffer.from(getDatabase().export()))).toBe(true)
+    } finally {
+      jest.useRealTimers()
+    }
+  })
+
   beforeAll(async () => {
     // 初始化内存数据库
     await initDatabase(':memory:')
@@ -143,8 +205,8 @@ describe('Property 8: 备份文件数量上限', () => {
           
           // 验证备份按时间降序排序（最新的在前）
           for (let i = 0; i < backups.length - 1; i++) {
-            expect(backups[i].createdAt.getTime()).toBeGreaterThanOrEqual(
-              backups[i + 1].createdAt.getTime()
+            expect(requireValue(backups[i]).createdAt.getTime()).toBeGreaterThanOrEqual(
+              requireValue(backups[i + 1]).createdAt.getTime()
             )
           }
         } finally {
@@ -407,8 +469,8 @@ describe('Property 8: 备份文件数量上限', () => {
           
           // 验证备份按时间降序排序
           for (let i = 0; i < backups.length - 1; i++) {
-            const current = backups[i].createdAt.getTime()
-            const next = backups[i + 1].createdAt.getTime()
+            const current = requireValue(backups[i]).createdAt.getTime()
+            const next = requireValue(backups[i + 1]).createdAt.getTime()
             expect(current).toBeGreaterThanOrEqual(next)
           }
         } finally {

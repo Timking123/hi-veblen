@@ -151,10 +151,8 @@ function hasValidUrlsetElement(xml: string): boolean {
 function hasCorrectUrlCount(xml: string, expectedCount: number): boolean {
   const urlMatches = xml.match(/<url>/g)
   const urlCloseMatches = xml.match(/<\/url>/g)
-  return urlMatches !== null 
-    && urlCloseMatches !== null 
-    && urlMatches.length === expectedCount 
-    && urlCloseMatches.length === expectedCount
+  return (urlMatches?.length ?? 0) === expectedCount
+    && (urlCloseMatches?.length ?? 0) === expectedCount
 }
 
 /**
@@ -163,7 +161,7 @@ function hasCorrectUrlCount(xml: string, expectedCount: number): boolean {
 function hasRequiredUrlElements(xml: string): boolean {
   // 提取所有 url 块
   const urlBlocks = xml.match(/<url>[\s\S]*?<\/url>/g)
-  if (!urlBlocks) return false
+  if (!urlBlocks) return !xml.includes('<url>')
 
   for (const block of urlBlocks) {
     // 每个 url 必须包含 loc, changefreq, priority
@@ -205,7 +203,7 @@ function hasValidLocUrls(xml: string, baseUrl: string, pages: SitemapPage[]): bo
  */
 function hasValidChangefreqValues(xml: string): boolean {
   const changefreqMatches = xml.match(/<changefreq>([^<]+)<\/changefreq>/g)
-  if (!changefreqMatches) return false
+  if (!changefreqMatches) return !xml.includes('<url>')
 
   const validValues = ['always', 'hourly', 'daily', 'weekly', 'monthly', 'yearly', 'never']
   for (const match of changefreqMatches) {
@@ -220,7 +218,7 @@ function hasValidChangefreqValues(xml: string): boolean {
  */
 function hasValidPriorityValues(xml: string): boolean {
   const priorityMatches = xml.match(/<priority>([^<]+)<\/priority>/g)
-  if (!priorityMatches) return false
+  if (!priorityMatches) return !xml.includes('<url>')
 
   for (const match of priorityMatches) {
     const value = parseFloat(match.replace(/<\/?priority>/g, ''))
@@ -558,12 +556,12 @@ describe('SEO 管理属性测试', () => {
     })
 
     describe('数据库集成测试', () => {
-      it('通过服务生成的 Sitemap 应该符合协议', () => {
-        fc.assert(
-          fc.property(
+      it('通过服务生成的 Sitemap 应该符合协议', async () => {
+        await fc.assert(
+          fc.asyncProperty(
             sitemapConfigArb,
-            (config) => {
-              initDatabase(':memory:')
+            async (config) => {
+              await initDatabase(':memory:')
               try {
                 // 更新配置
                 const updateResult = updateSitemapConfig(config)
@@ -592,12 +590,12 @@ describe('SEO 管理属性测试', () => {
         )
       })
 
-      it('保存后读取的配置生成的 XML 应该与原始配置生成的 XML 等价', () => {
-        fc.assert(
-          fc.property(
+      it('保存后读取的配置生成的 XML 应该与原始配置生成的 XML 等价', async () => {
+        await fc.assert(
+          fc.asyncProperty(
             sitemapConfigArb,
-            (config) => {
-              initDatabase(':memory:')
+            async (config) => {
+              await initDatabase(':memory:')
               try {
                 // 直接生成 XML
                 const directXml = generateSitemapXml(config)
@@ -924,12 +922,12 @@ describe('SEO 管理属性测试', () => {
     // ========== 测试用例 ==========
 
     describe('Meta 配置往返一致性', () => {
-      it('保存后读取的 PageMeta 应该与原始配置等价', () => {
-        fc.assert(
-          fc.property(
+      it('保存后读取的 PageMeta 应该与原始配置等价', async () => {
+        await fc.assert(
+          fc.asyncProperty(
             pageMetaArb,
-            (meta) => {
-              initDatabase(':memory:')
+            async (meta) => {
+              await initDatabase(':memory:')
               try {
                 // 保存配置
                 const updateResult = updatePageMeta(meta.page, {
@@ -960,12 +958,12 @@ describe('SEO 管理属性测试', () => {
     })
 
     describe('Schema 配置往返一致性', () => {
-      it('保存后读取的 SchemaConfig 应该与原始配置等价', () => {
-        fc.assert(
-          fc.property(
+      it('保存后读取的 SchemaConfig 应该与原始配置等价', async () => {
+        await fc.assert(
+          fc.asyncProperty(
             schemaConfigArb,
-            (schemas) => {
-              initDatabase(':memory:')
+            async (schemas) => {
+              await initDatabase(':memory:')
               try {
                 // 保存配置
                 const updateResult = updateSchemas(schemas)
@@ -987,12 +985,12 @@ describe('SEO 管理属性测试', () => {
     })
 
     describe('Sitemap 配置往返一致性', () => {
-      it('保存后读取的 SitemapConfig 应该与原始配置等价', () => {
-        fc.assert(
-          fc.property(
+      it('保存后读取的 SitemapConfig 应该与原始配置等价', async () => {
+        await fc.assert(
+          fc.asyncProperty(
             sitemapConfigArb,
-            (config) => {
-              initDatabase(':memory:')
+            async (config) => {
+              await initDatabase(':memory:')
               try {
                 // 保存配置
                 const updateResult = updateSitemapConfig(config)
@@ -1014,12 +1012,12 @@ describe('SEO 管理属性测试', () => {
     })
 
     describe('Robots.txt 往返一致性', () => {
-      it('保存后读取的 robots.txt 应该与原始内容相同', () => {
-        fc.assert(
-          fc.property(
+      it('保存后读取的 robots.txt 应该与原始内容相同', async () => {
+        await fc.assert(
+          fc.asyncProperty(
             robotsTxtArb,
-            (content) => {
-              initDatabase(':memory:')
+            async (content) => {
+              await initDatabase(':memory:')
               try {
                 // 保存配置
                 const updateResult = updateRobotsTxt(content)
@@ -1041,13 +1039,13 @@ describe('SEO 管理属性测试', () => {
     })
 
     describe('完整 SEO 配置导出/导入往返一致性', () => {
-      it('导出后再导入的配置应该与原始配置等价', () => {
-        fc.assert(
-          fc.property(
+      it('导出后再导入的配置应该与原始配置等价', async () => {
+        await fc.assert(
+          fc.asyncProperty(
             sitemapConfigArb,
             robotsTxtArb,
-            (sitemapConfig, robotsTxt) => {
-              initDatabase(':memory:')
+            async (sitemapConfig, robotsTxt) => {
+              await initDatabase(':memory:')
               try {
                 // 设置初始配置
                 updateSitemapConfig(sitemapConfig)
@@ -1063,7 +1061,7 @@ describe('SEO 管理属性测试', () => {
 
                 // 重新初始化数据库（模拟新环境）
                 closeDatabase()
-                initDatabase(':memory:')
+                await initDatabase(':memory:')
 
                 // 导入配置
                 const importResult = importSEOConfig(exportResult.json!)

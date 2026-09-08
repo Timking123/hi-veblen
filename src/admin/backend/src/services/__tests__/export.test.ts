@@ -7,7 +7,7 @@
  * 需求: 4.4.2 - 支持按时间范围选择导出数据
  */
 
-import { initDatabase, closeDatabase, resetDatabase, getDatabase } from '../../database/init'
+import { initDatabase, closeDatabase, resetDatabase } from '../../database/init'
 import {
   exportMessages,
   getMessagesForExport,

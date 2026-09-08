@@ -109,6 +109,10 @@ export class EnhancedInputManager {
 
     state.isDown = false
     state.justReleased = true
+    // 即使释放与再次按下发生在两帧之间，也要允许下一次导弹输入。
+    if (key === 'k') {
+      this.missileKeyWasDown = false
+    }
   }
 
   /**

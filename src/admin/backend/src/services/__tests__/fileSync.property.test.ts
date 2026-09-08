@@ -16,9 +16,8 @@ import fs from 'fs'
 import crypto from 'crypto'
 
 // 测试用的文件目录基础路径
-const TEST_BASE_DIR = path.resolve(__dirname, '../../../test-filesync-property')
-const TEST_ADMIN_FILE_ROOT = path.join(TEST_BASE_DIR, 'admin-file')
-const TEST_PUBLIC_ROOT = path.join(TEST_BASE_DIR, 'public')
+const TEST_ADMIN_FILE_ROOT = process.env.TEST_FILE_ROOT!
+const TEST_PUBLIC_ROOT = process.env.TEST_PUBLIC_ROOT!
 
 // ========== 测试辅助函数 ==========
 
@@ -37,8 +36,8 @@ function createTestDirectories(): void {
  * 清理测试目录
  */
 function cleanupTestDirectories(): void {
-  if (fs.existsSync(TEST_BASE_DIR)) {
-    fs.rmSync(TEST_BASE_DIR, { recursive: true, force: true })
+  for (const directory of [TEST_ADMIN_FILE_ROOT, TEST_PUBLIC_ROOT]) {
+    if (fs.existsSync(directory)) fs.rmSync(directory, { recursive: true, force: true })
   }
 }
 
@@ -102,82 +101,10 @@ function setActiveResumeVersion(version: number): void {
   saveDatabase()
 }
 
-/**
- * 获取激活的简历版本
- */
-function getActiveResumeVersion(): number | null {
-  const db = getDatabase()
-  const result = db.exec('SELECT version FROM resume_versions WHERE is_active = 1')
-  
-  if (result.length === 0 || !result[0].values || result[0].values.length === 0) {
-    return null
-  }
-  
-  return result[0].values[0][0] as number
-}
 
 /**
- * 模拟 FileSyncService 使用测试路径
- * 通过修改原型方法来注入测试路径
+ * 使用测试独占路径验证真实 FileSyncService
  */
-function mockFileSyncServicePaths(): void {
-  // 保存原始方法
-  const originalSyncActiveResume = FileSyncService.prototype.syncActiveResumeToPublic
-  const originalSyncAudio = FileSyncService.prototype.syncAudioToPublic
-  
-  // 重写方法以使用测试路径
-  FileSyncService.prototype.syncActiveResumeToPublic = async function() {
-    try {
-      const db = getDatabase()
-      const result = db.exec(`
-        SELECT version, filename, file_path 
-        FROM resume_versions 
-        WHERE is_active = 1
-      `)
-
-      if (result.length === 0 || !result[0].values || result[0].values.length === 0) {
-        return {
-          success: false,
-          error: '没有激活的简历版本'
-        }
-      }
-
-      const [version, filename, filePath] = result[0].values[0]
-      const sourcePath = path.join(TEST_ADMIN_FILE_ROOT, filePath as string)
-      const targetPath = path.join(TEST_PUBLIC_ROOT, 'resume.pdf')
-      const tempPath = path.join(TEST_PUBLIC_ROOT, `.resume.pdf.tmp.${Date.now()}`)
-
-      if (!fs.existsSync(sourcePath)) {
-        return {
-          success: false,
-          sourcePath,
-          targetPath,
-          error: `源文件不存在: ${sourcePath}`
-        }
-      }
-
-      const publicDir = path.dirname(targetPath)
-      if (!fs.existsSync(publicDir)) {
-        fs.mkdirSync(publicDir, { recursive: true })
-      }
-
-      fs.copyFileSync(sourcePath, tempPath)
-      fs.renameSync(tempPath, targetPath)
-
-      return {
-        success: true,
-        sourcePath,
-        targetPath
-      }
-    } catch (error) {
-      return {
-        success: false,
-        error: error instanceof Error ? error.message : String(error)
-      }
-    }
-  }
-}
-
 // ========== 测试套件 ==========
 
 describe('Property 2: 激活简历同步性', () => {
@@ -187,8 +114,7 @@ describe('Property 2: 激活简历同步性', () => {
     // 初始化内存数据库
     await initDatabase(':memory:', true)
     
-    // 模拟文件同步服务路径
-    mockFileSyncServicePaths()
+    // 使用 Jest 设置注入的专属路径，执行真实同步实现。
   })
 
   afterAll(() => {
@@ -228,6 +154,10 @@ describe('Property 2: 激活简历同步性', () => {
 
     await fc.assert(
       fc.asyncProperty(resumeArb, async (resume) => {
+        // 隔离每个属性样本，避免多个激活记录或旧文件影响当前样本。
+        getDatabase().run('DELETE FROM resume_versions')
+        cleanupTestDirectories()
+        createTestDirectories()
         // 生成随机 PDF 内容
         const content = generateRandomPdfContent(resume.contentSize)
         
@@ -283,6 +213,10 @@ describe('Property 2: 激活简历同步性', () => {
 
     await fc.assert(
       fc.asyncProperty(versionsArb, async ([resume1, resume2]) => {
+        // 隔离每个属性样本，避免多个激活记录或旧文件影响当前样本。
+        getDatabase().run('DELETE FROM resume_versions')
+        cleanupTestDirectories()
+        createTestDirectories()
         // 创建两个不同的简历版本
         const content1 = generateRandomPdfContent(resume1.contentSize)
         const content2 = generateRandomPdfContent(resume2.contentSize)
@@ -330,6 +264,10 @@ describe('Property 2: 激活简历同步性', () => {
   it('没有激活版本时，同步应该失败但不崩溃', async () => {
     await fc.assert(
       fc.asyncProperty(fc.constant(null), async () => {
+        // 隔离每个属性样本，避免多个激活记录或旧文件影响当前样本。
+        getDatabase().run('DELETE FROM resume_versions')
+        cleanupTestDirectories()
+        createTestDirectories()
         // 确保没有激活版本
         const db = getDatabase()
         db.run('DELETE FROM resume_versions')
@@ -360,6 +298,10 @@ describe('Property 2: 激活简历同步性', () => {
 
     await fc.assert(
       fc.asyncProperty(resumeArb, async (resume) => {
+        // 隔离每个属性样本，避免多个激活记录或旧文件影响当前样本。
+        getDatabase().run('DELETE FROM resume_versions')
+        cleanupTestDirectories()
+        createTestDirectories()
         const db = getDatabase()
         const filePath = `resume/resume_v${resume.version}.pdf`
         
@@ -397,6 +339,10 @@ describe('Property 2: 激活简历同步性', () => {
 
     await fc.assert(
       fc.asyncProperty(resumeArb, async (resume) => {
+        // 隔离每个属性样本，避免多个激活记录或旧文件影响当前样本。
+        getDatabase().run('DELETE FROM resume_versions')
+        cleanupTestDirectories()
+        createTestDirectories()
         // 生成随机 PDF 内容
         const content = generateRandomPdfContent(resume.contentSize)
         
@@ -437,6 +383,10 @@ describe('Property 2: 激活简历同步性', () => {
 
     await fc.assert(
       fc.asyncProperty(resumeArb, async (resume) => {
+        // 隔离每个属性样本，避免多个激活记录或旧文件影响当前样本。
+        getDatabase().run('DELETE FROM resume_versions')
+        cleanupTestDirectories()
+        createTestDirectories()
         // 生成随机 PDF 内容
         const content = generateRandomPdfContent(resume.contentSize)
         
@@ -449,7 +399,7 @@ describe('Property 2: 激活简历同步性', () => {
         
         // 验证公共目录中没有 .tmp 文件
         const files = fs.readdirSync(TEST_PUBLIC_ROOT)
-        const tmpFiles = files.filter(f => f.endsWith('.tmp'))
+        const tmpFiles = files.filter(f => f.endsWith('.tmp') || /^\.resume\.pdf\.tmp\.\d+$/.test(f))
         
         expect(tmpFiles.length).toBe(0)
       }),
@@ -471,6 +421,10 @@ describe('Property 2: 激活简历同步性', () => {
 
     await fc.assert(
       fc.asyncProperty(resumeArb, async (resume) => {
+        // 隔离每个属性样本，避免多个激活记录或旧文件影响当前样本。
+        getDatabase().run('DELETE FROM resume_versions')
+        cleanupTestDirectories()
+        createTestDirectories()
         // 生成随机 PDF 内容
         const content = generateRandomPdfContent(resume.contentSize)
         
