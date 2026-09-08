@@ -419,7 +419,7 @@ jobs:
           assert 'bc_resource_python cleanup "$@"' in backup
           assert 'bc_resource_python inventory "$1"' in backup
           assert 'transaction._bc_workflow_prelude()' in workflow
-          assert 'ref: ${{ github.sha }}' in workflow and 'persist-credentials: false' in workflow
+          assert 'ref: $' + '{{ github.sha }}' in workflow and 'persist-credentials: false' in workflow
           lease_publish = preflight.index('mv -T -- "$lease_tmp" "$lease_dir"')
           assert lease_publish < backup_start
           staging = workflow[workflow.index("      - name: 创建私有暂存目录"):workflow.index("      - name: 上传发布包")]
