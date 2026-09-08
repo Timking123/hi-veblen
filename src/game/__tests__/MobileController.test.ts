@@ -62,6 +62,71 @@ describe('MobileController', () => {
     document.body.removeChild(canvas)
   })
 
+  it('窄屏上的三个按钮完整落在画布内', () => {
+    canvas.width = 337
+    canvas.height = 253
+    controller = new MobileController(canvas)
+    controller.initialize()
+    const config = (controller as unknown as { config: { buttons: Record<string, { x: number; y: number; size: number }> } }).config
+    for (const button of Object.values(config.buttons)) {
+      expect(button.y - button.size / 2).toBeGreaterThanOrEqual(0)
+      expect(button.y + button.size / 2).toBeLessThanOrEqual(canvas.height)
+    }
+  })
+
+  it('画布缩放并带边框时，点击可见按钮仍命中导弹', () => {
+    controller = new MobileController(canvas)
+    controller.initialize()
+    Object.defineProperty(canvas, 'clientLeft', { value: 8, configurable: true })
+    Object.defineProperty(canvas, 'clientTop', { value: 8, configurable: true })
+    vi.spyOn(canvas, 'getBoundingClientRect').mockReturnValue({ left: 10, top: 20, width: 416, height: 316 } as DOMRect)
+    const touch = createMockTouch(1, 378, 248, canvas)
+    canvas.dispatchEvent(new TouchEvent('touchstart', { changedTouches: [touch] }))
+    expect(controller.getButtonState().missile).toBe(true)
+  })
+
+  it.each([[337, 253, 257, 130], [288, 216, 208, 100]])(
+    '窄屏 %i×%i 点击导弹可见圆的下沿仍发射导弹', (width, height, x, y) => {
+      canvas.width = width
+      canvas.height = height
+      controller = new MobileController(canvas)
+      controller.initialize()
+      const touch = createMockTouch(1, x, y, canvas)
+      canvas.dispatchEvent(new TouchEvent('touchstart', { changedTouches: [touch] }))
+      expect(controller.getButtonState()).toEqual({ fire: false, missile: true, nuke: false })
+      canvas.dispatchEvent(new TouchEvent('touchend', { changedTouches: [touch] }))
+      expect(controller.getButtonState().missile).toBe(false)
+    }
+  )
+
+  it('窄屏点击导弹圆不会被摇杆的扩大命中区域抢走', () => {
+    canvas.width = 288
+    canvas.height = 216
+    controller = new MobileController(canvas)
+    controller.initialize()
+    const touch = createMockTouch(1, 190, 108, canvas)
+    canvas.dispatchEvent(new TouchEvent('touchstart', { changedTouches: [touch] }))
+    expect(controller.getButtonState().missile).toBe(true)
+    expect(controller.getJoystickState().active).toBe(false)
+    canvas.dispatchEvent(new TouchEvent('touchend', { changedTouches: [touch] }))
+    expect(controller.getButtonState().missile).toBe(false)
+  })
+
+  it('按住摇杆和开火键旋屏后释放全部旧触点', () => {
+    controller = new MobileController(canvas)
+    controller.initialize()
+    const touches = [createMockTouch(1, 140, 500, canvas), createMockTouch(2, 720, 520, canvas)]
+    canvas.dispatchEvent(new TouchEvent('touchstart', { changedTouches: touches }))
+    expect(controller.getJoystickState().active).toBe(true)
+    expect(controller.getButtonState().fire).toBe(true)
+    controller.updateConfig(337, 253)
+    expect(controller.getJoystickState()).toEqual({ active: false, x: 0, y: 0, angle: 0, distance: 0 })
+    expect(controller.getButtonState()).toEqual({ fire: false, missile: false, nuke: false })
+    canvas.dispatchEvent(new TouchEvent('touchmove', { changedTouches: touches }))
+    expect(controller.getJoystickState().active).toBe(false)
+    expect(controller.getButtonState().fire).toBe(false)
+  })
+
   /**
    * 验证需求: 6.1 - 设备类型检测
    */
