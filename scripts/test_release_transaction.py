@@ -491,6 +491,18 @@ class ResourceTests(unittest.TestCase):
                 # 本仓库额外保留编码/表达式处理余量；此值不是对宿主内部计量的推断。
                 self.assertLessEqual(len(body.encode("utf-8")), 18000, name)
 
+    def test_built_archive_probe_keeps_original_portal_build_environment(self):
+        import re
+        ci = (Path(__file__).resolve().parents[1] / ".github/workflows/ci.yml").read_text(encoding="utf-8")
+        def step(name):
+            return re.split(r"(?m)^      - name:", ci.split("      - name: " + name + "\n", 1)[1], maxsplit=1)[0]
+        build = step("Build portal")
+        probe = step("Validate built portal resource archive")
+        self.assertIn("        env:\n          VITE_LINGXI_URL: https://lingxi.hi-veblen.com/", build)
+        self.assertNotIn("VITE_LINGXI_URL", probe)
+        self.assertIn('tar -C dist -czf - . | python3 -I -B "$fixture"', probe)
+        self.assertIn("set -euo pipefail", probe)
+
     def test_real_remote_archive_gate_normal_and_rejection_stop_consumer(self):
         body = self.generated_python()
         self.assertIn('bc_resource_python archive "$archive" "$expected_archive_sha"', self.workflow())
@@ -858,6 +870,7 @@ class ResourceTreeTests(unittest.TestCase):
             link.identity[0] = 0
 
     def test_snapshot_preserves_original_child_metadata_and_deletes_only_copied_tree(self):
+        self.directory("snapshot")
         nested = self.directory("snapshot/etc")
         source = self.file("snapshot/etc/config", b"copied original")
         outside = self.file("outside-original", b"kept")
@@ -972,18 +985,30 @@ class ResourceTreeTests(unittest.TestCase):
 
     def test_roots_duplicate_nested_symlink_and_shared_budget(self):
         self.file("a/nested/file", b"x")
-        self.file("b/file", b"x")
+        self.file("b/nested/file", b"x")
         os.symlink("a", self.root / "alias")
         for roots in (("/a", "/a"), ("/a", "/a/nested"), ("/alias",), ("/a",) * 4098):
             with transaction._Fs() as fs, self.assertRaises((transaction.TransactionError, OSError)):
                 transaction._bc_scan_trees(fs, roots, mode="delete")
         with transaction._Fs() as fs:
-            probe = transaction._BCBudget()
-            one = transaction._bc_scan_trees(fs, ("/a",), mode="delete", budget=probe)
-            budget = transaction._BCBudget(limits={"scan": probe.peak + 1})
-            with self.assertRaises(transaction._BCResourceError):
-                transaction._bc_scan_trees(fs, ("/a", "/b"), mode="delete", budget=budget)
-            self.assertEqual(len(one.roots), 1)
+            peaks = []
+            for root in ("/a", "/b"):
+                probe = transaction._BCBudget()
+                transaction._bc_scan_trees(fs, (root,), mode="delete", budget=probe)
+                peaks.append(probe.peak)
+            limit = max(peaks)
+            # 两棵树分别通过同一上限；整批必须累计仍存活的第一棵树计划。
+            for root in ("/a", "/b"):
+                single = transaction._BCBudget(limits={"scan": limit})
+                one = transaction._bc_scan_trees(fs, (root,), mode="delete", budget=single)
+                self.assertEqual(len(one.roots), 1)
+            budget = transaction._BCBudget(limits={"scan": limit})
+            with patch.object(os, "unlink") as unlink, patch.object(os, "rmdir") as rmdir:
+                with self.assertRaises(transaction._BCResourceError) as caught:
+                    transaction._bc_scan_trees(fs, ("/a", "/b"), mode="delete", budget=budget)
+                self.assertEqual(caught.exception.resource, "scan")
+                unlink.assert_not_called()
+                rmdir.assert_not_called()
 
     def test_all_tree_prescan_failure_means_zero_deletes(self):
         self.file("a/good", b"x")
