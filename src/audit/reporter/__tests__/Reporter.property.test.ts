@@ -15,12 +15,14 @@ describe('Reporter Property Tests', () => {
   let reporter: Reporter
 
   beforeEach(async () => {
-    testDir = path.join(process.cwd(), '.test-temp', `test-${Date.now()}`)
-    await fs.ensureDir(testDir)
+    const parentDir = path.resolve(process.cwd(), '.test-temp')
+    await fs.ensureDir(parentDir)
+    testDir = await fs.mkdtemp(path.join(parentDir, 'reporter-property-'))
     reporter = new Reporter()
   })
 
   afterEach(async () => {
+    expect(path.dirname(path.resolve(testDir))).toBe(path.resolve(process.cwd(), '.test-temp'))
     await fs.remove(testDir)
   })
 
@@ -47,7 +49,8 @@ describe('Reporter Property Tests', () => {
 
   const auditResultArbitrary = fc.record({
     success: fc.boolean(),
-    timestamp: fc.date().map(d => d.toISOString()),
+    // 时间戳契约要求可序列化的日期；Invalid Date 会在进入报告逻辑前抛错。
+    timestamp: fc.date({ noInvalidDate: true }).map(d => d.toISOString()),
     environment: fc.constantFrom('development', 'production', 'test'),
     checks: fc.array(checkResultArbitrary, { minLength: 1, maxLength: 5 }),
     summary: fc.record({

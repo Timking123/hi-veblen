@@ -24,6 +24,8 @@ describe('messageStorage', () => {
   
   beforeEach(() => {
     mockStorage = {}
+    // 本套验证离线本地备份，不向测试宿主或真实 API 发送留言。
+    vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new Error('合成离线响应')))
     
     // 模拟 localStorage
     vi.spyOn(Storage.prototype, 'setItem').mockImplementation((key, value) => {
@@ -46,6 +48,7 @@ describe('messageStorage', () => {
   
   afterEach(() => {
     vi.restoreAllMocks()
+    vi.unstubAllGlobals()
   })
 
   describe('generateFilename', () => {

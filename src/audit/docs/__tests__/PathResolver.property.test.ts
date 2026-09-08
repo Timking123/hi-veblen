@@ -99,10 +99,15 @@ describe('PathResolver Property Tests', () => {
             newTargetPath
           ).replace(/\\/g, '/')
           
-          expect(updatedContent).toContain(`[${linkText}](${expectedRelativePath})`)
+          expect(updatedContent).toBe(`# Test\n\n[${linkText}](${expectedRelativePath})\n`)
         }
       ),
-      { numRuns: 30 }
+      {
+        numRuns: 34, // 保留原有 30 个随机样本，另加 4 个固定反例。
+        examples: ['$$ ', '$&', '$`', "$'"].map(linkText => [{
+          docName: 'doc1.md', linkTarget: 'target1.md', linkText
+        }])
+      }
     )
   })
 

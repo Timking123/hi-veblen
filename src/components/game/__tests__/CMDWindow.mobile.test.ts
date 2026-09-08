@@ -25,10 +25,17 @@ describe('CMDWindow - 移动端开局选择按钮', () => {
   let pinia: Pinia
   let store: ReturnType<typeof useEasterEggStore>
 
+  beforeEach(() => {
+    vi.useFakeTimers()
+  })
+
   afterEach(() => {
     if (wrapper) {
       wrapper.unmount()
     }
+    vi.clearAllTimers()
+    vi.useRealTimers()
+    vi.restoreAllMocks()
   })
 
   describe('移动设备显示按钮', () => {
@@ -62,7 +69,7 @@ describe('CMDWindow - 移动端开局选择按钮', () => {
       await wrapper.vm.$nextTick()
 
       // 等待打字动画完成
-      await new Promise(resolve => setTimeout(resolve, 1500))
+      await vi.advanceTimersByTimeAsync(1500)
       await wrapper.vm.$nextTick()
     })
 
@@ -97,6 +104,8 @@ describe('CMDWindow - 移动端开局选择按钮', () => {
       const enterRulesSpy = vi.spyOn(store, 'enterRules')
       
       await yesButton.trigger('click')
+      expect(enterRulesSpy).not.toHaveBeenCalled()
+      await vi.advanceTimersByTimeAsync(100)
       await wrapper.vm.$nextTick()
       
       expect(enterRulesSpy).toHaveBeenCalled()
@@ -107,6 +116,8 @@ describe('CMDWindow - 移动端开局选择按钮', () => {
       const restoreNormalPageSpy = vi.spyOn(store, 'restoreNormalPage')
       
       await noButton.trigger('click')
+      expect(restoreNormalPageSpy).not.toHaveBeenCalled()
+      await vi.advanceTimersByTimeAsync(100)
       await wrapper.vm.$nextTick()
       
       expect(restoreNormalPageSpy).toHaveBeenCalled()
@@ -144,7 +155,7 @@ describe('CMDWindow - 移动端开局选择按钮', () => {
       await wrapper.vm.$nextTick()
 
       // 等待打字动画完成
-      await new Promise(resolve => setTimeout(resolve, 1500))
+      await vi.advanceTimersByTimeAsync(1500)
       await wrapper.vm.$nextTick()
     })
 

@@ -8,6 +8,8 @@ process.env.NO_PROXY = ['127.0.0.1', 'localhost', process.env.NO_PROXY].filter(B
  */
 export default defineConfig({
   testDir: './e2e',
+  // 独立组件服务由 playwright.legacy.config.ts 启动。
+  testIgnore: 'legacy-quality.spec.ts',
   fullyParallel: true,
   forbidOnly: !!process.env.CI,
   retries: process.env.CI ? 2 : 0,

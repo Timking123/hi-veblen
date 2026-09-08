@@ -262,10 +262,11 @@ export default defineConfig(({ mode }) => {
       setupFiles: ['./src/test/setup.ts'],
       include: ['src/**/*.{test,spec}.{js,ts}'],
       pool: 'forks',
-      alias: {
-        vitest: fileURLToPath(new URL('./src/test/vitest-globals.ts', import.meta.url)),
-      },
+      // 文件属性测试较多，限制并发以免磁盘争用触发测试超时。
+      maxWorkers: 4,
       exclude: [
+        // Admin 前端与后端分别由各自的 Vitest 和 Jest 入口验收。
+        'src/admin/**',
         '**/node_modules/**',
         '**/dist/**',
         '**/e2e/**',

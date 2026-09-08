@@ -1,8 +1,10 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { mount } from '@vue/test-utils'
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
+import { mount, enableAutoUnmount } from '@vue/test-utils'
 import * as fc from 'fast-check'
 import Skills from '../Skills.vue'
 import type { Skill, Profile } from '@/types'
+
+enableAutoUnmount(afterEach)
 
 /**
  * Feature: vue3-portfolio-website, Property 5: 技能分类正确性
@@ -75,21 +77,23 @@ vi.mock('@/data/profile', () => {
 import { profileData as mockProfileData } from '@/data/profile'
 
 // Arbitrary generator for skills
-const skillArbitrary = fc.record({
-  name: fc.stringMatching(/^[a-zA-Z0-9\u4e00-\u9fa5.+# ]{2,20}$/),
-  level: fc.integer({ min: 0, max: 100 }),
-  category: fc.constantFrom('frontend', 'backend', 'tools', 'other'),
-  experience: fc.stringMatching(/^[a-zA-Z0-9\u4e00-\u9fa5,，、 ]{10,100}$/),
-  projects: fc.array(fc.stringMatching(/^[a-zA-Z0-9\u4e00-\u9fa5 ]{3,30}$/), {
-    minLength: 0,
-    maxLength: 5,
-  }),
-}).map((skill) => ({
-  ...skill,
-  name: skill.name.trim() || 'Skill', // Trim and provide default if empty
-  experience: skill.experience.trim() || 'Experience', // Trim experience
-  projects: skill.projects.map((p) => p.trim()).filter((p) => p.length > 0), // Trim projects
-}))
+const skillArbitrary = fc
+  .record({
+    name: fc.stringMatching(/^[a-zA-Z0-9\u4e00-\u9fa5.+# ]{2,20}$/),
+    level: fc.integer({ min: 0, max: 100 }),
+    category: fc.constantFrom('frontend', 'backend', 'tools', 'other'),
+    experience: fc.stringMatching(/^[a-zA-Z0-9\u4e00-\u9fa5,，、 ]{10,100}$/),
+    projects: fc.array(fc.stringMatching(/^[a-zA-Z0-9\u4e00-\u9fa5 ]{3,30}$/), {
+      minLength: 0,
+      maxLength: 5,
+    }),
+  })
+  .map(skill => ({
+    ...skill,
+    name: skill.name.trim() || 'Skill', // Trim and provide default if empty
+    experience: skill.experience.trim() || 'Experience', // Trim experience
+    projects: skill.projects.map(p => p.trim()).filter(p => p.length > 0), // Trim projects
+  }))
 
 describe('Skills Property Tests', () => {
   beforeEach(() => {
@@ -102,7 +106,7 @@ describe('Skills Property Tests', () => {
       await fc.assert(
         fc.asyncProperty(
           fc.array(skillArbitrary, { minLength: 4, maxLength: 20 }),
-          async (skills) => {
+          async skills => {
             // Set the mock profile data
             mockProfileData.skills = skills
 
@@ -114,10 +118,10 @@ describe('Skills Property Tests', () => {
 
             // Property: Each category section should only contain skills of that category
             const categoryMap: Record<string, string> = {
-              frontend: '前端技能',
-              backend: '后端技能',
-              tools: '工具与其他',
-              other: '其他技能',
+              frontend: '前端核心',
+              backend: '后端与接口',
+              tools: '工具链',
+              other: '研究与业务',
             }
 
             // Group skills by category manually
@@ -128,34 +132,36 @@ describe('Skills Property Tests', () => {
               other: [],
             }
 
-            skills.forEach((skill) => {
+            skills.forEach(skill => {
               groupedSkills[skill.category].push(skill)
             })
 
             // Check each category section
-            const categorySections = wrapper.findAll('.category-section')
+            const categorySections = wrapper.findAll('.matrix-group')
+            expect(categorySections.length).toBe(new Set(skills.map(skill => skill.category)).size)
 
-            categorySections.forEach((section) => {
-              const titleElement = section.find('.category-title')
+            categorySections.forEach(section => {
+              const titleElement = section.find('h2')
               const categoryTitle = titleElement.text()
 
               // Find which category this section represents
               const categoryKey = Object.keys(categoryMap).find(
-                (key) => categoryMap[key] === categoryTitle
+                key => categoryMap[key] === categoryTitle
               )
 
+              expect(categoryKey).toBeDefined()
               if (categoryKey) {
                 // Get all skill tags in this section
-                const skillTags = section.findAll('.skill-tag')
+                const skillTags = section.findAll('.matrix-node')
 
                 // Property: All skills in this section should have the correct category
-                skillTags.forEach((tag) => {
-                  const skillName = tag.find('.skill-name').text()
+                skillTags.forEach(tag => {
+                  const skillName = tag.find('span').text()
                   // Find all skills with this name in the input
-                  const skillsWithName = skills.filter((s) => s.name === skillName)
-                  
+                  const skillsWithName = skills.filter(s => s.name === skillName)
+
                   // At least one of the skills with this name should have the correct category
-                  const hasCorrectCategory = skillsWithName.some((s) => s.category === categoryKey)
+                  const hasCorrectCategory = skillsWithName.some(s => s.category === categoryKey)
                   expect(hasCorrectCategory).toBe(true)
                 })
 
@@ -168,20 +174,18 @@ describe('Skills Property Tests', () => {
             })
 
             // Property: All skills should be rendered exactly once (or as many times as they appear in the input)
-            const allSkillTags = wrapper.findAll('.skill-tag')
-            const renderedSkillNames = allSkillTags.map((tag) =>
-              tag.find('.skill-name').text()
-            )
+            const allSkillTags = wrapper.findAll('.matrix-node')
+            const renderedSkillNames = allSkillTags.map(tag => tag.find('span').text())
 
             // Count how many times each skill name appears in the input
             const inputNameCounts = new Map<string, number>()
-            skills.forEach((skill) => {
+            skills.forEach(skill => {
               inputNameCounts.set(skill.name, (inputNameCounts.get(skill.name) || 0) + 1)
             })
 
             // Check that each skill name appears the correct number of times in the rendered output
             inputNameCounts.forEach((expectedCount, skillName) => {
-              const actualCount = renderedSkillNames.filter((name) => name === skillName).length
+              const actualCount = renderedSkillNames.filter(name => name === skillName).length
               expect(actualCount).toBe(expectedCount)
             })
           }
@@ -194,9 +198,9 @@ describe('Skills Property Tests', () => {
       await fc.assert(
         fc.asyncProperty(
           fc.array(skillArbitrary, { minLength: 1, maxLength: 10 }),
-          async (skills) => {
+          async skills => {
             // Filter to only include one category
-            const singleCategorySkills = skills.map((skill) => ({
+            const singleCategorySkills = skills.map(skill => ({
               ...skill,
               category: 'frontend' as const,
             }))
@@ -208,14 +212,15 @@ describe('Skills Property Tests', () => {
             await wrapper.vm.$nextTick()
 
             // Property: Only categories with skills should be displayed
-            const categorySections = wrapper.findAll('.category-section')
+            const categorySections = wrapper.findAll('.matrix-group')
+            expect(categorySections.length).toBeGreaterThan(0)
 
             // Since all skills are frontend, we should only see one category section
             expect(categorySections.length).toBeGreaterThan(0)
 
             // Property: Each displayed category should have at least one skill
-            categorySections.forEach((section) => {
-              const skillTags = section.findAll('.skill-tag')
+            categorySections.forEach(section => {
+              const skillTags = section.findAll('.matrix-node')
               expect(skillTags.length).toBeGreaterThan(0)
             })
           }
@@ -256,22 +261,23 @@ describe('Skills Property Tests', () => {
             await wrapper.vm.$nextTick()
 
             // Property: Each skill should appear in its correct category section
-            const categorySections = wrapper.findAll('.category-section')
+            const categorySections = wrapper.findAll('.matrix-group')
+            expect(categorySections.length).toBeGreaterThan(0)
 
             let frontendFound = false
             let backendFound = false
 
-            categorySections.forEach((section) => {
-              const titleElement = section.find('.category-title')
+            categorySections.forEach(section => {
+              const titleElement = section.find('h2')
               const categoryTitle = titleElement.text()
 
-              const skillTags = section.findAll('.skill-tag')
-              skillTags.forEach((tag) => {
-                const name = tag.find('.skill-name').text()
+              const skillTags = section.findAll('.matrix-node')
+              skillTags.forEach(tag => {
+                const name = tag.find('span').text()
                 if (name === skillName) {
-                  if (categoryTitle === '前端技能') {
+                  if (categoryTitle === '前端核心') {
                     frontendFound = true
-                  } else if (categoryTitle === '后端技能') {
+                  } else if (categoryTitle === '后端与接口') {
                     backendFound = true
                   }
                 }
@@ -293,12 +299,12 @@ describe('Skills Property Tests', () => {
       await fc.assert(
         fc.asyncProperty(
           fc.array(skillArbitrary, { minLength: 3, maxLength: 10 }),
-          async (skills) => {
+          async skills => {
             // Ensure at least one skill has projects
             const skillsWithProjects = skills.map((skill, index) => ({
               ...skill,
               projects:
-                index === 0 || Math.random() > 0.5
+                index === 0
                   ? skill.projects.length > 0
                     ? skill.projects
                     : ['Test Project']
@@ -312,27 +318,28 @@ describe('Skills Property Tests', () => {
             await wrapper.vm.$nextTick()
 
             // Find a skill with projects to test
-            const skillWithProjects = skillsWithProjects.find((s) => s.projects.length > 0)
+            const skillWithProjects = skillsWithProjects.find(s => s.projects.length > 0)
 
             if (skillWithProjects) {
               // Find and click the skill tag
-              const allSkillTags = wrapper.findAll('.skill-tag')
+              const allSkillTags = wrapper.findAll('.matrix-node')
               const targetTag = allSkillTags.find(
-                (tag) => tag.find('.skill-name').text() === skillWithProjects.name
+                tag => tag.find('span').text() === skillWithProjects.name
               )
 
+              expect(targetTag).toBeDefined()
               if (targetTag) {
                 await targetTag.trigger('click')
                 await wrapper.vm.$nextTick()
 
                 // Property: Filtered projects section should be visible
-                const filteredSection = wrapper.find('.filtered-projects')
+                const filteredSection = wrapper.find('.matrix-projects')
                 expect(filteredSection.exists()).toBe(true)
 
                 // Property: All displayed projects should be in the selected skill's project list
-                const projectCards = wrapper.findAll('.project-card')
-                projectCards.forEach((card) => {
-                  const projectName = card.find('.project-name').text()
+                const projectCards = wrapper.findAll('.matrix-projects__list .sci-chip')
+                projectCards.forEach(card => {
+                  const projectName = card.text()
                   expect(skillWithProjects.projects).toContain(projectName)
                 })
 
@@ -343,7 +350,7 @@ describe('Skills Property Tests', () => {
                 await targetTag.trigger('click')
                 await wrapper.vm.$nextTick()
 
-                const filteredSectionAfter = wrapper.find('.filtered-projects')
+                const filteredSectionAfter = wrapper.find('.matrix-projects')
                 expect(filteredSectionAfter.exists()).toBe(false)
               }
             }
@@ -380,32 +387,30 @@ describe('Skills Property Tests', () => {
             await wrapper.vm.$nextTick()
 
             // Click first skill
-            const allSkillTags = wrapper.findAll('.skill-tag')
-            const skillATag = allSkillTags.find(
-              (tag) => tag.find('.skill-name').text() === 'Skill A'
-            )
+            const allSkillTags = wrapper.findAll('.matrix-node')
+            const skillATag = allSkillTags.find(tag => tag.find('span').text() === 'Skill A')
 
+            expect(skillATag).toBeDefined()
             if (skillATag) {
               await skillATag.trigger('click')
               await wrapper.vm.$nextTick()
 
               // Property: Should show Skill A's projects
-              let projectCards = wrapper.findAll('.project-card')
-              let projectNames = projectCards.map((card) => card.find('.project-name').text())
+              let projectCards = wrapper.findAll('.matrix-projects__list .sci-chip')
+              let projectNames = projectCards.map(card => card.text())
               expect(projectNames).toEqual(['Project 1', 'Project 2'])
 
               // Click second skill
-              const skillBTag = allSkillTags.find(
-                (tag) => tag.find('.skill-name').text() === 'Skill B'
-              )
+              const skillBTag = allSkillTags.find(tag => tag.find('span').text() === 'Skill B')
 
+              expect(skillBTag).toBeDefined()
               if (skillBTag) {
                 await skillBTag.trigger('click')
                 await wrapper.vm.$nextTick()
 
                 // Property: Should now show Skill B's projects
-                projectCards = wrapper.findAll('.project-card')
-                projectNames = projectCards.map((card) => card.find('.project-name').text())
+                projectCards = wrapper.findAll('.matrix-projects__list .sci-chip')
+                projectNames = projectCards.map(card => card.text())
                 expect(projectNames).toEqual(['Project 3', 'Project 4'])
               }
             }
@@ -428,7 +433,7 @@ describe('Skills Property Tests', () => {
             }),
             { minLength: 2, maxLength: 5 }
           ),
-          async (skills) => {
+          async skills => {
             mockProfileData.skills = skills
 
             const wrapper = mount(Skills)
@@ -436,17 +441,18 @@ describe('Skills Property Tests', () => {
             await wrapper.vm.$nextTick()
 
             // Click a skill with no projects
-            const allSkillTags = wrapper.findAll('.skill-tag')
+            const allSkillTags = wrapper.findAll('.matrix-node')
+            expect(allSkillTags.length).toBeGreaterThan(0)
             if (allSkillTags.length > 0) {
               await allSkillTags[0].trigger('click')
               await wrapper.vm.$nextTick()
 
               // Property: Filtered section should still appear
-              const filteredSection = wrapper.find('.filtered-projects')
+              const filteredSection = wrapper.find('.matrix-projects')
               expect(filteredSection.exists()).toBe(true)
 
               // Property: No project cards should be displayed
-              const projectCards = wrapper.findAll('.project-card')
+              const projectCards = wrapper.findAll('.matrix-projects__list .sci-chip')
               expect(projectCards.length).toBe(0)
             }
           }
@@ -459,7 +465,7 @@ describe('Skills Property Tests', () => {
   describe('Property 8: Hover State Management Correctness', () => {
     it('should display skill details on hover', async () => {
       await fc.assert(
-        fc.asyncProperty(skillArbitrary, async (skill) => {
+        fc.asyncProperty(skillArbitrary, async skill => {
           mockProfileData.skills = [skill]
 
           const wrapper = mount(Skills)
@@ -467,37 +473,35 @@ describe('Skills Property Tests', () => {
           await wrapper.vm.$nextTick()
 
           // Property: Detail card should not be visible initially
-          let detailCard = wrapper.find('.skill-detail-card')
-          expect(detailCard.exists()).toBe(false)
+          let detailCard = wrapper.get('.matrix-core')
+          expect(detailCard.get('p').text()).toContain('悬停或点击')
 
           // Find and hover over the skill tag
-          const skillTag = wrapper.find('.skill-tag')
+          const skillTag = wrapper.find('.matrix-node')
           await skillTag.trigger('mouseenter')
           await wrapper.vm.$nextTick()
 
           // Property: Detail card should be visible after hover
-          detailCard = wrapper.find('.skill-detail-card')
+          detailCard = wrapper.get('.matrix-core')
           expect(detailCard.exists()).toBe(true)
 
           // Property: Detail card should contain skill information
-          const detailTitle = detailCard.find('h3')
-          expect(detailTitle.text()).toBe(skill.name)
+          expect(skillTag.get('span').text()).toBe(skill.name)
 
           // Property: Detail card should show skill level
-          const detailValues = detailCard.findAll('.detail-value')
-          const levelText = detailValues[0].text()
+          const levelText = skillTag.get('strong').text()
           expect(levelText).toContain(skill.level.toString())
 
           // Property: Detail card should show experience
-          const experienceText = detailValues[1].text()
+          const experienceText = detailCard.get('p').text()
           expect(experienceText).toBe(skill.experience)
 
           // Property: Detail card should disappear on mouse leave
           await skillTag.trigger('mouseleave')
           await wrapper.vm.$nextTick()
 
-          detailCard = wrapper.find('.skill-detail-card')
-          expect(detailCard.exists()).toBe(false)
+          detailCard = wrapper.get('.matrix-core')
+          expect(detailCard.get('p').text()).toContain('悬停或点击')
         }),
         { numRuns: 100 }
       )
@@ -505,96 +509,95 @@ describe('Skills Property Tests', () => {
 
     it('should update detail card when hovering over different skills', async () => {
       await fc.assert(
-        fc.asyncProperty(
-          fc.tuple(skillArbitrary, skillArbitrary),
-          async ([skill1, skill2]) => {
-            // Ensure skills have different names
-            const modifiedSkill2 = {
-              ...skill2,
-              name: skill1.name + '_different',
-            }
+        fc.asyncProperty(fc.tuple(skillArbitrary, skillArbitrary), async ([skill1, skill2]) => {
+          // Ensure skills have different names
+          const modifiedSkill2 = {
+            ...skill2,
+            name: skill1.name + '_different',
+          }
 
-            mockProfileData.skills = [skill1, modifiedSkill2]
+          mockProfileData.skills = [skill1, modifiedSkill2]
 
-            const wrapper = mount(Skills)
+          const wrapper = mount(Skills)
 
+          await wrapper.vm.$nextTick()
+
+          const skillTags = wrapper.findAll('.matrix-node')
+
+          // Find the skill tags by name
+          const skill1Tag = skillTags.find(tag => tag.find('span').text() === skill1.name)
+          const skill2Tag = skillTags.find(tag => tag.find('span').text() === modifiedSkill2.name)
+
+          expect(skill1Tag).toBeDefined()
+          expect(skill2Tag).toBeDefined()
+          if (skill1Tag && skill2Tag) {
+            // Hover over first skill
+            await skill1Tag.trigger('mouseenter')
             await wrapper.vm.$nextTick()
 
-            const skillTags = wrapper.findAll('.skill-tag')
+            let detailCard = wrapper.get('.matrix-core')
+            expect(detailCard.exists()).toBe(true)
+            expect(skill1Tag.get('span').text()).toBe(skill1.name)
+            expect(detailCard.get('p').text()).toBe(skill1.experience)
 
-            // Find the skill tags by name
-            const skill1Tag = skillTags.find(
-              (tag) => tag.find('.skill-name').text() === skill1.name
-            )
-            const skill2Tag = skillTags.find(
-              (tag) => tag.find('.skill-name').text() === modifiedSkill2.name
-            )
+            // Hover over second skill without leaving first
+            await skill2Tag.trigger('mouseenter')
+            await wrapper.vm.$nextTick()
 
-            if (skill1Tag && skill2Tag) {
-              // Hover over first skill
-              await skill1Tag.trigger('mouseenter')
-              await wrapper.vm.$nextTick()
-
-              let detailCard = wrapper.find('.skill-detail-card')
-              expect(detailCard.exists()).toBe(true)
-              let detailTitle = detailCard.find('h3')
-              expect(detailTitle.text()).toBe(skill1.name)
-
-              // Hover over second skill without leaving first
-              await skill2Tag.trigger('mouseenter')
-              await wrapper.vm.$nextTick()
-
-              // Property: Detail card should update to show second skill
-              detailCard = wrapper.find('.skill-detail-card')
-              expect(detailCard.exists()).toBe(true)
-              detailTitle = detailCard.find('h3')
-              expect(detailTitle.text()).toBe(modifiedSkill2.name)
-            }
+            // Property: Detail card should update to show second skill
+            detailCard = wrapper.get('.matrix-core')
+            expect(detailCard.exists()).toBe(true)
+            expect(skill2Tag.get('span').text()).toBe(modifiedSkill2.name)
+            expect(detailCard.get('p').text()).toBe(modifiedSkill2.experience)
           }
-        ),
+        }),
         { numRuns: 100 }
       )
     })
 
-    it('should show projects in detail card when skill has projects', async () => {
+    it('选择技能后应显示其全部关联项目', async () => {
       await fc.assert(
         fc.asyncProperty(
-          fc.record({
-            name: fc.stringMatching(/^[a-zA-Z0-9\u4e00-\u9fa5]{3,15}$/),
-            level: fc.integer({ min: 50, max: 100 }),
-            category: fc.constantFrom('frontend', 'backend', 'tools', 'other'),
-            experience: fc.stringMatching(/^[a-zA-Z0-9\u4e00-\u9fa5 ]{10,50}$/),
-            projects: fc.array(fc.stringMatching(/^[a-zA-Z0-9\u4e00-\u9fa5 ]{3,20}$/), {
-              minLength: 1,
-              maxLength: 5,
-            }),
-          }).map((skill) => ({
-            ...skill,
-            name: skill.name.trim() || 'Skill',
-            experience: skill.experience.trim() || 'Experience',
-            projects: skill.projects.map((p) => p.trim()).filter((p) => p.length > 0),
-          })),
-          async (skill) => {
+          fc
+            .record({
+              name: fc.stringMatching(/^[a-zA-Z0-9\u4e00-\u9fa5]{3,15}$/),
+              level: fc.integer({ min: 50, max: 100 }),
+              category: fc.constantFrom('frontend', 'backend', 'tools', 'other'),
+              experience: fc.stringMatching(/^[a-zA-Z0-9\u4e00-\u9fa5 ]{10,50}$/),
+              projects: fc.array(fc.stringMatching(/^[a-zA-Z0-9\u4e00-\u9fa5 ]{3,20}$/), {
+                minLength: 1,
+                maxLength: 5,
+              }),
+            })
+            .map(skill => ({
+              ...skill,
+              name: skill.name.trim() || 'Skill',
+              experience: skill.experience.trim() || 'Experience',
+              projects: skill.projects.map(p => p.trim()).filter(p => p.length > 0),
+            })),
+          async skill => {
             mockProfileData.skills = [skill]
 
             const wrapper = mount(Skills)
 
             await wrapper.vm.$nextTick()
 
-            const skillTag = wrapper.find('.skill-tag')
+            const skillTag = wrapper.find('.matrix-node')
             await skillTag.trigger('mouseenter')
             await wrapper.vm.$nextTick()
 
-            const detailCard = wrapper.find('.skill-detail-card')
+            // 改版后经验在悬停核心区展示，项目通过节点选择展示。
+            await skillTag.trigger('click')
+            const detailCard = wrapper.get('.matrix-projects')
             expect(detailCard.exists()).toBe(true)
 
             // Property: Detail card should show all projects
-            const projectTags = detailCard.findAll('.project-tag')
+            const projectTags = detailCard.findAll('.matrix-projects__list .sci-chip')
             expect(projectTags.length).toBe(skill.projects.length)
 
             // Property: Each project should be displayed correctly
-            const displayedProjects = projectTags.map((tag) => tag.text())
-            skill.projects.forEach((project) => {
+            const displayedProjects = projectTags.map(tag => tag.text())
+            skill.projects.forEach(project => {
               expect(displayedProjects).toContain(project)
             })
           }

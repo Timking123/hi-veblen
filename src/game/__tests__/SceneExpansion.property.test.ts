@@ -14,6 +14,7 @@ import { Enemy } from '../entities/Enemy'
 import { Bullet } from '../entities/Bullet'
 import { Missile } from '../entities/Missile'
 import { Pickup } from '../entities/Pickup'
+import { PoolManager } from '../PoolManager'
 import { GAME_CONFIG, SCENE_CONFIG } from '../constants'
 import { EnemyType, PickupType } from '../types'
 
@@ -62,6 +63,9 @@ describe('场景扩展系统属性测试', () => {
   let gameEngine: GameEngine
 
   beforeEach(() => {
+    vi.useFakeTimers()
+    vi.stubGlobal('innerWidth', 1920)
+    vi.stubGlobal('innerHeight', 1440)
     // 创建测试用 Canvas with mock context
     canvas = createMockCanvas()
     document.body.appendChild(canvas)
@@ -73,6 +77,9 @@ describe('场景扩展系统属性测试', () => {
       gameEngine.stop()
     }
     document.body.removeChild(canvas)
+    vi.clearAllTimers()
+    vi.useRealTimers()
+    vi.unstubAllGlobals()
   })
 
   /**
@@ -119,6 +126,128 @@ describe('场景扩展系统属性测试', () => {
       // 验证与 SCENE_CONFIG 中预计算的值一致
       expect(gameEngine.getCanvasWidth()).toBe(SCENE_CONFIG.CANVAS_WIDTH_V2)
       expect(gameEngine.getCanvasHeight()).toBe(SCENE_CONFIG.CANVAS_HEIGHT_V2)
+    })
+
+    it.each([
+      [400, 800, 360, 270],
+      [800, 400, 480, 360],
+    ])('视口 %ix%i 应保持比例并适配可用空间', (width, height, expectedWidth, expectedHeight) => {
+      vi.stubGlobal('innerWidth', width)
+      vi.stubGlobal('innerHeight', height)
+      gameEngine = new GameEngine(canvas)
+
+      expect(canvas.width).toBe(expectedWidth)
+      expect(canvas.height).toBe(expectedHeight)
+      expect(canvas.width / canvas.height).toBeCloseTo(4 / 3)
+      expect(canvas.width).toBeLessThanOrEqual(width * 0.9)
+      expect(canvas.height).toBeLessThanOrEqual(height * 0.9)
+    })
+  })
+
+  describe('实际画布边界同步', () => {
+    it.each(['入队前缩小', '入队后缩小'] as const)('%s 时所有实体都应该使用实际小屏边界', phase => {
+      if (phase === '入队前缩小') {
+        vi.stubGlobal('innerWidth', 400)
+        vi.stubGlobal('innerHeight', 800)
+      }
+      gameEngine = new GameEngine(canvas)
+      const bullet = new Bullet(100, 50, 2, 20, 'enemy', 0)
+      const missile = new Missile(100, 50, 5, 12, 3, 'player', Math.PI / 2)
+      const pickup = new Pickup(PickupType.REPAIR, 100, 50)
+      const player = new PlayerAircraft(1100, 800)
+      for (const entity of [bullet, missile, pickup, player]) gameEngine.addEntity(entity)
+
+      if (phase === '入队后缩小') {
+        vi.stubGlobal('innerWidth', 400)
+        vi.stubGlobal('innerHeight', 800)
+        gameEngine.resizeCanvas()
+      }
+      expect(canvas.width).toBe(360)
+      expect(canvas.height).toBe(270)
+      expect(player.x).toBe(canvas.width - player.width)
+      expect(player.y).toBe(canvas.height - player.height)
+      player.move(1, 1)
+      expect(player.x).toBe(canvas.width - player.width)
+      expect(player.y).toBe(canvas.height - player.height)
+
+      // 恰好处于原有销毁阈值时仍保留，越过一像素后才销毁。
+      bullet.y = canvas.height + bullet.height
+      bullet.update(0)
+      expect(bullet.isActive).toBe(true)
+      bullet.y++
+      bullet.update(0)
+      expect(bullet.isActive).toBe(false)
+
+      missile.x = canvas.width + missile.width
+      missile.update(0)
+      expect(missile.isActive).toBe(true)
+      missile.x++
+      missile.update(0)
+      expect(missile.isActive).toBe(false)
+
+      pickup.y = canvas.height - pickup.fallSpeed
+      pickup.update(0)
+      expect(pickup.isActive).toBe(true)
+      pickup.update(0)
+      expect(pickup.isActive).toBe(false)
+    })
+
+    it('对象池复用后应该采用新画布边界，且不影响其他实例', () => {
+      vi.stubGlobal('innerWidth', 400)
+      vi.stubGlobal('innerHeight', 800)
+      gameEngine = new GameEngine(canvas)
+      const pool = PoolManager.getInstance()
+      const bullet = pool.acquireBullet(100, 100, 2, 20, 'enemy')
+      const missile = pool.acquireMissile(100, 100, 5, 12, 3, 'enemy')
+      gameEngine.addEntity(bullet)
+      gameEngine.addEntity(missile)
+      gameEngine.removeEntity(bullet)
+      gameEngine.removeEntity(missile)
+      pool.releaseBullet(bullet)
+      pool.releaseMissile(missile)
+
+      vi.stubGlobal('innerWidth', 1920)
+      vi.stubGlobal('innerHeight', 1440)
+      gameEngine.resizeCanvas()
+      const reusedBullet = pool.acquireBullet(100, 500, 2, 20, 'enemy')
+      const reusedMissile = pool.acquireMissile(100, 500, 5, 12, 3, 'enemy')
+      expect(reusedBullet).toBe(bullet)
+      expect(reusedMissile).toBe(missile)
+      gameEngine.addEntity(reusedBullet)
+      gameEngine.addEntity(reusedMissile)
+
+      // 另一个小画布中的同类实体不能改变已入队对象的边界。
+      const otherBullet = new Bullet(100, 500, 2, 20, 'enemy')
+      const otherMissile = new Missile(100, 500, 5, 12, 3, 'enemy')
+      otherBullet.setCanvasBounds(360, 270)
+      otherMissile.setCanvasBounds(360, 270)
+      otherBullet.update(0)
+      otherMissile.update(0)
+      expect(otherBullet.isActive).toBe(false)
+      expect(otherMissile.isActive).toBe(false)
+      reusedBullet.update(0)
+      reusedMissile.update(0)
+      expect(reusedBullet.isActive).toBe(true)
+      expect(reusedMissile.isActive).toBe(true)
+
+      reusedBullet.y = canvas.height + reusedBullet.height + 1
+      reusedMissile.y = canvas.height + reusedMissile.height + 1
+      reusedBullet.update(0)
+      reusedMissile.update(0)
+      expect(reusedBullet.isActive).toBe(false)
+      expect(reusedMissile.isActive).toBe(false)
+      gameEngine.removeEntity(reusedBullet)
+      gameEngine.removeEntity(reusedMissile)
+      pool.releaseBullet(reusedBullet)
+      pool.releaseMissile(reusedMissile)
+    })
+
+    it.each([0, -1, Number.NaN, Number.POSITIVE_INFINITY])('实体应该拒绝无效画布尺寸 %s', invalidSize => {
+      const entities = [new Bullet(), new Missile(), new Pickup(PickupType.REPAIR, 0, 0), new PlayerAircraft(0, 0)]
+      for (const entity of entities) {
+        expect(() => entity.setCanvasBounds(invalidSize, 270)).toThrow(RangeError)
+        expect(() => entity.setCanvasBounds(360, invalidSize)).toThrow(RangeError)
+      }
     })
   })
 

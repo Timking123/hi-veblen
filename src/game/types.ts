@@ -45,6 +45,8 @@ export interface Entity {
   width: number
   height: number
   isActive: boolean
+  // 引擎在入队和画布缩放后同步实际正有限尺寸；未实现的实体保持原行为。
+  setCanvasBounds?(width: number, height: number): void
   
   update(deltaTime: number): void
   render(ctx: CanvasRenderingContext2D): void

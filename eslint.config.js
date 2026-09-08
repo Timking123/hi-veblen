@@ -1,7 +1,9 @@
 /**
  * ESLint 配置文件（扁平配置格式）
- * 简化配置，跳过插件检查
+ * 按源码类型选择解析器，保留现有规则范围。
  */
+import tsParser from '@typescript-eslint/parser'
+import vueParser from 'vue-eslint-parser'
 
 export default [
   {
@@ -10,6 +12,8 @@ export default [
       '**/dist/**',
       '**/.git/**',
       '**/coverage/**',
+      // 属性测试会生成含重复声明等内容的合成代码，不属于项目源码。
+      '.test-temp/**',
       'src/admin/**',
       'src/audit/**',
     ],
@@ -19,13 +23,16 @@ export default [
       "**/*.js",
       "**/*.ts",
       "**/*.tsx",
+      "**/*.cts",
+      "**/*.mts",
       "**/*.vue",
       "**/*.jsx"
     ],
     languageOptions: {
       parserOptions: {
         ecmaVersion: "latest",
-        sourceType: "module"
+        sourceType: "module",
+        ecmaFeatures: { jsx: true },
       },
       globals: {
         window: true,
@@ -46,5 +53,16 @@ export default [
       "no-unused-vars": "off",
       "no-undef": "off",
     },
-  }
+  },
+  {
+    files: ['**/*.{ts,tsx,cts,mts}'],
+    languageOptions: { parser: tsParser },
+  },
+  {
+    files: ['**/*.vue'],
+    languageOptions: {
+      parser: vueParser,
+      parserOptions: { parser: tsParser, extraFileExtensions: ['.vue'] },
+    },
+  },
 ]

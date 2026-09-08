@@ -3,7 +3,7 @@
  * 负责扫描和管理代码中的 TODO 和 FIXME 标记
  */
 
-import * as fs from 'fs-extra'
+import fs from 'fs-extra'
 import { glob } from 'glob'
 import type { TodoItem, TodoType, TodoPriority } from './types'
 

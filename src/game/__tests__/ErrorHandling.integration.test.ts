@@ -1,481 +1,249 @@
 /**
- * 集成测试 33.3: 错误处理测试
- * 
- * 测试内容:
- * - 测试音频加载失败
- * - 测试资源加载超时
- * - 测试渲染错误
- * - 测试内存不足
+ * 通过真实引擎与资源管理器验证异常边界；浏览器能力由合成替身提供。
+ * 运行时错误遵循需求 20.3：记录并停止，等待用户重试，不带错继续生成帧。
  */
-
-import { describe, it, expect, beforeEach, vi, afterEach } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { GameEngine } from '../GameEngine'
-import { AudioSystem } from '../AudioSystem'
-import { ResourceManager } from '../ResourceManager'
+import { SoundEffect } from '../AudioSystem'
+import { ResourceManager, ResourceLoadError, ResourceTimeoutError } from '../ResourceManager'
 import { MemoryManager } from '../MemoryManager'
+import { PoolManager } from '../PoolManager'
 import { PixelArtRenderer } from '../PixelArtRenderer'
-
-// Mock Canvas API
-class MockCanvasRenderingContext2D {
-  canvas = { width: 800, height: 600 }
-  fillStyle = ''
-  strokeStyle = ''
-  lineWidth = 1
-  font = ''
-  textAlign = 'left'
-  textBaseline = 'top'
-  
-  fillRect() {}
-  strokeRect() {}
-  clearRect() {}
-  beginPath() {}
-  closePath() {}
-  moveTo() {}
-  lineTo() {}
-  arc() {}
-  fill() {}
-  stroke() {}
-  fillText() {}
-  strokeText() {}
-  measureText() { return { width: 10 } }
-  save() {}
-  restore() {}
-  translate() {}
-  rotate() {}
-  scale() {}
-  drawImage() {}
-  createLinearGradient() { return { addColorStop: () => {} } }
-  createRadialGradient() { return { addColorStop: () => {} } }
-  getImageData() { return { data: new Uint8ClampedArray(4), width: 1, height: 1 } }
-  putImageData() {}
-}
+import { PERFORMANCE_CONFIG } from '../constants'
+import type { Entity } from '../types'
+import { installGameEnvironment, TestAudio, TestAudioContext, TestImage } from './gameEnvironment'
 
 describe('集成测试 33.3: 错误处理', () => {
   let canvas: HTMLCanvasElement
-  let gameEngine: GameEngine
+  let engine: GameEngine
+  let environment: ReturnType<typeof installGameEnvironment>
+  const memoryDescriptor = Object.getOwnPropertyDescriptor(performance, 'memory')
+  const setMemory = (usedMB: number) => Object.defineProperty(performance, 'memory', {
+    value: { usedJSHeapSize: usedMB * 1024 ** 2, totalJSHeapSize: 100 * 1024 ** 2, jsHeapSizeLimit: 100 * 1024 ** 2 },
+    configurable: true,
+  })
+  const entity = (id: string): Entity => ({
+    id, x: 10, y: 10, width: 10, height: 10, isActive: true,
+    update: vi.fn(), render: vi.fn(), onCollision: vi.fn(),
+  })
 
   beforeEach(() => {
+    vi.useFakeTimers()
+    environment = installGameEnvironment()
+    setMemory(20)
     canvas = document.createElement('canvas')
-    canvas.width = 800
-    canvas.height = 600
-    
-    // Mock getContext
-    vi.spyOn(canvas, 'getContext').mockReturnValue(new MockCanvasRenderingContext2D() as any)
-    
-    gameEngine = new GameEngine(canvas)
+    engine = new GameEngine(canvas)
   })
-
-  afterEach(() => {
+  afterEach(async () => {
+    engine.stop()
+    engine.getAudioSystem().cleanup()
+    await vi.advanceTimersByTimeAsync(500)
+    MemoryManager.getInstance().destroy()
+    ResourceManager.getInstance().destroy()
+    vi.clearAllTimers()
+    vi.useRealTimers()
     vi.restoreAllMocks()
+    vi.unstubAllGlobals()
+    if (memoryDescriptor) Object.defineProperty(performance, 'memory', memoryDescriptor)
+    else Reflect.deleteProperty(performance, 'memory')
   })
 
-  describe('音频加载失败处理', () => {
-    it('应该在音频加载失败时继续游戏（降级模式）', async () => {
-      const audioSystem = new AudioSystem()
-      
-      // Mock 音频加载失败
-      vi.spyOn(audioSystem as any, 'loadAudio').mockRejectedValue(
-        new Error('Failed to load audio')
-      )
-      
-      // 初始化应该不抛出错误
-      await expect(audioSystem.initialize()).resolves.not.toThrow()
-      
-      // 游戏应该能够继续运行（静音模式）
-      expect(audioSystem.isMusicEnabled()).toBeDefined()
-    })
-
-    it('应该在音频上下文创建失败时提供降级方案', async () => {
-      const audioSystem = new AudioSystem()
-      
-      // Mock AudioContext 创建失败
-      const originalAudioContext = (global as any).AudioContext
-      ;(global as any).AudioContext = undefined
-      ;(global as any).webkitAudioContext = undefined
-      
-      await audioSystem.initialize()
-      
-      // 恢复
-      ;(global as any).AudioContext = originalAudioContext
-      
-      // 系统应该能够处理这种情况
-      expect(audioSystem).toBeDefined()
-    })
-
-    it('应该在音频文件不存在时记录错误但不崩溃', async () => {
-      const audioSystem = new AudioSystem()
-      const consoleSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
-      
-      await audioSystem.initialize()
-      
-      // 尝试播放不存在的音效
-      audioSystem.playSoundEffect('non_existent_sound' as any)
-      
-      // 应该记录错误但不崩溃
-      expect(consoleSpy).toHaveBeenCalled()
-      
-      consoleSpy.mockRestore()
-    })
-
-    it('应该在音频解码失败时提供错误信息', async () => {
-      const audioSystem = new AudioSystem()
-      
-      // Mock 音频解码失败
-      vi.spyOn(audioSystem as any, 'decodeAudioData').mockRejectedValue(
-        new Error('Failed to decode audio data')
-      )
-      
-      const consoleSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
-      
-      await audioSystem.initialize()
-      
-      consoleSpy.mockRestore()
-    })
+  it('关键音频加载失败时引擎仍能以降级模式启动', async () => {
+    TestAudio.failLoading = true
+    await expect(engine.initializeAudio()).resolves.toBeUndefined()
+    expect(() => engine.start()).not.toThrow()
+    expect(environment.frames).toHaveBeenCalledTimes(1)
   })
 
-  describe('资源加载超时处理', () => {
-    it('应该在资源加载超时时抛出错误', async () => {
-      const resourceManager = ResourceManager.getInstance()
-      
-      // Mock 超时
-      const loadWithTimeout = async (url: string, timeout: number = 100) => {
-        return new Promise((_, reject) => {
-          setTimeout(() => reject(new Error('Resource loading timeout')), timeout)
-        })
-      }
-      
-      await expect(loadWithTimeout('test.png', 100)).rejects.toThrow('Resource loading timeout')
-    })
-
-    it('应该在资源加载超时后提供降级方案', async () => {
-      const resourceManager = ResourceManager.getInstance()
-      
-      // 尝试加载资源，超时后使用默认资源
-      try {
-        await resourceManager.loadImage('non_existent.png')
-      } catch (error) {
-        // 使用默认资源
-        expect(error).toBeDefined()
-      }
-    })
-
-    it('应该能够取消超时的资源加载', async () => {
-      let cancelled = false
-      
-      const loadWithCancel = () => {
-        return new Promise((resolve, reject) => {
-          const timeout = setTimeout(() => {
-            if (!cancelled) {
-              reject(new Error('Timeout'))
-            }
-          }, 1000)
-          
-          // 模拟取消
-          setTimeout(() => {
-            cancelled = true
-            clearTimeout(timeout)
-            resolve('cancelled')
-          }, 100)
-        })
-      }
-      
-      const result = await loadWithCancel()
-      expect(result).toBe('cancelled')
-    })
-
-    it('应该在多个资源加载失败时继续加载其他资源', async () => {
-      const resourceManager = ResourceManager.getInstance()
-      
-      const urls = ['image1.png', 'image2.png', 'image3.png']
-      const results = await Promise.allSettled(
-        urls.map(url => resourceManager.loadImage(url))
-      )
-      
-      // 即使部分失败，也应该返回所有结果
-      expect(results.length).toBe(urls.length)
-    })
+  it('音频上下文不可用时由引擎捕获并记录初始化失败', async () => {
+    vi.stubGlobal('AudioContext', undefined)
+    vi.stubGlobal('webkitAudioContext', undefined)
+    const log = vi.spyOn(console, 'error').mockImplementation(() => {})
+    await expect(engine.initializeAudio()).resolves.toBeUndefined()
+    expect(log).toHaveBeenCalledWith('[游戏引擎] 音频系统初始化失败:', expect.any(Error))
+    expect(() => engine.start()).not.toThrow()
   })
 
-  describe('渲染错误处理', () => {
-    it('应该在 Canvas 上下文获取失败时抛出错误', () => {
-      const invalidCanvas = {} as HTMLCanvasElement
-      
-      expect(() => {
-        new GameEngine(invalidCanvas)
-      }).toThrow('无法获取 Canvas 2D 上下文')
-    })
-
-    it('应该在渲染过程中捕获错误并继续', () => {
-      const renderer = new PixelArtRenderer()
-      const ctx = canvas.getContext('2d')!
-      
-      // Mock 渲染错误
-      const originalFillRect = ctx.fillRect
-      ctx.fillRect = () => {
-        throw new Error('Render error')
-      }
-      
-      const consoleSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
-      
-      try {
-        renderer.renderPlayerShip(ctx, 100, 100)
-      } catch (error) {
-        expect(error).toBeDefined()
-      }
-      
-      // 恢复
-      ctx.fillRect = originalFillRect
-      consoleSpy.mockRestore()
-    })
-
-    it('应该在像素艺术缓存失败时使用实时渲染', () => {
-      const renderer = new PixelArtRenderer()
-      const ctx = canvas.getContext('2d')!
-      
-      // 清除缓存
-      renderer.clearCache()
-      
-      // 应该能够渲染（即使没有缓存）
-      expect(() => {
-        renderer.renderPlayerShip(ctx, 100, 100)
-      }).not.toThrow()
-    })
-
-    it('应该在渲染大量实体时不崩溃', () => {
-      gameEngine.start()
-      
-      // 添加大量实体
-      for (let i = 0; i < 1000; i++) {
-        const entity = {
-          id: `test-${i}`,
-          x: Math.random() * 800,
-          y: Math.random() * 600,
-          width: 10,
-          height: 10,
-          isActive: true,
-          update: () => {},
-          render: () => {},
-          onCollision: () => {}
-        }
-        gameEngine.addEntity(entity as any)
-      }
-      
-      // 应该能够渲染
-      expect(() => {
-        gameEngine.stop()
-      }).not.toThrow()
-    })
+  it('合法音效对应的文件缺失时记录错误且不产生未处理拒绝', async () => {
+    TestAudio.failLoading = true
+    const log = vi.spyOn(console, 'error').mockImplementation(() => {})
+    engine.getAudioSystem().playSoundEffect(SoundEffect.PLAYER_GUN_FIRE)
+    await vi.advanceTimersByTimeAsync(0)
+    expect(log).toHaveBeenCalledWith(expect.stringContaining('加载音效失败'), expect.any(Error))
   })
 
-  describe('内存不足处理', () => {
-    it('应该在内存使用过高时触发清理', () => {
-      const memoryManager = MemoryManager.getInstance()
-      
-      // Mock 高内存使用
-      const mockMemory = {
-        usedJSHeapSize: 95 * 1024 * 1024, // 95MB
-        totalJSHeapSize: 100 * 1024 * 1024, // 100MB
-        jsHeapSizeLimit: 100 * 1024 * 1024
-      }
-      
-      Object.defineProperty(performance, 'memory', {
-        value: mockMemory,
-        writable: true,
-        configurable: true
-      })
-      
-      const cleanupSpy = vi.fn()
-      memoryManager.registerCleanupCallback(cleanupSpy)
-      
-      // 触发内存检查
-      memoryManager.checkMemory()
-      
-      // 应该触发清理
-      expect(cleanupSpy).toHaveBeenCalled()
-    })
-
-    it('应该在内存不足时清理对象池', () => {
-      const memoryManager = MemoryManager.getInstance()
-      
-      // 注册清理回调
-      let poolCleaned = false
-      memoryManager.registerCleanupCallback(() => {
-        poolCleaned = true
-      })
-      
-      // Mock 内存不足
-      const mockMemory = {
-        usedJSHeapSize: 95 * 1024 * 1024,
-        totalJSHeapSize: 100 * 1024 * 1024,
-        jsHeapSizeLimit: 100 * 1024 * 1024
-      }
-      
-      Object.defineProperty(performance, 'memory', {
-        value: mockMemory,
-        writable: true,
-        configurable: true
-      })
-      
-      memoryManager.checkMemory()
-      
-      expect(poolCleaned).toBe(true)
-    })
-
-    it('应该在内存不足时清理未使用的缓存', () => {
-      const renderer = new PixelArtRenderer()
-      const ctx = canvas.getContext('2d')!
-      
-      // 创建一些缓存
-      renderer.renderPlayerShip(ctx, 100, 100)
-      
-      // 清理缓存
-      renderer.clearCache()
-      
-      // 应该能够继续渲染
-      expect(() => {
-        renderer.renderPlayerShip(ctx, 100, 100)
-      }).not.toThrow()
-    })
-
-    it('应该在内存泄漏时发出警告', () => {
-      const memoryManager = MemoryManager.getInstance()
-      const consoleSpy = vi.spyOn(console, 'warn').mockImplementation(() => {})
-      
-      // Mock 内存持续增长
-      const mockMemory = {
-        usedJSHeapSize: 95 * 1024 * 1024,
-        totalJSHeapSize: 100 * 1024 * 1024,
-        jsHeapSizeLimit: 100 * 1024 * 1024
-      }
-      
-      Object.defineProperty(performance, 'memory', {
-        value: mockMemory,
-        writable: true,
-        configurable: true
-      })
-      
-      memoryManager.checkMemory()
-      
-      expect(consoleSpy).toHaveBeenCalled()
-      
-      consoleSpy.mockRestore()
-    })
-
-    it('应该在内存不足时停止生成新实体', () => {
-      const memoryManager = MemoryManager.getInstance()
-      
-      // Mock 内存不足
-      const mockMemory = {
-        usedJSHeapSize: 98 * 1024 * 1024,
-        totalJSHeapSize: 100 * 1024 * 1024,
-        jsHeapSizeLimit: 100 * 1024 * 1024
-      }
-      
-      Object.defineProperty(performance, 'memory', {
-        value: mockMemory,
-        writable: true,
-        configurable: true
-      })
-      
-      // 检查是否应该停止生成
-      const shouldStop = memoryManager.shouldStopSpawning()
-      
-      expect(shouldStop).toBe(true)
-    })
+  it('媒体解码或加载错误通过真实资源入口返回类型化错误', async () => {
+    TestAudio.failLoading = true
+    await expect(ResourceManager.getInstance().loadAudio('/synthetic-broken.mp3')).rejects.toBeInstanceOf(ResourceLoadError)
   })
 
-  describe('综合错误恢复场景', () => {
-    it('应该在多个系统同时出错时保持游戏运行', async () => {
-      const consoleSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
-      
-      // 音频系统错误
-      const audioSystem = gameEngine.getAudioSystem()
-      vi.spyOn(audioSystem, 'playSoundEffect').mockImplementation(() => {
-        throw new Error('Audio error')
-      })
-      
-      // 渲染错误
-      const ctx = canvas.getContext('2d')!
-      const originalFillRect = ctx.fillRect
-      ctx.fillRect = () => {
-        throw new Error('Render error')
-      }
-      
-      // 游戏应该能够继续运行
-      gameEngine.start()
-      
-      setTimeout(() => {
-        gameEngine.stop()
-        expect(gameEngine).toBeDefined()
-        
-        // 恢复
-        ctx.fillRect = originalFillRect
-        consoleSpy.mockRestore()
-      }, 100)
-    })
+  it('资源在完整截止时间前未就绪时返回超时错误', async () => {
+    TestImage.mode = 'pending'
+    const settled = ResourceManager.getInstance().loadImage('/synthetic-pending.png').catch(error => error)
+    let finished = false
+    void settled.then(() => { finished = true })
+    await vi.advanceTimersByTimeAsync(9999)
+    expect(finished).toBe(false)
+    await vi.advanceTimersByTimeAsync(1)
+    expect(await settled).toBeInstanceOf(ResourceTimeoutError)
+  })
 
-    it('应该在错误后能够重新初始化系统', async () => {
-      const audioSystem = new AudioSystem()
-      
-      // 第一次初始化失败
-      vi.spyOn(audioSystem as any, 'loadAudio').mockRejectedValueOnce(
-        new Error('Failed to load')
-      )
-      
-      await audioSystem.initialize()
-      
-      // 第二次初始化应该成功
-      vi.spyOn(audioSystem as any, 'loadAudio').mockResolvedValueOnce(undefined)
-      
-      await audioSystem.initialize()
-      
-      expect(audioSystem).toBeDefined()
-    })
+  it('超时后清除同一资源的在途状态并允许显式重试', async () => {
+    const manager = ResourceManager.getInstance()
+    TestImage.mode = 'pending'
+    const failed = manager.loadImage('/synthetic-retry.png').catch(error => error)
+    await vi.advanceTimersByTimeAsync(10000)
+    expect(await failed).toBeInstanceOf(ResourceTimeoutError)
+    TestImage.mode = 'load'
+    await expect(manager.loadImage('/synthetic-retry.png')).resolves.toHaveProperty('src', '/synthetic-retry.png')
+  })
 
-    it('应该在错误后清理资源并重新开始', () => {
-      gameEngine.start()
-      
-      // 添加一些实体
-      for (let i = 0; i < 10; i++) {
-        const entity = {
-          id: `test-${i}`,
-          x: 100,
-          y: 100,
-          width: 10,
-          height: 10,
-          isActive: true,
-          update: () => {},
-          render: () => {},
-          onCollision: () => {}
-        }
-        gameEngine.addEntity(entity as any)
-      }
-      
-      // 停止游戏
-      gameEngine.stop()
-      
-      // 清理实体
-      gameEngine.clearEntities()
-      
-      // 应该能够重新开始
-      expect(() => {
-        gameEngine.start()
-        gameEngine.stop()
-      }).not.toThrow()
-    })
+  it('资源加载完成时取消其超时定时器', async () => {
+    const timersBefore = vi.getTimerCount()
+    await ResourceManager.getInstance().loadImage('/synthetic-ready.png')
+    expect(vi.getTimerCount()).toBe(timersBefore)
+    await vi.advanceTimersByTimeAsync(10000)
+    expect(vi.getTimerCount()).toBe(timersBefore)
+  })
 
-    it('应该在严重错误时提供用户友好的错误信息', () => {
-      const consoleSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
-      
-      try {
-        // 模拟严重错误
-        throw new Error('Critical game error')
-      } catch (error) {
-        expect(error).toBeDefined()
-        expect((error as Error).message).toContain('Critical game error')
-      }
-      
-      consoleSpy.mockRestore()
-    })
+  it('多项资源失败后仍能独立加载后续合法资源', async () => {
+    const manager = ResourceManager.getInstance()
+    TestImage.mode = 'error'
+    const results = await Promise.allSettled(['/a.png', '/b.png', '/c.png'].map(url => manager.loadImage(url)))
+    expect(results.map(result => result.status)).toEqual(['rejected', 'rejected', 'rejected'])
+    TestImage.mode = 'load'
+    await expect(manager.loadImage('/ok.png')).resolves.toHaveProperty('src', '/ok.png')
+  })
+
+  it('真实Canvas接口返回空上下文时提供明确错误', () => {
+    vi.spyOn(canvas, 'getContext').mockReturnValue(null)
+    expect(() => new GameEngine(canvas)).toThrow('无法获取 Canvas 2D 上下文')
+  })
+
+  it('渲染异常时恢复画布状态并停止调度下一帧', () => {
+    const context = environment.contexts.get(canvas)!
+    context.fillRect.mockImplementationOnce(() => { throw new Error('合成渲染错误') })
+    const failure = vi.fn()
+    engine.setOnError(failure)
+    expect(() => engine.start()).not.toThrow()
+    expect(context.restore).toHaveBeenCalledTimes(1)
+    expect(environment.frames).not.toHaveBeenCalled()
+    expect(failure).toHaveBeenCalledTimes(1)
+    expect(engine.getMemoryManager().getStats().isMonitoring).toBe(false)
+  })
+
+  it('像素缓存清空后能够由真实渲染器重新构造', () => {
+    const renderer = new PixelArtRenderer()
+    const context = canvas.getContext('2d')!
+    renderer.renderPlayerShip(context, 100, 100)
+    const draw = environment.contexts.get(canvas)!.drawImage
+    const previousSprite = draw.mock.calls.at(-1)?.[0]
+    expect(previousSprite).toBeDefined()
+    renderer.clearCache()
+    renderer.renderPlayerShip(context, 100, 100)
+    expect(draw.mock.calls.at(-1)?.[0]).not.toBe(previousSprite)
+    expect(renderer.getCacheStats().totalSprites).toBeGreaterThan(0)
+  })
+
+  it('大量合法实体通过实际渲染循环且可停止', () => {
+    for (let index = 0; index < 1000; index++) engine.addEntity(entity('synthetic-' + index))
+    expect(() => engine.start()).not.toThrow()
+    expect(engine.getEntities()).toHaveLength(1000)
+    engine.stop()
+    expect(cancelAnimationFrame).toHaveBeenCalled()
+  })
+
+  it('高内存使用触发已注册清理回调', () => {
+    setMemory(95)
+    const cleanup = vi.fn()
+    engine.getMemoryManager().registerCleanupCallback(cleanup)
+    engine.getMemoryManager().startMonitoring()
+    expect(cleanup).toHaveBeenCalledTimes(1)
+  })
+
+  it('严重内存压力收缩真实对象池', () => {
+    setMemory(95)
+    const shrink = vi.spyOn(PoolManager.getInstance(), 'shrink')
+    engine.getMemoryManager().startMonitoring()
+    expect(shrink).toHaveBeenCalled()
+  })
+
+  it('内存压力后的缓存清理不阻止后续绘制', () => {
+    const renderer = new PixelArtRenderer()
+    renderer.renderPlayerShip(canvas.getContext('2d')!, 100, 100)
+    const draw = environment.contexts.get(canvas)!.drawImage
+    const previousSprite = draw.mock.calls.at(-1)?.[0]
+    expect(previousSprite).toBeDefined()
+    engine.getMemoryManager().registerCleanupCallback(() => renderer.clearCache())
+    setMemory(95)
+    engine.getMemoryManager().startMonitoring()
+    expect(() => renderer.renderPlayerShip(canvas.getContext('2d')!, 100, 100)).not.toThrow()
+    expect(draw.mock.calls.at(-1)?.[0]).not.toBe(previousSprite)
+  })
+
+  it('连续十次增长样本达到泄漏判据时发出警告', async () => {
+    const warning = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    engine.getMemoryManager().startMonitoring()
+    for (let index = 1; index <= 9; index++) {
+      setMemory(20 + index * 3)
+      await vi.advanceTimersByTimeAsync(PERFORMANCE_CONFIG.MEMORY_CHECK_INTERVAL)
+    }
+    expect(warning).toHaveBeenCalledWith(expect.stringContaining('可能的内存泄漏'))
+  })
+
+  it('内存超过阈值时报告不可继续分配的压力状态', () => {
+    setMemory(98)
+    expect(engine.getMemoryManager().isMemoryExceeded()).toBe(true)
+    setMemory(20)
+    expect(engine.getMemoryManager().isMemoryExceeded()).toBe(false)
+  })
+
+  it('运行中错误及错误回调自身失败时仍停止游戏', () => {
+    engine.setOnError(() => { throw new Error('合成回调错误') })
+    engine.setOnUpdate(() => { throw new Error('合成更新错误') })
+    expect(() => engine.start()).not.toThrow()
+    expect(environment.frames).not.toHaveBeenCalled()
+    expect(engine.getMemoryManager().getStats().isMonitoring).toBe(false)
+  })
+
+  it('音频初始化失败后可在能力恢复时显式重新初始化', async () => {
+    const audio = engine.getAudioSystem()
+    vi.stubGlobal('AudioContext', undefined)
+    vi.stubGlobal('webkitAudioContext', undefined)
+    await expect(audio.initialize()).rejects.toThrow('AudioContext')
+    vi.stubGlobal('AudioContext', TestAudioContext)
+    await expect(audio.initialize()).resolves.toBeUndefined()
+    expect(audio.getLoadingProgress().loaded).toBeGreaterThan(0)
+  })
+
+  it('故障后显式清理状态并重新开始', () => {
+    engine.setOnError(vi.fn())
+    engine.setOnUpdate(() => { throw new Error('合成失败') })
+    engine.addEntity(entity('discard'))
+    engine.start()
+    engine.clearEntities()
+    engine.setOnUpdate(() => {})
+    engine.start()
+    expect(engine.getEntities()).toHaveLength(0)
+    expect(environment.frames).toHaveBeenCalledTimes(1)
+  })
+
+  it('严重错误以固定用户消息通知外层而不泄漏内部异常正文', () => {
+    const failure = vi.fn()
+    engine.setOnError(failure)
+    engine.setOnUpdate(() => { throw new Error('synthetic-internal-details') })
+    engine.start()
+    expect(failure).toHaveBeenCalledWith('游戏运行时发生错误，请重试或返回网站')
+  })
+
+  it('后续动画帧中的异常同样被捕获，且不再请求下一帧', () => {
+    const failure = vi.fn()
+    engine.setOnError(failure)
+    engine.start()
+    const nextFrame = environment.frames.mock.calls[0]![0]
+    engine.setOnUpdate(() => { throw new Error('合成后续帧错误') })
+    expect(() => nextFrame(16)).not.toThrow()
+    expect(environment.frames).toHaveBeenCalledTimes(1)
+    expect(failure).toHaveBeenCalledTimes(1)
   })
 })

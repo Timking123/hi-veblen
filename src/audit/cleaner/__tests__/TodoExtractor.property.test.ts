@@ -15,12 +15,14 @@ describe('TodoExtractor Property Tests', () => {
 
   beforeEach(async () => {
     // 创建临时测试目录
-    testDir = path.join(process.cwd(), '.test-temp', `test-${Date.now()}`)
-    await fs.ensureDir(testDir)
+    const parentDir = path.resolve(process.cwd(), '.test-temp')
+    await fs.ensureDir(parentDir)
+    testDir = await fs.mkdtemp(path.join(parentDir, 'todo-extractor-property-'))
   })
 
   afterEach(async () => {
     // 清理测试目录
+    expect(path.dirname(path.resolve(testDir))).toBe(path.resolve(process.cwd(), '.test-temp'))
     await fs.remove(testDir)
   })
 
@@ -170,20 +172,16 @@ describe('TodoExtractor Property Tests', () => {
 
           // 应该找到一个待办事项
           expect(todos.length).toBeGreaterThan(0)
-          const todo = todos[0]
+          const todo = todos.find(item => path.normalize(item.file) === testFile && item.line === beforeLines.length + 1)!
+          expect(todo).toBeDefined()
 
           // 删除待办事项
           await extractor.removeTodo(todo)
 
           // 读取文件内容
           const content = await fs.readFile(testFile, 'utf-8')
-          const remainingLines = content.split('\n')
-
-          // 验证待办注释被删除
-          expect(content).not.toContain(todoComment)
-
-          // 验证其他行保持不变
-          expect(remainingLines.length).toBe(allLines.length - 1)
+          // 整体比较保留内容；空文件 split 后是 ['']，不能据此推断还有一行。
+          expect(content).toBe([...beforeLines, ...afterLines].join('\n'))
 
           // 验证前后的行都还在
           for (const line of beforeLines) {
@@ -198,7 +196,10 @@ describe('TodoExtractor Property Tests', () => {
           }
         }
       ),
-      { numRuns: 100 }
+      {
+        numRuns: 101, // 保留原有 100 个随机样本，另加空白内容反例。
+        examples: [[{ beforeLines: [], todoLine: { type: 'TODO', content: '     ' }, afterLines: [] }]]
+      }
     )
   })
 
@@ -249,6 +250,7 @@ describe('TodoExtractor Property Tests', () => {
             content: fc.oneof(
               fc.constant('urgent fix needed'),
               fc.constant('important feature'),
+              fc.constant('important maybe later'),
               fc.constant('maybe later'),
               fc.constant('normal task')
             )
@@ -285,17 +287,27 @@ describe('TodoExtractor Property Tests', () => {
             expect(todo.priority).toBe('high')
           }
 
-          // 包含 maybe/later 的应该是低优先级
+          // 只有未命中高优先级规则的 TODO 才按 maybe/later 降为低优先级。
           const laterTodos = todos.filter(t =>
-            t.content.toLowerCase().includes('maybe') ||
-            t.content.toLowerCase().includes('later')
+            t.type === 'TODO' &&
+            !t.content.toLowerCase().includes('urgent') &&
+            !t.content.toLowerCase().includes('important') &&
+            (t.content.toLowerCase().includes('maybe') ||
+             t.content.toLowerCase().includes('later'))
           )
           for (const todo of laterTodos) {
             expect(todo.priority).toBe('low')
           }
         }
       ),
-      { numRuns: 100 }
+      {
+        numRuns: 101, // 保留原有 100 个随机样本，另加优先级冲突反例。
+        examples: [[[
+          { type: 'FIXME', content: 'maybe later' },
+          { type: 'TODO', content: 'maybe later' },
+          { type: 'TODO', content: 'important maybe later' }
+        ]]]
+      }
     )
   })
 

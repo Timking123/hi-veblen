@@ -12,12 +12,14 @@ describe('TodoExtractor', () => {
   let extractor: TodoExtractor
 
   beforeEach(async () => {
-    testDir = path.join(process.cwd(), '.test-temp', `test-${Date.now()}`)
-    await fs.ensureDir(testDir)
+    const parentDir = path.resolve(process.cwd(), '.test-temp')
+    await fs.ensureDir(parentDir)
+    testDir = await fs.mkdtemp(path.join(parentDir, 'todo-extractor-unit-'))
     extractor = new TodoExtractor(testDir)
   })
 
   afterEach(async () => {
+    expect(path.dirname(path.resolve(testDir))).toBe(path.resolve(process.cwd(), '.test-temp'))
     await fs.remove(testDir)
   })
 

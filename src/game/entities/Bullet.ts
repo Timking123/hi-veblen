@@ -28,8 +28,8 @@ export class Bullet implements Entity {
   private moveInterval: number = 100 // ms
 
   // 缓存缩放后的 Canvas 尺寸
-  private static canvasWidth: number = SCENE_CONFIG.CANVAS_WIDTH_V2
-  private static canvasHeight: number = SCENE_CONFIG.CANVAS_HEIGHT_V2
+  private canvasWidth: number = SCENE_CONFIG.CANVAS_WIDTH_V2
+  private canvasHeight: number = SCENE_CONFIG.CANVAS_HEIGHT_V2
 
   constructor(
     x: number = 0,
@@ -79,6 +79,8 @@ export class Bullet implements Entity {
     this.isActive = true
     this.hasHit = false // 重置击中标志
     this.lastMoveTime = Date.now()
+    this.canvasWidth = SCENE_CONFIG.CANVAS_WIDTH_V2
+    this.canvasHeight = SCENE_CONFIG.CANVAS_HEIGHT_V2
 
     // 根据角度计算速度分量（方向，不是实际速度）
     if (owner === 'player') {
@@ -97,6 +99,15 @@ export class Bullet implements Entity {
    */
   setAudioSystem(audioSystem: AudioSystem): void {
     this.audioSystem = audioSystem
+  }
+
+  /** 同步当前所属画布的边界，避免不同画布和对象池复用互相污染。 */
+  setCanvasBounds(width: number, height: number): void {
+    if (!Number.isFinite(width) || !Number.isFinite(height) || width <= 0 || height <= 0) {
+      throw new RangeError('画布尺寸必须为正有限数')
+    }
+    this.canvasWidth = width
+    this.canvasHeight = height
   }
 
   /**
@@ -120,9 +131,9 @@ export class Bullet implements Entity {
     // 超出屏幕则销毁（使用缩放后的尺寸）
     if (
       this.y < -this.height ||
-      this.y > Bullet.canvasHeight + this.height ||
+      this.y > this.canvasHeight + this.height ||
       this.x < -this.width ||
-      this.x > Bullet.canvasWidth + this.width
+      this.x > this.canvasWidth + this.width
     ) {
       this.destroy()
     }

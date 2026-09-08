@@ -3,7 +3,7 @@
  * 负责扫描和清理调试代码（console.debug）
  */
 
-import * as fs from 'fs-extra'
+import fs from 'fs-extra'
 import * as path from 'path'
 import { glob } from 'glob'
 import type {

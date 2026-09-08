@@ -177,7 +177,7 @@ describe('CommentAnalyzer 属性测试', () => {
   it('属性 32：低覆盖率应该生成建议', () => {
     fc.assert(
       fc.property(
-        fc.float({ min: 0, max: Math.fround(0.29) }), // 低覆盖率
+        fc.float({ min: 0, max: Math.fround(0.29), noNaN: true }), // 有限的低覆盖率
         (coverage) => {
           const fileInfo: FileCommentInfo = {
             path: 'test.ts',

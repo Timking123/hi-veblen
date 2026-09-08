@@ -2,6 +2,14 @@
 
 本目录包含基于 Playwright 的 Vue 3 个人作品集网站集成测试。
 
+## 应用修复的阻断验收入口
+
+先执行 `npm run build`，再执行 `npm run test:e2e:legacy`。该入口使用 `playwright.legacy.config.ts`，同时启动独占的 `127.0.0.1:4178` 生产预览和 `127.0.0.1:4187` 组件开发服务器，不复用已运行服务。Windows 使用系统 Chrome 时可设置 `PLAYWRIGHT_CHROMIUM_CHANNEL=chrome`；CI 使用已安装的 Chromium。
+
+`art-museum-experience.spec.ts` 保留门户和游戏规则入口流程；`legacy-quality.spec.ts` 覆盖桌面/手机尺寸下的简历下载失败重试、连续点击抑制、留言组件失败与重试、键盘或触摸控制、缩放边界，以及绘制错误后新引擎重新响应输入。所有 API 使用合成响应，外部请求被拦截，组件 fixture 不在生产构建入口中。
+
+成功用例保存页面截图，失败时保存截图和 trace，并生成 HTML 报告。并行或重复运行时应给 Playwright 输出目录与 HTML 报告目录指定独立路径。此入口证明本地浏览器和组件行为，不证明真实后端写入、认证或生产部署。默认和 system Chrome 的旧配置排除此独立服务用例；下方原有测试说明属于其他端到端入口。
+
 ## 测试覆盖范围
 
 ### 1. 导航测试 (`navigation.spec.ts`)

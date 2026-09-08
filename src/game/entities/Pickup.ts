@@ -27,7 +27,7 @@ export class Pickup implements Entity {
   private onPickupCallback: ((type: PickupType) => void) | null = null
 
   private static idCounter = 0
-  private static canvasHeight: number = SCENE_CONFIG.CANVAS_HEIGHT_V2
+  private canvasHeight: number = SCENE_CONFIG.CANVAS_HEIGHT_V2
   private static pixelBlockSize: number = PIXEL_BLOCK_CONFIG.SIZE
   private static pickupSize: number = PIXEL_BLOCK_CONFIG.PICKUP * PIXEL_BLOCK_CONFIG.SIZE
 
@@ -48,6 +48,14 @@ export class Pickup implements Entity {
     this.onPickupCallback = callback
   }
 
+  /** 同步当前所属画布的底部边界。 */
+  setCanvasBounds(width: number, height: number): void {
+    if (!Number.isFinite(width) || !Number.isFinite(height) || width <= 0 || height <= 0) {
+      throw new RangeError('画布尺寸必须为正有限数')
+    }
+    this.canvasHeight = height
+  }
+
   /**
    * 更新掉落物状态
    */
@@ -56,7 +64,7 @@ export class Pickup implements Entity {
     this.y += this.fallSpeed
 
     // 超出屏幕底部则销毁（使用缩放后的尺寸）
-    if (this.y > Pickup.canvasHeight) {
+    if (this.y > this.canvasHeight) {
       this.destroy()
     }
   }

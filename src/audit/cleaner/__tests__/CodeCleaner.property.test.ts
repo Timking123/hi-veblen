@@ -15,12 +15,14 @@ describe('CodeCleaner Property Tests', () => {
 
   beforeEach(async () => {
     // 创建临时测试目录
-    testDir = path.join(process.cwd(), '.test-temp', `test-${Date.now()}`)
-    await fs.ensureDir(testDir)
+    const parentDir = path.resolve(process.cwd(), '.test-temp')
+    await fs.ensureDir(parentDir)
+    testDir = await fs.mkdtemp(path.join(parentDir, 'code-cleaner-property-'))
   })
 
   afterEach(async () => {
     // 清理测试目录
+    expect(path.dirname(path.resolve(testDir))).toBe(path.resolve(process.cwd(), '.test-temp'))
     await fs.remove(testDir)
   })
 
@@ -47,27 +49,36 @@ describe('CodeCleaner Property Tests', () => {
           { minLength: 1, maxLength: 5 }
         ),
         async (fileConfigs) => {
+          // 每个属性样本独占目录，避免前一个样本的文件混入扫描。
+          const sampleDir = await fs.mkdtemp(path.join(testDir, 'sample-'))
           // 创建测试文件
           for (const config of fileConfigs) {
-            const filePath = path.join(testDir, config.fileName)
+            const filePath = path.join(sampleDir, config.fileName)
             await fs.writeFile(filePath, config.lines.join('\n'), 'utf-8')
           }
 
-          const cleaner = new CodeCleaner(testDir)
+          const cleaner = new CodeCleaner(sampleDir)
           const locations = await cleaner.scanDebugCode()
 
-          // 计算预期的 console.debug 数量
-          let expectedCount = 0
-          for (const config of fileConfigs) {
-            for (const line of config.lines) {
+          // 同名文件以后一次写入为准；同时核对文件、行列和原始代码。
+          const finalFiles = new Map(fileConfigs.map(config => [config.fileName, config.lines]))
+          const expectedLocations: DebugCodeLocation[] = []
+          for (const [fileName, lines] of finalFiles) {
+            lines.forEach((line, index) => {
               if (line.includes('console.debug')) {
-                expectedCount++
+                expectedLocations.push({
+                  file: path.join(sampleDir, fileName),
+                  line: index + 1,
+                  column: line.indexOf('console.debug'),
+                  code: line.trim()
+                })
               }
-            }
+            })
           }
 
-          // 验证报告包含所有 console.debug
-          expect(locations.length).toBe(expectedCount)
+          expect(locations).toHaveLength(expectedLocations.length)
+          expect(locations.map(location => ({ ...location, file: path.normalize(location.file) })))
+            .toEqual(expect.arrayContaining(expectedLocations))
 
           // 验证每个位置都包含必要信息
           for (const location of locations) {
@@ -78,7 +89,17 @@ describe('CodeCleaner Property Tests', () => {
           }
         }
       ),
-      { numRuns: 100 }
+      {
+        numRuns: 103, // 保留原有 100 个随机样本，另加 3 个固定输入。
+        examples: [
+          [[{ fileName: 'test2.js', lines: ['console.debug("前一样本")'] }]],
+          [[{ fileName: 'test1.ts', lines: ['console.debug("当前样本")'] }]],
+          [[
+            { fileName: 'test1.ts', lines: ['console.debug("将被覆盖")'] },
+            { fileName: 'test1.ts', lines: ['console.log("最后写入")'] }
+          ]]
+        ]
+      }
     )
   })
 

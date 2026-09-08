@@ -54,9 +54,9 @@ export const SHOOTING_CONFIG = {
   PLAYER_GUN_COOLDOWN: 200, // 玩家机炮冷却时间（ms）
   ENEMY_GUN_COOLDOWN: 1000, // 敌人机炮冷却时间（ms）
   BULLET_SPEED: PIXEL_BLOCK_CONFIG.SIZE / 100, // 1 像素块 / 100ms
-  BULLET_MOVE_INTERVAL: 50, // 子弹移动间隔（ms）
+  BULLET_MOVE_INTERVAL: 100, // 子弹移动间隔（ms）
   MISSILE_SPEED: PIXEL_BLOCK_CONFIG.SIZE / 150, // 1 像素块 / 150ms
-  MISSILE_MOVE_INTERVAL: 80 // 导弹移动间隔（ms）
+  MISSILE_MOVE_INTERVAL: 150 // 导弹移动间隔（ms）
 }
 
 // 效果配置

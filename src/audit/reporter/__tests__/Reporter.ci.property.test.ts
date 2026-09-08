@@ -16,8 +16,9 @@ describe('Reporter CI Mode Property Tests', () => {
   let consoleLogSpy: any
 
   beforeEach(async () => {
-    testDir = path.join(process.cwd(), '.test-temp', `test-${Date.now()}`)
-    await fs.ensureDir(testDir)
+    const parentDir = path.resolve(process.cwd(), '.test-temp')
+    await fs.ensureDir(parentDir)
+    testDir = await fs.mkdtemp(path.join(parentDir, 'reporter-ci-property-'))
     reporter = new Reporter()
     
     // 监听 console.log
@@ -25,6 +26,7 @@ describe('Reporter CI Mode Property Tests', () => {
   })
 
   afterEach(async () => {
+    expect(path.dirname(path.resolve(testDir))).toBe(path.resolve(process.cwd(), '.test-temp'))
     await fs.remove(testDir)
     consoleLogSpy.mockRestore()
   })
@@ -52,7 +54,7 @@ describe('Reporter CI Mode Property Tests', () => {
 
   const auditResultArbitrary = fc.record({
     success: fc.boolean(),
-    timestamp: fc.date().map(d => d.toISOString()),
+    timestamp: fc.date({ noInvalidDate: true }).map(d => d.toISOString()),
     environment: fc.constantFrom('development', 'production', 'test'),
     checks: fc.array(checkResultArbitrary, { minLength: 1, maxLength: 5 }),
     summary: fc.record({
@@ -63,6 +65,26 @@ describe('Reporter CI Mode Property Tests', () => {
       infoCount: fc.integer({ min: 0, max: 50 })
     })
   })
+
+  // 固定覆盖摘要与明细不一致、以及无问题的 JUnit 报告。
+  const emptyResult = {
+    success: false,
+    timestamp: '1970-01-01T00:00:00.000Z',
+    environment: 'test',
+    checks: [{ name: 'eslint', passed: false, issues: [], metrics: null }],
+    summary: { totalFiles: 0, totalIssues: 0, errorCount: 0, warningCount: 0, infoCount: 0 }
+  }
+  const inconsistentResult = {
+    ...emptyResult,
+    checks: [2, 3].map(count => ({
+      name: 'eslint', passed: false, metrics: null,
+      issues: Array.from({ length: count }, () => ({
+        file: 'test.ts', line: 1, column: null, severity: 'error' as const,
+        message: '固定错误', rule: null
+      }))
+    })),
+    summary: { ...emptyResult.summary, errorCount: 1 }
+  }
 
   // Feature: code-audit-and-docs-organization, Property 34: CI 模式输出简洁性
   // **验证需求：10.2**
@@ -88,12 +110,14 @@ describe('Reporter CI Mode Property Tests', () => {
           expect(ciOutput).toContain(result.summary.totalIssues.toString())
 
           // CI 输出应该相对简洁（不超过合理的行数）
-          // 基本信息 + 检查结果 + 可能的错误详情
-          const maxExpectedLines = 10 + result.checks.length + result.summary.errorCount * 2
+          // 预算按实际错误明细计算；随机摘要计数不保证与 checks 一致。
+          const actualErrors = result.checks.flatMap(check => check.issues)
+            .filter(issue => issue.severity === 'error').length
+          const maxExpectedLines = 6 + result.checks.length * 2 + actualErrors
           expect(ciLineCount).toBeLessThanOrEqual(maxExpectedLines)
         }
       ),
-      { numRuns: 100 }
+      { numRuns: 102, examples: [[inconsistentResult], [emptyResult]] }
     )
   })
 
@@ -126,16 +150,14 @@ describe('Reporter CI Mode Property Tests', () => {
           expect(xml).toContain('failures=')
           expect(xml).toContain('errors=')
 
-          // 验证 XML 格式正确（没有未闭合的标签）
-          const openTags = (xml.match(/<[^/][^>]*>/g) || []).length
-          const closeTags = (xml.match(/<\/[^>]+>/g) || []).length
-          const selfClosingTags = (xml.match(/<[^>]+\/>/g) || []).length
-          
-          // 开标签数量应该等于闭标签数量 + 自闭合标签数量
-          expect(openTags).toBe(closeTags + selfClosingTags)
+          // 用 XML 解析器验证结构，声明不是元素，标签计数也无法识别错误嵌套。
+          const document = new DOMParser().parseFromString(xml, 'application/xml')
+          expect(document.querySelector('parsererror')).toBeNull()
+          expect(document.documentElement.tagName).toBe('testsuites')
+          expect(document.querySelectorAll('testsuite')).toHaveLength(result.checks.length)
         }
       ),
-      { numRuns: 100 }
+      { numRuns: 101, examples: [[emptyResult]] }
     )
   })
 
@@ -167,7 +189,7 @@ describe('Reporter CI Mode Property Tests', () => {
       fc.asyncProperty(
         fc.record({
           success: fc.boolean(),
-          timestamp: fc.date().map(d => d.toISOString()),
+          timestamp: fc.date({ noInvalidDate: true }).map(d => d.toISOString()),
           environment: fc.constant('test'),
           checks: fc.array(
             fc.record({
@@ -221,6 +243,36 @@ describe('Reporter CI Mode Property Tests', () => {
     )
   })
 
+  it.each(['error', 'warning', 'info'] as const)('JUnit XML 应该保留 %s 的路径和元数据原文', async severity => {
+    const specialText = '<tag>&"quoted"\'value'
+    const result: AuditResult = {
+      ...emptyResult,
+      checks: [{
+        name: specialText,
+        passed: false,
+        issues: [{ file: specialText, line: 1, column: 0, severity, message: specialText, rule: specialText }]
+      }, { name: specialText, passed: true, issues: [] }]
+    }
+    const outputPath = path.join(testDir, 'special-characters.xml')
+    await reporter.generateJUnit(result, outputPath)
+    const document = new DOMParser().parseFromString(await fs.readFile(outputPath, 'utf-8'), 'application/xml')
+
+    expect(document.querySelector('parsererror')).toBeNull()
+    expect(document.querySelector('testsuite')?.getAttribute('name')).toBe(specialText)
+    expect(document.querySelector('testcase')?.getAttribute('name')).toBe(`${specialText}:1`)
+    expect(document.querySelector('testcase')?.getAttribute('classname')).toBe(`audit.${specialText}`)
+    const emptyTestcase = document.querySelectorAll('testsuite')[1].querySelector('testcase')
+    expect(emptyTestcase?.getAttribute('name')).toBe(specialText)
+    expect(emptyTestcase?.getAttribute('classname')).toBe(`audit.${specialText}`)
+    if (severity === 'error') {
+      expect(document.querySelector('failure')?.getAttribute('type')).toBe(specialText)
+      expect(document.querySelector('failure')?.getAttribute('message')).toBe(specialText)
+      expect(document.querySelector('failure')?.textContent).toContain(`Location: ${specialText}:1:0`)
+    } else {
+      expect(document.querySelector('failure')).toBeNull()
+    }
+  })
+
   it('CI 模式应该输出所有检查的状态', async () => {
     await fc.assert(
       fc.asyncProperty(
@@ -252,7 +304,7 @@ describe('Reporter CI Mode Property Tests', () => {
       fc.asyncProperty(
         fc.record({
           success: fc.constant(false),
-          timestamp: fc.date().map(d => d.toISOString()),
+          timestamp: fc.date({ noInvalidDate: true }).map(d => d.toISOString()),
           environment: fc.constant('test'),
           checks: fc.array(
             fc.record({
