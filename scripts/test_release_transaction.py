@@ -486,7 +486,10 @@ class ResourceTests(unittest.TestCase):
                 while index < len(lines) and (not lines[index].strip() or len(lines[index]) - len(lines[index].lstrip()) > indent):
                     block.append(lines[index])
                     index += 1
-                self.assertLessEqual(len(textwrap.dedent("\n".join(block)) + "\n"), 21000, name)
+                body = textwrap.dedent("\n".join(block)) + "\n"
+                self.assertLessEqual(len(body), 21000, name)
+                # 本仓库额外保留编码/表达式处理余量；此值不是对宿主内部计量的推断。
+                self.assertLessEqual(len(body.encode("utf-8")), 18000, name)
 
     def test_real_remote_archive_gate_normal_and_rejection_stop_consumer(self):
         body = self.generated_python()
@@ -743,6 +746,25 @@ class ResourceTreeTests(unittest.TestCase):
         with self.content_mapping():
             transaction._bc_prune_config_backups("/backups", recent[-1], budget=transaction._BCBudget())
         self.assertEqual({path.name for path in (self.root / "backups").iterdir()}, set(recent) | {ties[9], ties[2]})
+
+    def test_retention_latest_current_31_32_and_bad_digest_with_invalid_latest_name(self):
+        names = [self.backup(n) for n in range(1, 32)]
+        with self.content_mapping():
+            transaction._bc_prune_config_backups("/backups", names[-1], budget=transaction._BCBudget())
+            self.assertEqual({path.name for path in (self.root / "backups").iterdir()}, set(names[1:]))
+            self.backup(1)
+            names.append(self.backup(32))
+            transaction._bc_prune_config_backups("/backups", names[-1], budget=transaction._BCBudget())
+            self.assertEqual({path.name for path in (self.root / "backups").iterdir()}, set(names[2:]))
+            self.backup(1)
+            self.backup(2)
+            manifest = self.root / "backups" / names[30] / "SHA256SUMS"
+            content = manifest.read_text(encoding="ascii")
+            manifest.write_text("0" * 64 + content[64:], encoding="ascii")
+            bad = self.directory("backups/run-bad")
+            os.utime(bad, (1000, 1000))
+            transaction._bc_prune_config_backups("/backups", names[-1], budget=transaction._BCBudget())
+            self.assertEqual({path.name for path in (self.root / "backups").iterdir()}, set(names[1:]) | {"run-bad"})
 
     def test_retention_last_candidate_file_replacement_and_inventory_error_zero_deletes(self):
         names = [self.backup(n) for n in range(1, 33)]

@@ -20,7 +20,7 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: Validate production transaction ordering
+      - name: Validate D050 acceptance ordering
         run: |
           python3 - <<'PY'
           from pathlib import Path
@@ -243,6 +243,16 @@ jobs:
           assert "{ status: 410, path: '/api/persona/calibration' }" in acceptance_spec
           assert "expect(consoleErrors.unexpected).toEqual([])" in acceptance_spec
           assert "expected_http_console_error_count" in acceptance_spec
+          print("D050 acceptance ordering OK")
+          PY
+
+      - name: Validate production transaction ordering
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          import re
+
+          workflow = Path(".github/workflows/deploy.yml").read_text(encoding="utf-8")
           deploy_header = workflow[
               workflow.index("  deploy:"):
               workflow.index("    steps:", workflow.index("  deploy:"))
@@ -684,6 +694,26 @@ jobs:
 
       - name: Build portal
         run: npm run build:skip-check
+
+      - name: Validate built portal resource archive
+        shell: bash
+        run: |
+          set -euo pipefail
+          fixture="$(mktemp "$RUNNER_TEMP/myweb-built-archive.XXXXXX.py")"
+          trap 'rm -f -- "$fixture"' EXIT
+          cat > "$fixture" <<'PY'
+          import json
+          import sys
+          sys.path.insert(0, "scripts")
+          import release_transaction as transaction
+          budget = transaction._BCBudget()
+          result = transaction._bc_validate_archive(sys.stdin.buffer, budget=budget)
+          assert result.members > 1 and any(entry.kind == "file" for entry in result.entries)
+          print(json.dumps({"fixture": "built portal dist GNU tar", "compressed_bytes": result.compressed_bytes,
+                            "tar_bytes": result.tar_bytes, "members": result.members, "regular_bytes": result.regular_bytes,
+                            "sha256": result.compressed_sha256, "scan_peak": budget.peak}))
+          PY
+          tar -C dist -czf - . | python3 -I -B "$fixture"
         env:
           VITE_LINGXI_URL: https://lingxi.hi-veblen.com/
 
