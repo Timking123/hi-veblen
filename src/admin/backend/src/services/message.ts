@@ -28,7 +28,9 @@ import {
  * 留言文件存储目录
  * 需求: 4.3.1 - 将留言保存到 file/message/ 文件夹
  */
-const MESSAGE_DIR = path.resolve(__dirname, '../../../file/message')
+const MESSAGE_DIR = process.env.NODE_ENV === 'test' && process.env.TEST_FILE_ROOT
+  ? path.resolve(process.env.TEST_FILE_ROOT, 'message')
+  : path.resolve(__dirname, '../../../file/message')
 
 /**
  * 默认分页大小

@@ -1,3 +1,4 @@
+import { requireValue } from '../../__tests__/helpers'
 /**
  * 文件编码处理器属性测试
  * 验证文件名编码往返一致性
@@ -51,7 +52,7 @@ describe('属性测试：文件名编码往返一致性', () => {
           if (match) {
             const encodedName = match[1]
             // 4. 解码文件名
-            const decodedName = decodeURIComponent(encodedName)
+            const decodedName = decodeURIComponent(requireValue(encodedName))
             
             // 5. 验证解码后与原始文件名一致
             expect(decodedName).toBe(filename)
@@ -87,7 +88,7 @@ describe('属性测试：文件名编码往返一致性', () => {
           const match = contentDisposition.match(/filename\*=UTF-8''([^;]+)/)
           
           if (match) {
-            const decodedName = decodeURIComponent(match[1])
+            const decodedName = decodeURIComponent(requireValue(match[1]))
             expect(decodedName).toBe(filename)
           }
           
@@ -121,7 +122,7 @@ describe('属性测试：文件名编码往返一致性', () => {
           const match = contentDisposition.match(/filename\*=UTF-8''([^;]+)/)
           
           if (match) {
-            const decodedName = decodeURIComponent(match[1])
+            const decodedName = decodeURIComponent(requireValue(match[1]))
             expect(decodedName).toBe(filename)
           }
           
@@ -157,7 +158,7 @@ describe('属性测试：文件名编码往返一致性', () => {
           const match = contentDisposition.match(/filename\*=UTF-8''([^;]+)/)
           
           if (match) {
-            const decodedName = decodeURIComponent(match[1])
+            const decodedName = decodeURIComponent(requireValue(match[1]))
             expect(decodedName).toBe(filename)
           }
           
@@ -194,7 +195,7 @@ describe('属性测试：文件名编码往返一致性', () => {
             const asciiFallback = asciiMatch[1]
             
             // 2. 验证 fallback 只包含 ASCII 字符
-            expect(/^[\x00-\x7F]+$/.test(asciiFallback)).toBe(true)
+            expect(/^[\x00-\x7F]+$/.test(requireValue(asciiFallback))).toBe(true)
             
             // 3. 验证 fallback 包含扩展名
             expect(asciiFallback).toContain(ext)

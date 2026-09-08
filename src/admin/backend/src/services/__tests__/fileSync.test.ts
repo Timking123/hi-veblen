@@ -11,12 +11,10 @@ import { FileSyncService } from '../fileSync'
 import { initDatabase, closeDatabase, getDatabase, saveDatabase } from '../../database/init'
 import path from 'path'
 import fs from 'fs'
-import crypto from 'crypto'
 
 // 测试用的文件目录基础路径
-const TEST_BASE_DIR = path.resolve(__dirname, '../../../test-filesync-unit')
-const TEST_ADMIN_FILE_ROOT = path.join(TEST_BASE_DIR, 'admin-file')
-const TEST_PUBLIC_ROOT = path.join(TEST_BASE_DIR, 'public')
+const TEST_ADMIN_FILE_ROOT = process.env.TEST_FILE_ROOT!
+const TEST_PUBLIC_ROOT = process.env.TEST_PUBLIC_ROOT!
 
 // ========== 测试辅助函数 ==========
 
@@ -35,8 +33,8 @@ function createTestDirectories(): void {
  * 清理测试目录
  */
 function cleanupTestDirectories(): void {
-  if (fs.existsSync(TEST_BASE_DIR)) {
-    fs.rmSync(TEST_BASE_DIR, { recursive: true, force: true })
+  for (const directory of [TEST_ADMIN_FILE_ROOT, TEST_PUBLIC_ROOT]) {
+    if (fs.existsSync(directory)) fs.rmSync(directory, { recursive: true, force: true })
   }
 }
 
@@ -77,96 +75,8 @@ function createResumeVersion(
 }
 
 /**
- * 模拟 FileSyncService 使用测试路径
+ * 使用测试独占路径验证真实 FileSyncService
  */
-function mockFileSyncServicePaths(): void {
-  FileSyncService.prototype.syncActiveResumeToPublic = async function() {
-    try {
-      const db = getDatabase()
-      const result = db.exec(`
-        SELECT version, filename, file_path 
-        FROM resume_versions 
-        WHERE is_active = 1
-      `)
-
-      if (result.length === 0 || !result[0].values || result[0].values.length === 0) {
-        return {
-          success: false,
-          error: '没有激活的简历版本'
-        }
-      }
-
-      const [version, filename, filePath] = result[0].values[0]
-      const sourcePath = path.join(TEST_ADMIN_FILE_ROOT, filePath as string)
-      const targetPath = path.join(TEST_PUBLIC_ROOT, 'resume.pdf')
-      const tempPath = path.join(TEST_PUBLIC_ROOT, `.resume.pdf.tmp.${Date.now()}`)
-
-      if (!fs.existsSync(sourcePath)) {
-        return {
-          success: false,
-          sourcePath,
-          targetPath,
-          error: `源文件不存在: ${sourcePath}`
-        }
-      }
-
-      const publicDir = path.dirname(targetPath)
-      if (!fs.existsSync(publicDir)) {
-        fs.mkdirSync(publicDir, { recursive: true })
-      }
-
-      fs.copyFileSync(sourcePath, tempPath)
-      fs.renameSync(tempPath, targetPath)
-
-      return {
-        success: true,
-        sourcePath,
-        targetPath
-      }
-    } catch (error) {
-      return {
-        success: false,
-        error: error instanceof Error ? error.message : String(error)
-      }
-    }
-  }
-  
-  FileSyncService.prototype.cleanupPublicDirectory = async function() {
-    try {
-      let filesRemoved = 0
-      const publicDir = TEST_PUBLIC_ROOT
-      
-      if (fs.existsSync(publicDir)) {
-        const files = fs.readdirSync(publicDir)
-        
-        for (const file of files) {
-          // 匹配 .*.tmp.* 模式的临时文件
-          if (file.includes('.tmp')) {
-            const filePath = path.join(publicDir, file)
-            try {
-              fs.unlinkSync(filePath)
-              filesRemoved++
-            } catch (error) {
-              // 忽略删除失败
-            }
-          }
-        }
-      }
-
-      return {
-        success: true,
-        filesRemoved
-      }
-    } catch (error) {
-      return {
-        success: false,
-        filesRemoved: 0,
-        error: error instanceof Error ? error.message : String(error)
-      }
-    }
-  }
-}
-
 // ========== 测试套件 ==========
 
 describe('FileSyncService 单元测试', () => {
@@ -176,8 +86,7 @@ describe('FileSyncService 单元测试', () => {
     // 初始化内存数据库
     await initDatabase(':memory:', true)
     
-    // 模拟文件同步服务路径
-    mockFileSyncServicePaths()
+    // 使用 Jest 设置注入的专属路径，执行真实同步实现。
   })
 
   afterAll(() => {
@@ -244,6 +153,14 @@ describe('FileSyncService 单元测试', () => {
       expect(result.filesRemoved).toBe(1)
       expect(fs.existsSync(normalFile)).toBe(true)
       expect(fs.existsSync(tempFile)).toBe(false)
+    })
+
+    it('不能把名称中包含 tmp 的普通文件当作同步临时文件', async () => {
+      const names = ['notes.tmp.txt', '.resume.pdf.tmp.backup', '.resume.pdf.tmp.123.pdf']
+      for (const name of names) fs.writeFileSync(path.join(TEST_PUBLIC_ROOT, name), '保留内容')
+      const result = await fileSyncService.cleanupPublicDirectory()
+      expect(result).toEqual({ success: true, filesRemoved: 0 })
+      for (const name of names) expect(fs.readFileSync(path.join(TEST_PUBLIC_ROOT, name), 'utf8')).toBe('保留内容')
     })
 
     it('没有临时文件时清理应该成功', async () => {

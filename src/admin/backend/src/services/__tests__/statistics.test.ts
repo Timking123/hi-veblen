@@ -17,8 +17,6 @@ import {
   incrementResumeDownloads,
   incrementGameTriggers,
   incrementGameCompletions,
-  getPeriodStartDate,
-  TimePeriod
 } from '../statistics'
 
 describe('统计服务 (Statistics Service)', () => {
@@ -37,37 +35,30 @@ describe('统计服务 (Statistics Service)', () => {
     closeDatabase()
   })
 
-  describe('getPeriodStartDate - 获取时间段起始日期', () => {
-    it('应该返回今天的起始时间', () => {
-      const startDate = getPeriodStartDate('today')
-      const parsed = new Date(startDate)
+  describe('getPVUV - 时间段边界', () => {
+    function assertBoundary(period: 'today' | 'week' | 'month', start: Date): void {
+      const db = getDatabase()
+      db.run('INSERT INTO visits (page, session_id, created_at) VALUES (?, ?, ?)',
+        ['/before', 'before', new Date(start.getTime() - 1).toISOString()])
+      db.run('INSERT INTO visits (page, session_id, created_at) VALUES (?, ?, ?)',
+        ['/boundary', 'boundary', start.toISOString()])
+      expect(getPVUV(period)).toEqual({ pv: 1, uv: 1 })
+    }
+
+    it('应该从今天零点开始统计', () => {
       const now = new Date()
-      
-      expect(parsed.getFullYear()).toBe(now.getFullYear())
-      expect(parsed.getMonth()).toBe(now.getMonth())
-      expect(parsed.getDate()).toBe(now.getDate())
-      expect(parsed.getHours()).toBe(0)
-      expect(parsed.getMinutes()).toBe(0)
-      expect(parsed.getSeconds()).toBe(0)
+      assertBoundary('today', new Date(now.getFullYear(), now.getMonth(), now.getDate()))
     })
 
-    it('应该返回本周一的起始时间', () => {
-      const startDate = getPeriodStartDate('week')
-      const parsed = new Date(startDate)
-      
-      // 周一的 getDay() 应该是 1（除非是周日，那就是上周一）
-      const dayOfWeek = parsed.getDay()
-      expect(dayOfWeek).toBe(1) // 周一
+    it('应该从本周一零点开始统计', () => {
+      const now = new Date()
+      const daysSinceMonday = (now.getDay() + 6) % 7
+      assertBoundary('week', new Date(now.getFullYear(), now.getMonth(), now.getDate() - daysSinceMonday))
     })
 
-    it('应该返回本月 1 日的起始时间', () => {
-      const startDate = getPeriodStartDate('month')
-      const parsed = new Date(startDate)
+    it('应该从本月一日零点开始统计', () => {
       const now = new Date()
-      
-      expect(parsed.getFullYear()).toBe(now.getFullYear())
-      expect(parsed.getMonth()).toBe(now.getMonth())
-      expect(parsed.getDate()).toBe(1)
+      assertBoundary('month', new Date(now.getFullYear(), now.getMonth(), 1))
     })
   })
 
@@ -101,7 +92,7 @@ describe('统计服务 (Statistics Service)', () => {
       expect(stats.uv).toBe(2)
     })
 
-    it('没有 session_id 的记录应该各自计为独立访客', () => {
+    it('没有 session_id 的记录只计入 PV', () => {
       // 插入没有 session_id 的记录
       recordVisit({ page: '/home' })
       recordVisit({ page: '/about' })
@@ -109,7 +100,7 @@ describe('统计服务 (Statistics Service)', () => {
       const stats = getPVUV('today')
       
       expect(stats.pv).toBe(2)
-      expect(stats.uv).toBe(2) // 每条记录视为独立访客
+      expect(stats.uv).toBe(0) // UV 契约仅统计唯一的非空 session_id
     })
 
     it('应该支持不同时间段的统计', () => {
@@ -181,8 +172,8 @@ describe('统计服务 (Statistics Service)', () => {
       expect(stats.triggers).toBe(0)
       expect(stats.completions).toBe(0)
       expect(stats.players).toBe(0)
-      expect(stats.averageScore).toBe(0)
-      expect(stats.highestScore).toBe(0)
+      expect(stats.avgScore).toBe(0)
+      expect(stats.highScore).toBe(0)
     })
 
     it('应该正确统计游戏触发和通关次数', () => {
@@ -211,8 +202,8 @@ describe('统计服务 (Statistics Service)', () => {
       const stats = getGameStats()
       
       expect(stats.players).toBe(3)
-      expect(stats.highestScore).toBe(2000)
-      expect(stats.averageScore).toBe(1500) // (1000 + 2000 + 1500) / 3 = 1500
+      expect(stats.highScore).toBe(2000)
+      expect(stats.avgScore).toBe(1500) // (1000 + 2000 + 1500) / 3 = 1500
     })
   })
 
@@ -221,24 +212,24 @@ describe('统计服务 (Statistics Service)', () => {
       const stats = getOverviewStats()
       
       // 验证数据结构
-      expect(stats).toHaveProperty('today')
-      expect(stats).toHaveProperty('week')
-      expect(stats).toHaveProperty('month')
+      expect(stats).toHaveProperty('visits.today')
+      expect(stats).toHaveProperty('visits.week')
+      expect(stats).toHaveProperty('visits.month')
       expect(stats).toHaveProperty('messages')
-      expect(stats).toHaveProperty('resumeDownloads')
+      expect(stats).toHaveProperty('resume.downloads')
       expect(stats).toHaveProperty('game')
       
       // 验证子结构
-      expect(stats.today).toHaveProperty('pv')
-      expect(stats.today).toHaveProperty('uv')
+      expect(stats.visits.today).toHaveProperty('pv')
+      expect(stats.visits.today).toHaveProperty('uv')
       expect(stats.messages).toHaveProperty('total')
       expect(stats.messages).toHaveProperty('unread')
       expect(stats.messages).toHaveProperty('read')
       expect(stats.game).toHaveProperty('triggers')
       expect(stats.game).toHaveProperty('completions')
       expect(stats.game).toHaveProperty('players')
-      expect(stats.game).toHaveProperty('averageScore')
-      expect(stats.game).toHaveProperty('highestScore')
+      expect(stats.game).toHaveProperty('avgScore')
+      expect(stats.game).toHaveProperty('highScore')
     })
 
     it('应该聚合所有统计数据', () => {
@@ -260,15 +251,15 @@ describe('统计服务 (Statistics Service)', () => {
       
       const stats = getOverviewStats()
       
-      expect(stats.today.pv).toBe(2)
-      expect(stats.today.uv).toBe(2)
+      expect(stats.visits.today.pv).toBe(2)
+      expect(stats.visits.today.uv).toBe(2)
       expect(stats.messages.total).toBe(1)
       expect(stats.messages.unread).toBe(1)
-      expect(stats.resumeDownloads).toBe(10)
+      expect(stats.resume.downloads).toBe(10)
       expect(stats.game.triggers).toBe(50)
       expect(stats.game.completions).toBe(5)
       expect(stats.game.players).toBe(1)
-      expect(stats.game.highestScore).toBe(1000)
+      expect(stats.game.highScore).toBe(1000)
     })
   })
 
@@ -370,13 +361,16 @@ describe('统计服务 (Statistics Service)', () => {
     it('应该正确增加下载次数', () => {
       expect(getResumeDownloads()).toBe(0)
       
-      const count1 = incrementResumeDownloads()
+      incrementResumeDownloads()
+      const count1 = getResumeDownloads()
       expect(count1).toBe(1)
       
-      const count2 = incrementResumeDownloads()
+      incrementResumeDownloads()
+      const count2 = getResumeDownloads()
       expect(count2).toBe(2)
       
-      const count3 = incrementResumeDownloads()
+      incrementResumeDownloads()
+      const count3 = getResumeDownloads()
       expect(count3).toBe(3)
     })
   })
@@ -385,10 +379,12 @@ describe('统计服务 (Statistics Service)', () => {
     it('应该正确增加触发次数', () => {
       expect(getGameStats().triggers).toBe(0)
       
-      const count1 = incrementGameTriggers()
+      incrementGameTriggers()
+      const count1 = getGameStats().triggers
       expect(count1).toBe(1)
       
-      const count2 = incrementGameTriggers()
+      incrementGameTriggers()
+      const count2 = getGameStats().triggers
       expect(count2).toBe(2)
     })
   })
@@ -397,10 +393,12 @@ describe('统计服务 (Statistics Service)', () => {
     it('应该正确增加通关次数', () => {
       expect(getGameStats().completions).toBe(0)
       
-      const count1 = incrementGameCompletions()
+      incrementGameCompletions()
+      const count1 = getGameStats().completions
       expect(count1).toBe(1)
       
-      const count2 = incrementGameCompletions()
+      incrementGameCompletions()
+      const count2 = getGameStats().completions
       expect(count2).toBe(2)
     })
   })

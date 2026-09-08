@@ -11,11 +11,11 @@
 import { describe, it, expect, beforeEach, afterEach } from '@jest/globals'
 import * as fc from 'fast-check'
 import { getDatabase, initDatabase, closeDatabase } from '../database/init'
-import { getPVUV, recordVisit, type VisitData, type TimePeriod } from '../services/statistics'
+import { getPVUV, recordVisit} from '../services/statistics'
 
 describe('统计服务属性测试', () => {
-  beforeEach(() => {
-    initDatabase(':memory:')
+  beforeEach(async () => {
+    await initDatabase(':memory:')
   })
 
   afterEach(() => {
@@ -46,6 +46,7 @@ describe('统计服务属性测试', () => {
             { minLength: 1, maxLength: 100 }
           ),
           (visits) => {
+            getDatabase().run('DELETE FROM visits')
             // 记录所有访问
             for (const visit of visits) {
               recordVisit({
@@ -81,6 +82,7 @@ describe('统计服务属性测试', () => {
             { minLength: 1, maxLength: 100 }
           ),
           (visits) => {
+            getDatabase().run('DELETE FROM visits')
             // 记录所有访问
             for (const visit of visits) {
               recordVisit({
@@ -112,6 +114,7 @@ describe('统计服务属性测试', () => {
           fc.uuid(),
           fc.integer({ min: 2, max: 20 }),
           (sessionId, visitCount) => {
+            getDatabase().run('DELETE FROM visits')
             // 使用相同 session_id 记录多次访问
             for (let i = 0; i < visitCount; i++) {
               recordVisit({
@@ -146,6 +149,7 @@ describe('统计服务属性测试', () => {
             { minLength: 1, maxLength: 50 }
           ),
           (visits) => {
+            getDatabase().run('DELETE FROM visits')
             // 记录访问
             for (const visit of visits) {
               recordVisit({
@@ -183,6 +187,7 @@ describe('统计服务属性测试', () => {
             { minLength: 1, maxLength: 100 }
           ),
           (visits) => {
+            getDatabase().run('DELETE FROM visits')
             // 记录访问
             for (const visit of visits) {
               recordVisit({
@@ -221,6 +226,7 @@ describe('统计服务属性测试', () => {
             { minLength: 5, maxLength: 20 }
           ),
           (visits) => {
+            getDatabase().run('DELETE FROM visits')
             const db = getDatabase()
 
             // 记录今天的访问
@@ -255,10 +261,11 @@ describe('统计服务属性测试', () => {
             const uniqueSessions = new Set(visits.map(v => v.sessionId))
             expect(todayStats.uv).toBe(uniqueSessions.size)
 
-            // 本周统计应该包含今天和昨天的记录
+            // 周一的昨日属于上周，其余日期包含昨日。
             const weekStats = getPVUV('week')
-            expect(weekStats.pv).toBe(visits.length + 2)
-            expect(weekStats.uv).toBe(uniqueSessions.size + 2)
+            const previousDayCount = new Date().getDay() === 1 ? 0 : 2
+            expect(weekStats.pv).toBe(visits.length + previousDayCount)
+            expect(weekStats.uv).toBe(uniqueSessions.size + previousDayCount)
           }
         ),
         { numRuns: 100 }

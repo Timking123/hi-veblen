@@ -13,7 +13,7 @@ import * as fc from 'fast-check'
 import { generateToken, verifyToken } from '../utils/jwt'
 import { initDatabase, resetDatabase, closeDatabase } from '../database/init'
 import { login, findUserByUsername, checkAccountLock, lockConfig } from '../services/auth'
-import { hashPasswordSync } from '../utils/crypto'
+import bcrypt from 'bcryptjs'
 import { getDatabase } from '../database/init'
 
 describe('认证服务属性测试 (Auth Service Property Tests)', () => {
@@ -257,7 +257,8 @@ describe('认证服务属性测试 (Auth Service Property Tests)', () => {
      */
     function createTestUser(username: string, password: string): void {
       const db = getDatabase()
-      const passwordHash = hashPasswordSync(password)
+      // 锁定属性验证真实密码比较；夹具使用低成本盐，生产加密参数由 crypto 单测校验。
+      const passwordHash = bcrypt.hashSync(password, 4)
       db.run(`
         INSERT INTO users (username, password_hash, login_attempts, locked_until)
         VALUES (?, ?, 0, NULL)
@@ -280,6 +281,8 @@ describe('认证服务属性测试 (Auth Service Property Tests)', () => {
 
       await fc.assert(
         fc.asyncProperty(userCredentialsArbitrary, async (creds) => {
+          // 每个属性样本独立，生成器缩减或重复用户名不能污染后续样本。
+          getDatabase().run('DELETE FROM users')
           // 1. 创建测试用户
           createTestUser(creds.username, creds.correctPassword)
 
@@ -336,6 +339,8 @@ describe('认证服务属性测试 (Auth Service Property Tests)', () => {
 
       await fc.assert(
         fc.asyncProperty(userCredentialsArbitrary, async (creds) => {
+          // 每个属性样本独立，生成器缩减或重复用户名不能污染后续样本。
+          getDatabase().run('DELETE FROM users')
           // 创建测试用户
           createTestUser(creds.username, creds.correctPassword)
 
@@ -381,6 +386,7 @@ describe('认证服务属性测试 (Auth Service Property Tests)', () => {
 
       await fc.assert(
         fc.asyncProperty(twoUsersArbitrary, async ([user1, user2]) => {
+          getDatabase().run('DELETE FROM users')
           // 创建两个测试用户
           createTestUser(user1.username, user1.password)
           createTestUser(user2.username, user2.password)
@@ -419,6 +425,8 @@ describe('认证服务属性测试 (Auth Service Property Tests)', () => {
 
       await fc.assert(
         fc.asyncProperty(userCredentialsArbitrary, async (creds) => {
+          // 每个属性样本独立，生成器缩减或重复用户名不能污染后续样本。
+          getDatabase().run('DELETE FROM users')
           // 创建测试用户
           createTestUser(creds.username, creds.correctPassword)
 
@@ -462,6 +470,8 @@ describe('认证服务属性测试 (Auth Service Property Tests)', () => {
 
       await fc.assert(
         fc.asyncProperty(userCredentialsArbitrary, async (creds) => {
+          // 每个属性样本独立，生成器缩减或重复用户名不能污染后续样本。
+          getDatabase().run('DELETE FROM users')
           // 创建测试用户
           createTestUser(creds.username, creds.correctPassword)
 
@@ -502,6 +512,8 @@ describe('认证服务属性测试 (Auth Service Property Tests)', () => {
 
       await fc.assert(
         fc.asyncProperty(userCredentialsArbitrary, async (creds) => {
+          // 每个属性样本独立，生成器缩减或重复用户名不能污染后续样本。
+          getDatabase().run('DELETE FROM users')
           // 创建测试用户
           createTestUser(creds.username, creds.correctPassword)
 
@@ -536,6 +548,8 @@ describe('认证服务属性测试 (Auth Service Property Tests)', () => {
 
       await fc.assert(
         fc.asyncProperty(userCredentialsArbitrary, async (creds) => {
+          // 每个属性样本独立，生成器缩减或重复用户名不能污染后续样本。
+          getDatabase().run('DELETE FROM users')
           // 创建测试用户
           createTestUser(creds.username, creds.correctPassword)
 

@@ -32,6 +32,7 @@ function parseRateLimitHeader(header: string | undefined): {
   
   for (const part of parts) {
     const [key, value] = part.split('=').map(s => s.trim())
+    if (!key || value === undefined) return null
     result[key] = parseInt(value)
   }
   
@@ -334,9 +335,7 @@ describe('Property 4: 限流响应头完整性', () => {
       fc.asyncProperty(configArb, async (config) => {
         const app = createTestApp(config.windowMs, config.max)
         
-        const beforeRequest = Math.floor(Date.now() / 1000)
         const response = await makeRequest(app)
-        const afterRequest = Math.floor(Date.now() / 1000)
         
         const rateLimit = parseRateLimitHeader(response.headers['ratelimit'])
         expect(rateLimit).not.toBeNull()

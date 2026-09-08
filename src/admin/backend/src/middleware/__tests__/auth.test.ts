@@ -42,9 +42,8 @@ function createMockResponse(): Partial<Response> & {
 
 // 模拟 NextFunction
 function createMockNext(): NextFunction & { called: boolean } {
-  const next = jest.fn() as NextFunction & { called: boolean }
-  next.called = false
-  ;(next as jest.Mock).mockImplementation(() => {
+  const next = Object.assign(jest.fn(), { called: false })
+  next.mockImplementation(() => {
     next.called = true
   })
   return next

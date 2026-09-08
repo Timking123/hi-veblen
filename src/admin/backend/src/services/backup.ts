@@ -45,6 +45,7 @@ export class BackupSystem {
   private maxBackups: number = 7
   private intervalMs: number = 24 * 60 * 60 * 1000  // 24小时
   private timer: NodeJS.Timeout | null = null
+  private lastBackupTimestamp = 0
 
   /**
    * 构造函数
@@ -109,17 +110,37 @@ export class BackupSystem {
       // 获取数据库实例
       const db = getDatabase()
 
-      // 生成备份文件名：admin_YYYY-MM-DD_HHmmss.db
-      const now = new Date()
-      const filename = this.generateBackupFilename(now)
-      const backupPath = path.join(this.backupDir, filename)
-
       // 导出数据库数据
       const data = db.export()
       const buffer = Buffer.from(data)
 
-      // 写入备份文件
-      fs.writeFileSync(backupPath, buffer)
+      // 保持原有毫秒文件名格式，同毫秒请求和已有文件均不能覆盖之前的备份。
+      // 新实例也从磁盘已有最大时间继续，避免复用已清理的旧名称被再次误删。
+      const latestFilename = this.listBackups().map(backup => backup.filename).sort().pop()
+      const latestTimestamp = latestFilename ? new Date(
+        Number(latestFilename.slice(6, 10)), Number(latestFilename.slice(11, 13)) - 1,
+        Number(latestFilename.slice(14, 16)), Number(latestFilename.slice(17, 19)),
+        Number(latestFilename.slice(19, 21)), Number(latestFilename.slice(21, 23)),
+        Number(latestFilename.slice(24, 27))
+      ).getTime() : 0
+      let timestamp = Math.max(Date.now(), this.lastBackupTimestamp + 1,
+        Number.isFinite(latestTimestamp) ? latestTimestamp + 1 : 0)
+      let backupPath: string
+      while (true) {
+        backupPath = path.join(this.backupDir, this.generateBackupFilename(new Date(timestamp)))
+        try {
+          fs.writeFileSync(backupPath, buffer, { flag: 'wx' })
+          this.lastBackupTimestamp = timestamp
+          break
+        } catch (error) {
+          // 原生文件系统错误可能来自不同执行上下文，按结构识别错误码。
+          if (typeof error === 'object' && error !== null && 'code' in error && error.code === 'EEXIST') {
+            timestamp++
+          } else {
+            throw error
+          }
+        }
+      }
 
       // 获取文件大小
       const stats = fs.statSync(backupPath)
@@ -206,7 +227,8 @@ export class BackupSystem {
       })
 
       // 按创建时间降序排序（最新的在前）
-      backups.sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime())
+      backups.sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime()
+        || b.filename.localeCompare(a.filename))
 
       return backups
     } catch (error) {

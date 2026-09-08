@@ -6,6 +6,7 @@
  * 需求: 3.7.3 - 提供"发布"功能，将修改同步到前端网站
  */
 
+import { randomUUID } from 'crypto'
 import { getDatabase, saveDatabase } from '../database/init'
 import {
   Profile,
@@ -224,7 +225,7 @@ export function getEducation(id: string): Education | null {
 export function createEducation(education: Omit<Education, 'id'> & { id?: string }): string {
   const db = getDatabase()
   
-  const id = education.id || `edu-${Date.now()}`
+  const id = education.id || `edu-${Date.now()}-${randomUUID()}`
   const honorsJson = JSON.stringify(education.honors || [])
   const coursesJson = JSON.stringify(education.courses || [])
   
@@ -414,7 +415,7 @@ export function getExperience(id: string): Experience | null {
 export function createExperience(experience: Omit<Experience, 'id'> & { id?: string }): string {
   const db = getDatabase()
   
-  const id = experience.id || `exp-${Date.now()}`
+  const id = experience.id || `exp-${Date.now()}-${randomUUID()}`
   const responsibilitiesJson = JSON.stringify(experience.responsibilities || [])
   const achievementsJson = JSON.stringify(experience.achievements || [])
   
@@ -784,7 +785,7 @@ export function getSkillTreeNodeList(): SkillTreeNode[] {
 export function createSkillTreeNode(node: Omit<SkillTreeNode, 'id'> & { id?: string }): string {
   const db = getDatabase()
   
-  const id = node.id || `skill-${Date.now()}`
+  const id = node.id || `skill-${Date.now()}-${randomUUID()}`
   
   db.run(`
     INSERT INTO skill_tree (id, parent_id, name, level, experience, sort_order)
@@ -979,7 +980,7 @@ export function getProject(id: string): Project | null {
 export function createProject(project: Omit<Project, 'id'> & { id?: string }): string {
   const db = getDatabase()
   
-  const id = project.id || `proj-${Date.now()}`
+  const id = project.id || `proj-${Date.now()}-${randomUUID()}`
   const technologiesJson = JSON.stringify(project.technologies || [])
   const highlightsJson = JSON.stringify(project.highlights || [])
   const screenshotsJson = JSON.stringify(project.screenshots || [])

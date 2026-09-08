@@ -1,3 +1,4 @@
+import type { SkillCategory, ProjectCategory } from '../models/content'
 /**
  * 内容管理属性测试
  * 
@@ -21,6 +22,7 @@ import {
   createExperience,
   getExperience,
   createSkill,
+  createSkillTreeNode,
   getSkill,
   getSkillList,
   createProject,
@@ -31,6 +33,28 @@ import {
 } from '../services/content'
 
 describe('内容管理属性测试', () => {
+  it('同一毫秒创建的默认 ID 不冲突且保留调用方指定 ID', async () => {
+    await initDatabase(':memory:', true)
+    const clock = jest.spyOn(Date, 'now').mockReturnValue(1788912000000)
+    try {
+      const factories: Array<(id?: string) => string> = [
+        id => createEducation({ id, school: '测试学校', college: null, major: '测试专业', period: '2020', rank: null, honors: [], courses: [], sort_order: 0 }),
+        id => createExperience({ id, company: '测试公司', position: '测试岗位', period: '2020', responsibilities: [], achievements: [], sort_order: 0 }),
+        id => createProject({ id, name: '测试项目', description: null, period: null, role: null, technologies: [], highlights: [], screenshots: [], demo_url: null, source_url: null, category: 'personal', sort_order: 0 }),
+        id => createSkillTreeNode({ id, name: '测试技能', parent_id: null, level: 1, experience: null, sort_order: 0 })
+      ]
+      for (const create of factories) {
+        const first = create()
+        const second = create()
+        expect(first).not.toBe(second)
+        expect(create('caller-owned-id')).toBe('caller-owned-id')
+      }
+    } finally {
+      clock.mockRestore()
+      closeDatabase(true)
+    }
+  })
+
   /**
    * Property 4: 内容数据往返一致性
    * 
@@ -41,9 +65,9 @@ describe('内容管理属性测试', () => {
    */
   describe('Property 4: 内容数据往返一致性', () => {
     describe('个人信息往返一致性', () => {
-      it('更新个人信息后读取应该得到相同的数据', () => {
-        fc.assert(
-          fc.property(
+      it('更新个人信息后读取应该得到相同的数据', async () => {
+        await fc.assert(
+          fc.asyncProperty(
             fc.record({
               name: fc.string({ minLength: 1, maxLength: 50 }),
               title: fc.string({ minLength: 1, maxLength: 100 }),
@@ -53,8 +77,8 @@ describe('内容管理属性测试', () => {
               summary: fc.option(fc.string({ maxLength: 500 }), { nil: null }),
               job_intentions: fc.array(fc.string({ minLength: 1, maxLength: 50 }), { maxLength: 5 })
             }),
-            (profileData) => {
-              initDatabase(':memory:')
+            async (profileData) => {
+              await initDatabase(':memory:')
               try {
                 const success = updateProfile(profileData)
                 expect(success).toBe(true)
@@ -80,13 +104,13 @@ describe('内容管理属性测试', () => {
         )
       })
 
-      it('部分更新个人信息应该只修改指定字段', () => {
-        fc.assert(
-          fc.property(
+      it('部分更新个人信息应该只修改指定字段', async () => {
+        await fc.assert(
+          fc.asyncProperty(
             fc.string({ minLength: 1, maxLength: 50 }),
             fc.string({ minLength: 1, maxLength: 100 }),
-            (newName, newTitle) => {
-              initDatabase(':memory:')
+            async (newName, newTitle) => {
+              await initDatabase(':memory:')
               try {
                 updateProfile({
                   name: '初始姓名',
@@ -118,9 +142,9 @@ describe('内容管理属性测试', () => {
     })
 
     describe('教育经历往返一致性', () => {
-      it('创建教育经历后读取应该得到相同的数据', () => {
-        fc.assert(
-          fc.property(
+      it('创建教育经历后读取应该得到相同的数据', async () => {
+        await fc.assert(
+          fc.asyncProperty(
             fc.record({
               school: fc.string({ minLength: 1, maxLength: 100 }),
               college: fc.option(fc.string({ minLength: 1, maxLength: 100 }), { nil: null }),
@@ -136,10 +160,10 @@ describe('内容管理属性测试', () => {
                 { maxLength: 20 }
               )
             }),
-            (educationData) => {
-              initDatabase(':memory:')
+            async (educationData) => {
+              await initDatabase(':memory:')
               try {
-                const id = createEducation(educationData)
+                const id = createEducation({ ...educationData, sort_order: 0 })
                 expect(id).toBeTruthy()
 
                 const retrieved = getEducation(id)
@@ -163,9 +187,9 @@ describe('内容管理属性测试', () => {
         )
       })
 
-      it('更新教育经历后读取应该得到更新后的数据', () => {
-        fc.assert(
-          fc.property(
+      it('更新教育经历后读取应该得到更新后的数据', async () => {
+        await fc.assert(
+          fc.asyncProperty(
             fc.record({
               school: fc.string({ minLength: 1, maxLength: 100 }),
               major: fc.string({ minLength: 1, maxLength: 100 }),
@@ -175,10 +199,10 @@ describe('内容管理属性测试', () => {
               school: fc.string({ minLength: 1, maxLength: 100 }),
               major: fc.string({ minLength: 1, maxLength: 100 })
             }),
-            (initialData, updateData) => {
-              initDatabase(':memory:')
+            async (initialData, updateData) => {
+              await initDatabase(':memory:')
               try {
-                const id = createEducation(initialData)
+                const id = createEducation({ ...initialData, college: null, rank: null, honors: [], courses: [], sort_order: 0 })
 
                 const success = updateEducation(id, updateData)
                 expect(success).toBe(true)
@@ -202,9 +226,9 @@ describe('内容管理属性测试', () => {
     })
 
     describe('工作经历往返一致性', () => {
-      it('创建工作经历后读取应该得到相同的数据', () => {
-        fc.assert(
-          fc.property(
+      it('创建工作经历后读取应该得到相同的数据', async () => {
+        await fc.assert(
+          fc.asyncProperty(
             fc.record({
               company: fc.string({ minLength: 1, maxLength: 100 }),
               position: fc.string({ minLength: 1, maxLength: 100 }),
@@ -218,10 +242,10 @@ describe('内容管理属性测试', () => {
                 { maxLength: 10 }
               )
             }),
-            (experienceData) => {
-              initDatabase(':memory:')
+            async (experienceData) => {
+              await initDatabase(':memory:')
               try {
-                const id = createExperience(experienceData)
+                const id = createExperience({ ...experienceData, sort_order: 0 })
                 expect(id).toBeTruthy()
 
                 const retrieved = getExperience(id)
@@ -245,18 +269,18 @@ describe('内容管理属性测试', () => {
     })
 
     describe('技能往返一致性', () => {
-      it('创建技能后读取应该得到相同的数据', () => {
-        fc.assert(
-          fc.property(
+      it('创建技能后读取应该得到相同的数据', async () => {
+        await fc.assert(
+          fc.asyncProperty(
             fc.record({
               name: fc.string({ minLength: 1, maxLength: 50 }),
               level: fc.integer({ min: 0, max: 100 }),
-              category: fc.constantFrom('frontend', 'backend', 'tools', 'other'),
+              category: fc.constantFrom<SkillCategory>('frontend', 'backend', 'tools', 'other'),
               experience: fc.option(fc.string({ minLength: 1, maxLength: 200 }), { nil: null }),
               projects: fc.array(fc.string({ minLength: 1, maxLength: 100 }), { maxLength: 10 })
             }),
-            (skillData) => {
-              initDatabase(':memory:')
+            async (skillData) => {
+              await initDatabase(':memory:')
               try {
                 const id = createSkill(skillData)
                 expect(id).toBeGreaterThan(0)
@@ -280,12 +304,12 @@ describe('内容管理属性测试', () => {
         )
       })
 
-      it('技能等级应该在 0-100 范围内', () => {
-        fc.assert(
-          fc.property(
+      it('技能等级应该在 0-100 范围内', async () => {
+        await fc.assert(
+          fc.asyncProperty(
             fc.integer({ min: 0, max: 100 }),
-            (level) => {
-              initDatabase(':memory:')
+            async (level) => {
+              await initDatabase(':memory:')
               try {
                 const id = createSkill({
                   name: '测试技能',
@@ -313,9 +337,9 @@ describe('内容管理属性测试', () => {
     })
 
     describe('项目往返一致性', () => {
-      it('创建项目后读取应该得到相同的数据', () => {
-        fc.assert(
-          fc.property(
+      it('创建项目后读取应该得到相同的数据', async () => {
+        await fc.assert(
+          fc.asyncProperty(
             fc.record({
               name: fc.string({ minLength: 1, maxLength: 100 }),
               description: fc.option(fc.string({ minLength: 1, maxLength: 500 }), { nil: null }),
@@ -326,12 +350,12 @@ describe('内容管理属性测试', () => {
               screenshots: fc.array(fc.webUrl(), { maxLength: 10 }),
               demo_url: fc.option(fc.webUrl(), { nil: null }),
               source_url: fc.option(fc.webUrl(), { nil: null }),
-              category: fc.constantFrom('work', 'personal', 'opensource')
+              category: fc.constantFrom<ProjectCategory>('work', 'personal', 'opensource')
             }),
-            (projectData) => {
-              initDatabase(':memory:')
+            async (projectData) => {
+              await initDatabase(':memory:')
               try {
-                const id = createProject(projectData)
+                const id = createProject({ ...projectData, sort_order: 0 })
                 expect(id).toBeTruthy()
 
                 const retrieved = getProject(id)
@@ -358,22 +382,23 @@ describe('内容管理属性测试', () => {
         )
       })
 
-      it('按分类筛选项目应该只返回该分类的项目', () => {
-        fc.assert(
-          fc.property(
-            fc.constantFrom('work', 'personal', 'opensource'),
+      it('按分类筛选项目应该只返回该分类的项目', async () => {
+        await fc.assert(
+          fc.asyncProperty(
+            fc.constantFrom<ProjectCategory>('work', 'personal', 'opensource'),
             fc.array(
               fc.record({
                 name: fc.string({ minLength: 1, maxLength: 100 }),
-                category: fc.constantFrom('work', 'personal', 'opensource')
+                category: fc.constantFrom<ProjectCategory>('work', 'personal', 'opensource')
               }),
               { minLength: 5, maxLength: 20 }
             ),
-            (targetCategory, projects) => {
-              initDatabase(':memory:')
+            async (targetCategory, projects) => {
+              await initDatabase(':memory:')
               try {
                 for (const project of projects) {
                   createProject({
+                    description: null, period: null, role: null, demo_url: null, source_url: null, sort_order: 0,
                     name: project.name,
                     category: project.category,
                     technologies: [],
@@ -401,16 +426,16 @@ describe('内容管理属性测试', () => {
     })
 
     describe('校园经历往返一致性', () => {
-      it('创建校园经历后读取应该得到相同的数据', () => {
-        fc.assert(
-          fc.property(
+      it('创建校园经历后读取应该得到相同的数据', async () => {
+        await fc.assert(
+          fc.asyncProperty(
             fc.record({
               organization: fc.string({ minLength: 1, maxLength: 100 }),
               position: fc.string({ minLength: 1, maxLength: 100 }),
               period: fc.string({ minLength: 1, maxLength: 50 })
             }),
-            (campusData) => {
-              initDatabase(':memory:')
+            async (campusData) => {
+              await initDatabase(':memory:')
               try {
                 const id = createCampus(campusData)
                 expect(id).toBeGreaterThan(0)
@@ -434,9 +459,9 @@ describe('内容管理属性测试', () => {
     })
 
     describe('列表操作一致性', () => {
-      it('创建多个教育经历后列表应该包含所有记录', () => {
-        fc.assert(
-          fc.property(
+      it('创建多个教育经历后列表应该包含所有记录', async () => {
+        await fc.assert(
+          fc.asyncProperty(
             fc.array(
               fc.record({
                 school: fc.string({ minLength: 1, maxLength: 100 }),
@@ -445,13 +470,14 @@ describe('内容管理属性测试', () => {
               }),
               { minLength: 1, maxLength: 10 }
             ),
-            (educationList) => {
-              initDatabase(':memory:')
+            async (educationList) => {
+              await initDatabase(':memory:')
               try {
                 const ids: string[] = []
                 for (const education of educationList) {
                   const id = createEducation({
                     ...education,
+                    college: null, rank: null, sort_order: 0,
                     honors: [],
                     courses: []
                   })
@@ -475,19 +501,19 @@ describe('内容管理属性测试', () => {
         )
       })
 
-      it('创建多个技能后列表应该包含所有记录', () => {
-        fc.assert(
-          fc.property(
+      it('创建多个技能后列表应该包含所有记录', async () => {
+        await fc.assert(
+          fc.asyncProperty(
             fc.array(
               fc.record({
                 name: fc.string({ minLength: 1, maxLength: 50 }),
                 level: fc.integer({ min: 0, max: 100 }),
-                category: fc.constantFrom('frontend', 'backend', 'tools', 'other')
+                category: fc.constantFrom<SkillCategory>('frontend', 'backend', 'tools', 'other')
               }),
               { minLength: 1, maxLength: 10 }
             ),
-            (skillList) => {
-              initDatabase(':memory:')
+            async (skillList) => {
+              await initDatabase(':memory:')
               try {
                 const ids: number[] = []
                 for (const skill of skillList) {

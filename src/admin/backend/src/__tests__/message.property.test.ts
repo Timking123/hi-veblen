@@ -13,17 +13,21 @@ import * as fc from 'fast-check'
 import { initDatabase, closeDatabase } from '../database/init'
 import {
   createMessage,
-  getMessage,
   getMessageList,
-  markMessageAsRead,
-  markMessageAsUnread
+  markMessageAsRead
 } from '../services/message'
 import {
   serializeMessageToFile,
   deserializeMessageFromFile,
-  generateMessageFileName,
-  MessageFileContent
+  generateMessageFileName
 } from '../models/message'
+
+// 有效输入遵守当前契约；无效输入的拒绝由服务单元测试单独验证。
+const nicknameArb = fc.string({ minLength: 1, maxLength: 50 }).map(value => value.trim()).filter(value => value.length > 0)
+const contentArb = fc.string({ minLength: 1, maxLength: 500 }).filter(value => value.trim().length > 0)
+const safeNicknameArb = fc.stringOf(fc.constantFrom('a', 'b', '中', '文', '0', '9'), { minLength: 1, maxLength: 50 })
+// 关键词与随机 ASCII 背景字段不相交，确保布尔标记对应真正的匹配样本。
+const keywordArb = fc.stringOf(fc.constantFrom('甲', '乙', '丙', '丁'), { minLength: 2, maxLength: 10 })
 
 describe('留言管理属性测试', () => {
   /**
@@ -38,11 +42,11 @@ describe('留言管理属性测试', () => {
       fc.assert(
         fc.property(
           fc.record({
-            nickname: fc.string({ minLength: 1, maxLength: 50 }),
-            contact: fc.string({ minLength: 1, maxLength: 100 }),
+            nickname: nicknameArb,
+            contact: fc.emailAddress(),
             createdAt: fc.date({ min: new Date('2020-01-01'), max: new Date('2030-12-31') })
               .map(d => d.toISOString().replace('T', ' ').substring(0, 19)),
-            content: fc.string({ minLength: 1, maxLength: 500 })
+            content: contentArb
           }),
           (messageData) => {
             // 序列化
@@ -69,24 +73,25 @@ describe('留言管理属性测试', () => {
       fc.assert(
         fc.property(
           fc.record({
-            nickname: fc.string({ minLength: 1, maxLength: 50 }),
-            contact: fc.string({ minLength: 1, maxLength: 100 }),
+            nickname: nicknameArb,
+            contact: fc.emailAddress(),
             createdAt: fc.date({ min: new Date('2020-01-01'), max: new Date('2030-12-31') })
               .map(d => d.toISOString().replace('T', ' ').substring(0, 19)),
-            content: fc.string({ minLength: 1, maxLength: 500 })
+            content: contentArb
           }),
           (messageData) => {
             const serialized = serializeMessageToFile(messageData)
             
-            // 验证格式：应该是 4 行（称呼、联系方式、时间、内容）
+            // 三个带标签字段、一行内容标记，再接完整正文。
             const lines = serialized.split('\n')
-            expect(lines.length).toBe(4)
+            expect(lines.length).toBe(5)
             
             // 验证每行内容
-            expect(lines[0]).toBe(messageData.nickname)
-            expect(lines[1]).toBe(messageData.contact)
-            expect(lines[2]).toBe(messageData.createdAt)
-            expect(lines[3]).toBe(messageData.content)
+            expect(lines[0]).toBe(`称呼: ${messageData.nickname}`)
+            expect(lines[1]).toBe(`联系方式: ${messageData.contact}`)
+            expect(lines[2]).toBe(`时间: ${messageData.createdAt}`)
+            expect(lines[3]).toBe('内容:')
+            expect(lines[4]).toBe(messageData.content)
           }
         ),
         { numRuns: 100 }
@@ -97,11 +102,11 @@ describe('留言管理属性测试', () => {
       fc.assert(
         fc.property(
           fc.record({
-            nickname: fc.string({ minLength: 1, maxLength: 50 }),
-            contact: fc.string({ minLength: 1, maxLength: 100 }),
+            nickname: nicknameArb,
+            contact: fc.emailAddress(),
             createdAt: fc.date({ min: new Date('2020-01-01'), max: new Date('2030-12-31') })
               .map(d => d.toISOString().replace('T', ' ').substring(0, 19)),
-            content: fc.string({ minLength: 1, maxLength: 500 })
+            content: contentArb
               .map(s => s + '\n包含换行\t制表符\r回车符的内容')
           }),
           (messageData) => {
@@ -132,7 +137,7 @@ describe('留言管理属性测试', () => {
       fc.assert(
         fc.property(
           fc.date({ min: new Date('2020-01-01'), max: new Date('2030-12-31') }),
-          fc.string({ minLength: 1, maxLength: 50 }).filter(s => !s.includes('/')),
+          safeNicknameArb,
           (date, nickname) => {
             const fileName = generateMessageFileName(date, nickname, 0)
             
@@ -153,7 +158,7 @@ describe('留言管理属性测试', () => {
       fc.assert(
         fc.property(
           fc.date({ min: new Date('2020-01-01'), max: new Date('2030-12-31') }),
-          fc.string({ minLength: 1, maxLength: 50 }).filter(s => !s.includes('/')),
+          safeNicknameArb,
           (date, nickname) => {
             const fileName = generateMessageFileName(date, nickname, 1)
             
@@ -174,7 +179,7 @@ describe('留言管理属性测试', () => {
       fc.assert(
         fc.property(
           fc.date({ min: new Date('2020-01-01'), max: new Date('2030-12-31') }),
-          fc.string({ minLength: 1, maxLength: 50 }).filter(s => !s.includes('/')),
+          safeNicknameArb,
           fc.integer({ min: 0, max: 100 }),
           (date, nickname, existingCount) => {
             const fileName = generateMessageFileName(date, nickname, existingCount)
@@ -205,21 +210,21 @@ describe('留言管理属性测试', () => {
    * **Validates: Requirements 4.1.2, 4.1.3, 4.1.4**
    */
   describe('Property 7: 留言筛选结果正确性', () => {
-    it('按状态筛选应该只返回指定状态的留言', () => {
-      fc.assert(
-        fc.property(
+    it('按状态筛选应该只返回指定状态的留言', async () => {
+      await fc.assert(
+        fc.asyncProperty(
           fc.array(
             fc.record({
-              nickname: fc.string({ minLength: 1, maxLength: 50 }),
-              contact: fc.string({ minLength: 1, maxLength: 100 }),
-              content: fc.string({ minLength: 1, maxLength: 500 }),
+              nickname: nicknameArb,
+              contact: fc.emailAddress(),
+              content: contentArb,
               shouldBeRead: fc.boolean()
             }),
             { minLength: 5, maxLength: 20 }
           ),
-          fc.constantFrom('read', 'unread'),
-          (messages, targetStatus) => {
-            initDatabase(':memory:')
+          fc.constantFrom<'read' | 'unread'>('read', 'unread'),
+          async (messages, targetStatus) => {
+            await initDatabase(':memory:')
             try {
               // 创建留言并设置状态
               const ids: number[] = []
@@ -230,6 +235,8 @@ describe('留言管理属性测试', () => {
                   content: msg.content
                 })
                 
+                expect(result.success).toBe(true)
+                expect(result.id).toBeDefined()
                 if (result.success && result.id) {
                   ids.push(result.id)
                   
@@ -263,19 +270,19 @@ describe('留言管理属性测试', () => {
       )
     })
 
-    it('按时间范围筛选应该只返回范围内的留言', () => {
-      fc.assert(
-        fc.property(
+    it('按时间范围筛选应该只返回范围内的留言', async () => {
+      await fc.assert(
+        fc.asyncProperty(
           fc.array(
             fc.record({
-              nickname: fc.string({ minLength: 1, maxLength: 50 }),
-              contact: fc.string({ minLength: 1, maxLength: 100 }),
-              content: fc.string({ minLength: 1, maxLength: 500 })
+              nickname: nicknameArb,
+              contact: fc.emailAddress(),
+              content: contentArb
             }),
             { minLength: 10, maxLength: 20 }
           ),
-          (messages) => {
-            initDatabase(':memory:')
+          async (messages) => {
+            await initDatabase(':memory:')
             try {
               // 创建留言
               for (const msg of messages) {
@@ -312,21 +319,21 @@ describe('留言管理属性测试', () => {
       )
     })
 
-    it('按关键词搜索应该只返回包含关键词的留言', () => {
-      fc.assert(
-        fc.property(
-          fc.string({ minLength: 2, maxLength: 10 }),
+    it('按关键词搜索应该只返回包含关键词的留言', async () => {
+      await fc.assert(
+        fc.asyncProperty(
+          keywordArb,
           fc.array(
             fc.record({
-              nickname: fc.string({ minLength: 1, maxLength: 50 }),
-              contact: fc.string({ minLength: 1, maxLength: 100 }),
-              content: fc.string({ minLength: 1, maxLength: 500 }),
+              nickname: nicknameArb,
+              contact: fc.emailAddress(),
+              content: contentArb,
               shouldContainKeyword: fc.boolean()
             }),
             { minLength: 5, maxLength: 20 }
           ),
-          (keyword, messages) => {
-            initDatabase(':memory:')
+          async (keyword, messages) => {
+            await initDatabase(':memory:')
             try {
               // 创建留言，部分包含关键词
               for (const msg of messages) {
@@ -365,22 +372,22 @@ describe('留言管理属性测试', () => {
       )
     })
 
-    it('组合多个筛选条件应该返回同时满足所有条件的留言', () => {
-      fc.assert(
-        fc.property(
-          fc.string({ minLength: 2, maxLength: 10 }),
+    it('组合多个筛选条件应该返回同时满足所有条件的留言', async () => {
+      await fc.assert(
+        fc.asyncProperty(
+          keywordArb,
           fc.array(
             fc.record({
-              nickname: fc.string({ minLength: 1, maxLength: 50 }),
-              contact: fc.string({ minLength: 1, maxLength: 100 }),
-              content: fc.string({ minLength: 1, maxLength: 500 }),
+              nickname: nicknameArb,
+              contact: fc.emailAddress(),
+              content: contentArb,
               shouldBeRead: fc.boolean(),
               shouldContainKeyword: fc.boolean()
             }),
             { minLength: 10, maxLength: 30 }
           ),
-          (keyword, messages) => {
-            initDatabase(':memory:')
+          async (keyword, messages) => {
+            await initDatabase(':memory:')
             try {
               // 创建留言
               const ids: number[] = []
@@ -395,6 +402,8 @@ describe('留言管理属性测试', () => {
                   content: content
                 })
                 
+                expect(result.success).toBe(true)
+                expect(result.id).toBeDefined()
                 if (result.success && result.id) {
                   ids.push(result.id)
                   
@@ -407,6 +416,7 @@ describe('留言管理属性测试', () => {
               // 组合筛选：已读 + 包含关键词
               const today = new Date().toISOString().split('T')[0]
               const filtered = getMessageList({
+                pageSize: 100,
                 status: 'read',
                 keyword,
                 startDate: today,
@@ -441,19 +451,19 @@ describe('留言管理属性测试', () => {
       )
     })
 
-    it('空筛选条件应该返回所有留言', () => {
-      fc.assert(
-        fc.property(
+    it('空筛选条件应该返回所有留言', async () => {
+      await fc.assert(
+        fc.asyncProperty(
           fc.array(
             fc.record({
-              nickname: fc.string({ minLength: 1, maxLength: 50 }),
-              contact: fc.string({ minLength: 1, maxLength: 100 }),
-              content: fc.string({ minLength: 1, maxLength: 500 })
+              nickname: nicknameArb,
+              contact: fc.emailAddress(),
+              content: contentArb
             }),
             { minLength: 5, maxLength: 20 }
           ),
-          (messages) => {
-            initDatabase(':memory:')
+          async (messages) => {
+            await initDatabase(':memory:')
             try {
               // 创建留言
               for (const msg of messages) {

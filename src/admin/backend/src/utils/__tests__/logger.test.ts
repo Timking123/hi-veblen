@@ -1,3 +1,4 @@
+import { requireValue } from '../../__tests__/helpers'
 /**
  * Logger 工具类单元测试
  * 测试结构化日志系统的基本功能
@@ -10,7 +11,7 @@ import path from 'path'
 import { Logger, createLogger } from '../logger'
 
 // 测试用的日志目录
-const TEST_LOG_DIR = path.resolve(__dirname, '../../../test-logs')
+const TEST_LOG_DIR = path.join(process.env.TEST_SUITE_ROOT!, 'test-logs')
 
 describe('Logger 工具类', () => {
   let originalLogLevel: string | undefined
@@ -73,7 +74,7 @@ describe('Logger 工具类', () => {
       
       expect(console.log).toHaveBeenCalled()
       const output = consoleOutput[consoleOutput.length - 1]
-      const log = JSON.parse(output)
+      const log = JSON.parse(requireValue(output))
       expect(log.level).toBe('DEBUG')
       expect(log.message).toBe('debug message')
     })
@@ -84,7 +85,7 @@ describe('Logger 工具类', () => {
       logger.info('info message')
       
       const output = consoleOutput[consoleOutput.length - 1]
-      const log = JSON.parse(output)
+      const log = JSON.parse(requireValue(output))
       expect(log.level).toBe('INFO')
       expect(log.message).toBe('info message')
     })
@@ -95,7 +96,7 @@ describe('Logger 工具类', () => {
       logger.warn('warn message')
       
       const output = consoleOutput[consoleOutput.length - 1]
-      const log = JSON.parse(output)
+      const log = JSON.parse(requireValue(output))
       expect(log.level).toBe('WARN')
       expect(log.message).toBe('warn message')
     })
@@ -106,7 +107,7 @@ describe('Logger 工具类', () => {
       logger.error('error message')
       
       const output = consoleOutput[consoleOutput.length - 1]
-      const log = JSON.parse(output)
+      const log = JSON.parse(requireValue(output))
       expect(log.level).toBe('ERROR')
       expect(log.message).toBe('error message')
     })
@@ -119,7 +120,7 @@ describe('Logger 工具类', () => {
       logger.info('test message')
       
       const output = consoleOutput[consoleOutput.length - 1]
-      expect(() => JSON.parse(output)).not.toThrow()
+      expect(() => JSON.parse(requireValue(output))).not.toThrow()
     })
 
     it('日志应该包含必需的字段：timestamp、level、module、message', () => {
@@ -128,7 +129,7 @@ describe('Logger 工具类', () => {
       logger.info('test message')
       
       const output = consoleOutput[consoleOutput.length - 1]
-      const log = JSON.parse(output)
+      const log = JSON.parse(requireValue(output))
       
       expect(log).toHaveProperty('timestamp')
       expect(log).toHaveProperty('level')
@@ -144,7 +145,7 @@ describe('Logger 工具类', () => {
       logger.info('test')
       
       const output = consoleOutput[consoleOutput.length - 1]
-      const log = JSON.parse(output)
+      const log = JSON.parse(requireValue(output))
       
       // ISO 8601 格式验证
       expect(log.timestamp).toMatch(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/)
@@ -158,7 +159,7 @@ describe('Logger 工具类', () => {
       logger.info('user action', additionalData)
       
       const output = consoleOutput[consoleOutput.length - 1]
-      const log = JSON.parse(output)
+      const log = JSON.parse(requireValue(output))
       
       expect(log).toHaveProperty('data')
       expect(log.data).toEqual(additionalData)
@@ -254,7 +255,7 @@ describe('Logger 工具类', () => {
       logger.info('test')
       
       const output = consoleOutput[consoleOutput.length - 1]
-      const log = JSON.parse(output)
+      const log = JSON.parse(requireValue(output))
       expect(log.module).toBe(moduleName)
     })
 

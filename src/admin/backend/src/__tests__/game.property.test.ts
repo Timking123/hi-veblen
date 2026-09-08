@@ -1,3 +1,4 @@
+import { requireValue } from './helpers'
 /**
  * 游戏管理属性测试
  * 
@@ -8,7 +9,7 @@
  * 验证需求: 6.4.1-6.4.5, 6.5.2, 6.6.1, 6.6.4
  */
 
-import { describe, it, expect, beforeEach, afterEach } from '@jest/globals'
+import { describe, it, expect } from '@jest/globals'
 import * as fc from 'fast-check'
 import { initDatabase, closeDatabase } from '../database/init'
 import {
@@ -268,12 +269,12 @@ describe('游戏管理属性测试', () => {
    */
   describe('Property 10: 游戏参数配置往返一致性', () => {
     describe('数据库存储往返一致性', () => {
-      it('保存游戏配置后读取应该得到等价的配置', () => {
-        fc.assert(
-          fc.property(
+      it('保存游戏配置后读取应该得到等价的配置', async () => {
+        await fc.assert(
+          fc.asyncProperty(
             gameConfigArb,
-            (config) => {
-              initDatabase(':memory:')
+            async (config) => {
+              await initDatabase(':memory:')
               try {
                 // 保存配置
                 const updateResult = updateGameConfig(config)
@@ -314,12 +315,12 @@ describe('游戏管理属性测试', () => {
         )
       })
 
-      it('多次更新配置后应该保留最新的配置', () => {
-        fc.assert(
-          fc.property(
+      it('多次更新配置后应该保留最新的配置', async () => {
+        await fc.assert(
+          fc.asyncProperty(
             fc.array(gameConfigArb, { minLength: 2, maxLength: 5 }),
-            (configs) => {
-              initDatabase(':memory:')
+            async (configs) => {
+              await initDatabase(':memory:')
               try {
                 // 依次更新配置
                 for (const config of configs) {
@@ -334,9 +335,9 @@ describe('游戏管理属性测试', () => {
                 // 验证是最后一个配置
                 const lastConfig = configs[configs.length - 1]
                 if (retrieved) {
-                  expect(retrieved.config.basic.playerInitialHealth).toBe(lastConfig.basic.playerInitialHealth)
-                  expect(retrieved.config.basic.playerInitialSpeed).toBe(lastConfig.basic.playerInitialSpeed)
-                  expect(retrieved.config.advanced.stages.length).toBe(lastConfig.advanced.stages.length)
+                  expect(retrieved.config.basic.playerInitialHealth).toBe(requireValue(lastConfig).basic.playerInitialHealth)
+                  expect(retrieved.config.basic.playerInitialSpeed).toBe(requireValue(lastConfig).basic.playerInitialSpeed)
+                  expect(retrieved.config.advanced.stages.length).toBe(requireValue(lastConfig).advanced.stages.length)
                 }
               } finally {
                 closeDatabase()
@@ -349,12 +350,12 @@ describe('游戏管理属性测试', () => {
     })
 
     describe('JSON 导出/导入往返一致性', () => {
-      it('导出为 JSON 后再导入应该得到等价的配置', () => {
-        fc.assert(
-          fc.property(
+      it('导出为 JSON 后再导入应该得到等价的配置', async () => {
+        await fc.assert(
+          fc.asyncProperty(
             gameConfigArb,
-            (config) => {
-              initDatabase(':memory:')
+            async (config) => {
+              await initDatabase(':memory:')
               try {
                 // 先保存配置
                 updateGameConfig(config)
@@ -482,13 +483,13 @@ describe('游戏管理属性测试', () => {
     })
 
     describe('基础配置往返一致性', () => {
-      it('只更新基础配置应该保留高级配置', () => {
-        fc.assert(
-          fc.property(
+      it('只更新基础配置应该保留高级配置', async () => {
+        await fc.assert(
+          fc.asyncProperty(
             basicConfigArb,
             basicConfigArb,
-            (initialBasic, newBasic) => {
-              initDatabase(':memory:')
+            async (initialBasic, newBasic) => {
+              await initDatabase(':memory:')
               try {
                 // 获取默认配置
                 const defaultConfig = getDefaultGameConfig()
@@ -530,12 +531,12 @@ describe('游戏管理属性测试', () => {
     })
 
     describe('关卡配置往返一致性', () => {
-      it('关卡配置保存后应该保持顺序和内容', () => {
-        fc.assert(
-          fc.property(
+      it('关卡配置保存后应该保持顺序和内容', async () => {
+        await fc.assert(
+          fc.asyncProperty(
             fc.array(stageConfigArb, { minLength: 1, maxLength: 5 }),
-            (stages) => {
-              initDatabase(':memory:')
+            async (stages) => {
+              await initDatabase(':memory:')
               try {
                 const defaultConfig = getDefaultGameConfig()
                 const config: GameConfig = {
@@ -559,11 +560,11 @@ describe('游戏管理属性测试', () => {
 
                   // 验证每个关卡的内容
                   for (let i = 0; i < stages.length; i++) {
-                    expect(retrieved.config.advanced.stages[i].id).toBe(stages[i].id)
-                    expect(retrieved.config.advanced.stages[i].name).toBe(stages[i].name)
-                    expect(retrieved.config.advanced.stages[i].totalEnemies).toBe(stages[i].totalEnemies)
-                    expect(retrieved.config.advanced.stages[i].spawnRate).toBe(stages[i].spawnRate)
-                    expect(retrieved.config.advanced.stages[i].bossType).toBe(stages[i].bossType)
+                    expect(requireValue(retrieved.config.advanced.stages[i]).id).toBe(requireValue(stages[i]).id)
+                    expect(requireValue(retrieved.config.advanced.stages[i]).name).toBe(requireValue(stages[i]).name)
+                    expect(requireValue(retrieved.config.advanced.stages[i]).totalEnemies).toBe(requireValue(stages[i]).totalEnemies)
+                    expect(requireValue(retrieved.config.advanced.stages[i]).spawnRate).toBe(requireValue(stages[i]).spawnRate)
+                    expect(requireValue(retrieved.config.advanced.stages[i]).bossType).toBe(requireValue(stages[i]).bossType)
                   }
                 }
               } finally {
@@ -577,12 +578,12 @@ describe('游戏管理属性测试', () => {
     })
 
     describe('敌人配置往返一致性', () => {
-      it('敌人类型配置保存后应该保持完整', () => {
-        fc.assert(
-          fc.property(
+      it('敌人类型配置保存后应该保持完整', async () => {
+        await fc.assert(
+          fc.asyncProperty(
             enemiesConfigArb,
-            (enemies) => {
-              initDatabase(':memory:')
+            async (enemies) => {
+              await initDatabase(':memory:')
               try {
                 const defaultConfig = getDefaultGameConfig()
                 const config: GameConfig = {
@@ -627,12 +628,12 @@ describe('游戏管理属性测试', () => {
     })
 
     describe('音频和性能配置往返一致性', () => {
-      it('音频配置保存后应该保持精度', () => {
-        fc.assert(
-          fc.property(
+      it('音频配置保存后应该保持精度', async () => {
+        await fc.assert(
+          fc.asyncProperty(
             audioConfigArb,
-            (audio) => {
-              initDatabase(':memory:')
+            async (audio) => {
+              await initDatabase(':memory:')
               try {
                 const defaultConfig = getDefaultGameConfig()
                 const config: GameConfig = {
@@ -666,12 +667,12 @@ describe('游戏管理属性测试', () => {
         )
       })
 
-      it('性能配置保存后应该保持完整', () => {
-        fc.assert(
-          fc.property(
+      it('性能配置保存后应该保持完整', async () => {
+        await fc.assert(
+          fc.asyncProperty(
             performanceConfigArb,
-            (performance) => {
-              initDatabase(':memory:')
+            async (performance) => {
+              await initDatabase(':memory:')
               try {
                 const defaultConfig = getDefaultGameConfig()
                 const config: GameConfig = {
@@ -715,12 +716,12 @@ describe('游戏管理属性测试', () => {
    */
   describe('Property 11: 游戏配置恢复默认值正确性', () => {
     describe('恢复默认值后配置等于预定义默认配置', () => {
-      it('任意修改的游戏配置恢复默认值后应该等于 DEFAULT_GAME_CONFIG', () => {
-        fc.assert(
-          fc.property(
+      it('任意修改的游戏配置恢复默认值后应该等于 DEFAULT_GAME_CONFIG', async () => {
+        await fc.assert(
+          fc.asyncProperty(
             gameConfigArb,
-            (modifiedConfig) => {
-              initDatabase(':memory:')
+            async (modifiedConfig) => {
+              await initDatabase(':memory:')
               try {
                 // 获取预定义的默认配置
                 const defaultConfig = getDefaultGameConfig()
@@ -804,12 +805,12 @@ describe('游戏管理属性测试', () => {
         )
       })
 
-      it('多次修改后恢复默认值应该始终等于 DEFAULT_GAME_CONFIG', () => {
-        fc.assert(
-          fc.property(
+      it('多次修改后恢复默认值应该始终等于 DEFAULT_GAME_CONFIG', async () => {
+        await fc.assert(
+          fc.asyncProperty(
             fc.array(gameConfigArb, { minLength: 1, maxLength: 5 }),
-            (configSequence) => {
-              initDatabase(':memory:')
+            async (configSequence) => {
+              await initDatabase(':memory:')
               try {
                 const defaultConfig = getDefaultGameConfig()
 
@@ -850,13 +851,13 @@ describe('游戏管理属性测试', () => {
     })
 
     describe('恢复默认值操作的幂等性', () => {
-      it('连续多次恢复默认值应该得到相同的结果', () => {
-        fc.assert(
-          fc.property(
+      it('连续多次恢复默认值应该得到相同的结果', async () => {
+        await fc.assert(
+          fc.asyncProperty(
             gameConfigArb,
             fc.integer({ min: 2, max: 5 }),
-            (modifiedConfig, resetCount) => {
-              initDatabase(':memory:')
+            async (modifiedConfig, resetCount) => {
+              await initDatabase(':memory:')
               try {
                 const defaultConfig = getDefaultGameConfig()
 
@@ -891,14 +892,14 @@ describe('游戏管理属性测试', () => {
     })
 
     describe('恢复默认值不影响其他游戏设置', () => {
-      it('恢复默认值应该保留 enabled 和 debug_mode 设置', () => {
-        fc.assert(
-          fc.property(
+      it('恢复默认值应该保留 enabled 和 debug_mode 设置', async () => {
+        await fc.assert(
+          fc.asyncProperty(
             gameConfigArb,
             fc.boolean(),
             fc.boolean(),
-            (modifiedConfig, enabled, debugMode) => {
-              initDatabase(':memory:')
+            async (modifiedConfig, enabled, debugMode) => {
+              await initDatabase(':memory:')
               try {
                 // 先保存修改后的配置
                 updateGameConfig(modifiedConfig)
@@ -935,12 +936,12 @@ describe('游戏管理属性测试', () => {
     })
 
     describe('恢复默认值后的配置完整性', () => {
-      it('恢复默认值后所有敌人类型配置应该等于默认值', () => {
-        fc.assert(
-          fc.property(
+      it('恢复默认值后所有敌人类型配置应该等于默认值', async () => {
+        await fc.assert(
+          fc.asyncProperty(
             gameConfigArb,
-            (modifiedConfig) => {
-              initDatabase(':memory:')
+            async (modifiedConfig) => {
+              await initDatabase(':memory:')
               try {
                 const defaultConfig = getDefaultGameConfig()
 
@@ -975,12 +976,12 @@ describe('游戏管理属性测试', () => {
         )
       })
 
-      it('恢复默认值后所有关卡配置应该等于默认值', () => {
-        fc.assert(
-          fc.property(
+      it('恢复默认值后所有关卡配置应该等于默认值', async () => {
+        await fc.assert(
+          fc.asyncProperty(
             gameConfigArb,
-            (modifiedConfig) => {
-              initDatabase(':memory:')
+            async (modifiedConfig) => {
+              await initDatabase(':memory:')
               try {
                 const defaultConfig = getDefaultGameConfig()
 
@@ -1003,13 +1004,13 @@ describe('游戏管理属性测试', () => {
                     const defaultStage = defaultConfig.advanced.stages[i]
                     const resetStage = afterReset.config.advanced.stages[i]
 
-                    expect(resetStage.id).toBe(defaultStage.id)
-                    expect(resetStage.name).toBe(defaultStage.name)
-                    expect(resetStage.background).toBe(defaultStage.background)
-                    expect(resetStage.totalEnemies).toBe(defaultStage.totalEnemies)
-                    expect(resetStage.spawnRate).toBe(defaultStage.spawnRate)
-                    expect(resetStage.bossType).toBe(defaultStage.bossType)
-                    expect(resetStage.enemyTypes).toEqual(defaultStage.enemyTypes)
+                    expect(requireValue(resetStage).id).toBe(requireValue(defaultStage).id)
+                    expect(requireValue(resetStage).name).toBe(requireValue(defaultStage).name)
+                    expect(requireValue(resetStage).background).toBe(requireValue(defaultStage).background)
+                    expect(requireValue(resetStage).totalEnemies).toBe(requireValue(defaultStage).totalEnemies)
+                    expect(requireValue(resetStage).spawnRate).toBe(requireValue(defaultStage).spawnRate)
+                    expect(requireValue(resetStage).bossType).toBe(requireValue(defaultStage).bossType)
+                    expect(requireValue(resetStage).enemyTypes).toEqual(requireValue(defaultStage).enemyTypes)
                   }
                 }
               } finally {
@@ -1080,12 +1081,12 @@ describe('游戏管理属性测试', () => {
     })
 
     describe('排行榜按分数降序排列', () => {
-      it('任意排行榜数据集合返回的排行榜应该按分数降序排列', () => {
-        fc.assert(
-          fc.property(
+      it('任意排行榜数据集合返回的排行榜应该按分数降序排列', async () => {
+        await fc.assert(
+          fc.asyncProperty(
             fc.array(leaderboardEntryDataArb, { minLength: 1, maxLength: 50 }),
-            (entries) => {
-              initDatabase(':memory:')
+            async (entries) => {
+              await initDatabase(':memory:')
               try {
                 // 添加所有排行榜条目
                 for (const entry of entries) {
@@ -1106,8 +1107,8 @@ describe('游戏管理属性测试', () => {
 
                 // 验证排行榜按分数降序排列
                 for (let i = 1; i < leaderboard.length; i++) {
-                  const prevScore = leaderboard[i - 1].score
-                  const currScore = leaderboard[i].score
+                  const prevScore = requireValue(leaderboard[i - 1]).score
+                  const currScore = requireValue(leaderboard[i]).score
                   expect(prevScore).toBeGreaterThanOrEqual(currScore)
                 }
               } finally {
@@ -1119,13 +1120,13 @@ describe('游戏管理属性测试', () => {
         )
       })
 
-      it('相同分数的条目应该按创建时间升序排列（先创建的排在前面）', () => {
-        fc.assert(
-          fc.property(
+      it('相同分数的条目应该按创建时间升序排列（先创建的排在前面）', async () => {
+        await fc.assert(
+          fc.asyncProperty(
             fc.integer({ min: 0, max: 100000 }),
             fc.array(playerNameArb, { minLength: 2, maxLength: 10 }),
-            (score, playerNames) => {
-              initDatabase(':memory:')
+            async (score, playerNames) => {
+              await initDatabase(':memory:')
               try {
                 // 添加多个相同分数的条目
                 const addedIds: number[] = []
@@ -1147,8 +1148,8 @@ describe('游戏管理属性测试', () => {
 
                 // 验证按 ID 升序排列（ID 越小表示创建时间越早）
                 for (let i = 1; i < leaderboard.length; i++) {
-                  const prevId = leaderboard[i - 1].id
-                  const currId = leaderboard[i].id
+                  const prevId = requireValue(leaderboard[i - 1]).id
+                  const currId = requireValue(leaderboard[i]).id
                   expect(prevId).toBeLessThan(currId)
                 }
               } finally {
@@ -1160,8 +1161,8 @@ describe('游戏管理属性测试', () => {
         )
       })
 
-      it('空排行榜应该返回空数组', () => {
-        initDatabase(':memory:')
+      it('空排行榜应该返回空数组', async () => {
+        await initDatabase(':memory:')
         try {
           const leaderboard = getLeaderboard()
           expect(leaderboard).toEqual([])
@@ -1170,13 +1171,13 @@ describe('游戏管理属性测试', () => {
         }
       })
 
-      it('limit 参数应该正确限制返回的条目数量', () => {
-        fc.assert(
-          fc.property(
+      it('limit 参数应该正确限制返回的条目数量', async () => {
+        await fc.assert(
+          fc.asyncProperty(
             fc.array(leaderboardEntryDataArb, { minLength: 5, maxLength: 30 }),
             fc.integer({ min: 1, max: 20 }),
-            (entries, limit) => {
-              initDatabase(':memory:')
+            async (entries, limit) => {
+              await initDatabase(':memory:')
               try {
                 // 添加所有排行榜条目
                 for (const entry of entries) {
@@ -1199,7 +1200,7 @@ describe('游戏管理属性测试', () => {
 
                 // 验证排行榜仍然按分数降序排列
                 for (let i = 1; i < leaderboard.length; i++) {
-                  expect(leaderboard[i - 1].score).toBeGreaterThanOrEqual(leaderboard[i].score)
+                  expect(requireValue(leaderboard[i - 1]).score).toBeGreaterThanOrEqual(requireValue(leaderboard[i]).score)
                 }
               } finally {
                 closeDatabase()
@@ -1210,13 +1211,13 @@ describe('游戏管理属性测试', () => {
         )
       })
 
-      it('返回的排行榜应该包含分数最高的条目', () => {
-        fc.assert(
-          fc.property(
+      it('返回的排行榜应该包含分数最高的条目', async () => {
+        await fc.assert(
+          fc.asyncProperty(
             fc.array(leaderboardEntryDataArb, { minLength: 2, maxLength: 30 }),
             fc.integer({ min: 1, max: 10 }),
-            (entries, limit) => {
-              initDatabase(':memory:')
+            async (entries, limit) => {
+              await initDatabase(':memory:')
               try {
                 // 添加所有排行榜条目
                 for (const entry of entries) {
@@ -1236,7 +1237,7 @@ describe('游戏管理属性测试', () => {
                   const maxScore = Math.max(...entries.map(e => e.score))
 
                   // 验证排行榜第一名的分数等于最高分
-                  expect(leaderboard[0].score).toBe(maxScore)
+                  expect(requireValue(leaderboard[0]).score).toBe(maxScore)
                 }
               } finally {
                 closeDatabase()
@@ -1249,13 +1250,13 @@ describe('游戏管理属性测试', () => {
     })
 
     describe('排行榜重置后排序正确性', () => {
-      it('重置排行榜后添加新数据应该仍然按分数降序排列', () => {
-        fc.assert(
-          fc.property(
+      it('重置排行榜后添加新数据应该仍然按分数降序排列', async () => {
+        await fc.assert(
+          fc.asyncProperty(
             fc.array(leaderboardEntryDataArb, { minLength: 1, maxLength: 20 }),
             fc.array(leaderboardEntryDataArb, { minLength: 1, maxLength: 20 }),
-            (firstBatch, secondBatch) => {
-              initDatabase(':memory:')
+            async (firstBatch, secondBatch) => {
+              await initDatabase(':memory:')
               try {
                 // 添加第一批数据
                 for (const entry of firstBatch) {
@@ -1291,7 +1292,7 @@ describe('游戏管理属性测试', () => {
 
                 // 验证排行榜按分数降序排列
                 for (let i = 1; i < leaderboard.length; i++) {
-                  expect(leaderboard[i - 1].score).toBeGreaterThanOrEqual(leaderboard[i].score)
+                  expect(requireValue(leaderboard[i - 1]).score).toBeGreaterThanOrEqual(requireValue(leaderboard[i]).score)
                 }
               } finally {
                 closeDatabase()
@@ -1304,12 +1305,12 @@ describe('游戏管理属性测试', () => {
     })
 
     describe('排行榜数据完整性', () => {
-      it('排行榜条目应该包含所有必要字段', () => {
-        fc.assert(
-          fc.property(
+      it('排行榜条目应该包含所有必要字段', async () => {
+        await fc.assert(
+          fc.asyncProperty(
             leaderboardEntryDataArb,
-            (entry) => {
-              initDatabase(':memory:')
+            async (entry) => {
+              await initDatabase(':memory:')
               try {
                 // 添加排行榜条目
                 const result = addLeaderboardEntry(
@@ -1327,14 +1328,14 @@ describe('游戏管理属性测试', () => {
                 const retrieved = leaderboard[0]
 
                 // 验证必要字段存在
-                expect(retrieved.id).toBeDefined()
-                expect(typeof retrieved.id).toBe('number')
-                expect(retrieved.player_name).toBe(entry.playerName.trim())
-                expect(retrieved.score).toBe(entry.score)
-                expect(retrieved.stage).toBe(entry.stage ?? null)
-                expect(retrieved.play_time).toBe(entry.playTime ?? null)
-                expect(retrieved.created_at).toBeDefined()
-                expect(typeof retrieved.created_at).toBe('string')
+                expect(requireValue(retrieved).id).toBeDefined()
+                expect(typeof requireValue(retrieved).id).toBe('number')
+                expect(requireValue(retrieved).player_name).toBe(entry.playerName.trim())
+                expect(requireValue(retrieved).score).toBe(entry.score)
+                expect(requireValue(retrieved).stage).toBe(entry.stage ?? null)
+                expect(requireValue(retrieved).play_time).toBe(entry.playTime ?? null)
+                expect(requireValue(retrieved).created_at).toBeDefined()
+                expect(typeof requireValue(retrieved).created_at).toBe('string')
               } finally {
                 closeDatabase()
               }

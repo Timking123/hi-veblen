@@ -1,3 +1,4 @@
+import { requireValue } from '../../__tests__/helpers'
 /**
  * SEO 服务单元测试
  * 
@@ -11,7 +12,6 @@ import {
   getPageMeta,
   getPageMetaByPage,
   updatePageMeta,
-  updateAllPageMeta,
   getSchemas,
   updateSchemas,
   getSitemapConfig,
@@ -29,14 +29,8 @@ import {
   importSEOConfig
 } from '../seo'
 import {
-  PageMeta,
   PageMetaInput,
-  SchemaConfig,
   SitemapConfig,
-  DEFAULT_PAGE_META,
-  DEFAULT_SCHEMA_CONFIG,
-  DEFAULT_SITEMAP_CONFIG,
-  DEFAULT_ROBOTS_TXT,
   ROBOTS_TEMPLATES,
   generateSitemapXml,
   validatePageMetaInput,
@@ -416,7 +410,7 @@ describe('Sitemap 管理', () => {
       const config = {
         baseUrl: 'https://example.com',
         pages: [{ url: '/', priority: 0.5, changefreq: 'invalid' }]
-      } as SitemapConfig
+      } as unknown as SitemapConfig
 
       const result = updateSitemapConfig(config)
 
@@ -522,7 +516,7 @@ Allow: /`
      */
     it('应该成功应用模板', () => {
       const template = ROBOTS_TEMPLATES[0] // 允许所有
-      const result = applyRobotsTemplate(template.content, 'https://example.com/sitemap.xml')
+      const result = applyRobotsTemplate(requireValue(template).content, 'https://example.com/sitemap.xml')
 
       expect(result.success).toBe(true)
       expect(result.content).toContain('https://example.com/sitemap.xml')

@@ -1,3 +1,4 @@
+import { requireValue } from './helpers'
 /**
  * 文件管理属性测试
  * 
@@ -21,6 +22,9 @@ import {
   MAX_RESUME_VERSIONS
 } from '../services/file'
 
+// 普通文件名不含目录分隔符或 Windows 盘符分隔符；类型属性只生成此输入域。
+const isPlainBasename = (value: string): boolean => !/[\\/:]/.test(value)
+
 describe('文件管理属性测试', () => {
   /**
    * Property 8: 文件类型验证正确性
@@ -38,7 +42,7 @@ describe('文件管理属性测试', () => {
         fc.assert(
           fc.property(
             fc.string({ minLength: 1, maxLength: 50 })
-              .filter(s => !s.includes('/') && !s.includes('\\'))
+              .filter(isPlainBasename)
               .map(s => `${s}.pdf`),
             (filename) => {
               const result = isPdfFile(filename)
@@ -53,7 +57,7 @@ describe('文件管理属性测试', () => {
         fc.assert(
           fc.property(
             fc.string({ minLength: 1, maxLength: 50 })
-              .filter(s => !s.includes('/') && !s.includes('\\')),
+              .filter(isPlainBasename),
             fc.constantFrom('.doc', '.docx', '.txt', '.jpg', '.png', '.mp3', '.ogg', '.zip'),
             (basename, ext) => {
               const filename = `${basename}${ext}`
@@ -69,7 +73,7 @@ describe('文件管理属性测试', () => {
         fc.assert(
           fc.property(
             fc.string({ minLength: 1, maxLength: 50 })
-              .filter(s => !s.includes('/') && !s.includes('\\'))
+              .filter(isPlainBasename)
               .map(s => `${s}.pdf`),
             fc.uint8Array({ minLength: 10, maxLength: 100 }),
             (filename, randomBytes) => {
@@ -89,7 +93,7 @@ describe('文件管理属性测试', () => {
         fc.assert(
           fc.property(
             fc.string({ minLength: 1, maxLength: 50 })
-              .filter(s => !s.includes('/') && !s.includes('\\'))
+              .filter(isPlainBasename)
               .map(s => `${s}.pdf`),
             fc.uint8Array({ minLength: 10, maxLength: 100 }),
             (filename, randomBytes) => {
@@ -119,7 +123,7 @@ describe('文件管理属性测试', () => {
         fc.assert(
           fc.property(
             fc.string({ minLength: 1, maxLength: 50 })
-              .filter(s => !s.includes('/') && !s.includes('\\')),
+              .filter(isPlainBasename),
             fc.constantFrom('.jpg', '.jpeg', '.png', '.webp'),
             (basename, ext) => {
               const filename = `${basename}${ext}`
@@ -135,7 +139,7 @@ describe('文件管理属性测试', () => {
         fc.assert(
           fc.property(
             fc.string({ minLength: 1, maxLength: 50 })
-              .filter(s => !s.includes('/') && !s.includes('\\')),
+              .filter(isPlainBasename),
             fc.constantFrom('.pdf', '.doc', '.txt', '.mp3', '.ogg', '.zip', '.exe'),
             (basename, ext) => {
               const filename = `${basename}${ext}`
@@ -151,7 +155,7 @@ describe('文件管理属性测试', () => {
         fc.assert(
           fc.property(
             fc.string({ minLength: 1, maxLength: 50 })
-              .filter(s => !s.includes('/') && !s.includes('\\'))
+              .filter(isPlainBasename)
               .map(s => `${s}.jpg`),
             fc.uint8Array({ minLength: 10, maxLength: 100 }),
             (filename, randomBytes) => {
@@ -171,7 +175,7 @@ describe('文件管理属性测试', () => {
         fc.assert(
           fc.property(
             fc.string({ minLength: 1, maxLength: 50 })
-              .filter(s => !s.includes('/') && !s.includes('\\'))
+              .filter(isPlainBasename)
               .map(s => `${s}.png`),
             fc.uint8Array({ minLength: 10, maxLength: 100 }),
             (filename, randomBytes) => {
@@ -191,7 +195,7 @@ describe('文件管理属性测试', () => {
         fc.assert(
           fc.property(
             fc.string({ minLength: 1, maxLength: 50 })
-              .filter(s => !s.includes('/') && !s.includes('\\'))
+              .filter(isPlainBasename)
               .map(s => `${s}.webp`),
             fc.uint8Array({ minLength: 10, maxLength: 100 }),
             (filename, randomBytes) => {
@@ -218,7 +222,7 @@ describe('文件管理属性测试', () => {
         fc.assert(
           fc.property(
             fc.string({ minLength: 1, maxLength: 50 })
-              .filter(s => !s.includes('/') && !s.includes('\\')),
+              .filter(isPlainBasename),
             fc.constantFrom('.jpg', '.png', '.webp'),
             fc.uint8Array({ minLength: 10, maxLength: 100 }),
             (basename, ext, randomBytes) => {
@@ -263,7 +267,7 @@ describe('文件管理属性测试', () => {
         fc.assert(
           fc.property(
             fc.string({ minLength: 1, maxLength: 50 })
-              .filter(s => !s.includes('/') && !s.includes('\\')),
+              .filter(isPlainBasename),
             fc.constantFrom('.mp3', '.ogg'),
             (basename, ext) => {
               const filename = `${basename}${ext}`
@@ -279,7 +283,7 @@ describe('文件管理属性测试', () => {
         fc.assert(
           fc.property(
             fc.string({ minLength: 1, maxLength: 50 })
-              .filter(s => !s.includes('/') && !s.includes('\\')),
+              .filter(isPlainBasename),
             fc.constantFrom('.pdf', '.doc', '.txt', '.jpg', '.png', '.wav', '.m4a', '.zip'),
             (basename, ext) => {
               const filename = `${basename}${ext}`
@@ -295,7 +299,7 @@ describe('文件管理属性测试', () => {
         fc.assert(
           fc.property(
             fc.string({ minLength: 1, maxLength: 50 })
-              .filter(s => !s.includes('/') && !s.includes('\\'))
+              .filter(isPlainBasename)
               .map(s => `${s}.mp3`),
             fc.uint8Array({ minLength: 10, maxLength: 100 }),
             (filename, randomBytes) => {
@@ -315,7 +319,7 @@ describe('文件管理属性测试', () => {
         fc.assert(
           fc.property(
             fc.string({ minLength: 1, maxLength: 50 })
-              .filter(s => !s.includes('/') && !s.includes('\\'))
+              .filter(isPlainBasename)
               .map(s => `${s}.mp3`),
             fc.uint8Array({ minLength: 10, maxLength: 100 }),
             (filename, randomBytes) => {
@@ -335,7 +339,7 @@ describe('文件管理属性测试', () => {
         fc.assert(
           fc.property(
             fc.string({ minLength: 1, maxLength: 50 })
-              .filter(s => !s.includes('/') && !s.includes('\\'))
+              .filter(isPlainBasename)
               .map(s => `${s}.ogg`),
             fc.uint8Array({ minLength: 10, maxLength: 100 }),
             (filename, randomBytes) => {
@@ -355,7 +359,7 @@ describe('文件管理属性测试', () => {
         fc.assert(
           fc.property(
             fc.string({ minLength: 1, maxLength: 50 })
-              .filter(s => !s.includes('/') && !s.includes('\\')),
+              .filter(isPlainBasename),
             fc.constantFrom('.mp3', '.ogg'),
             fc.uint8Array({ minLength: 10, maxLength: 100 }),
             (basename, ext, randomBytes) => {
@@ -371,7 +375,7 @@ describe('文件管理属性测试', () => {
                     invalidBuffer[0] = 0x00
                   }
                   // 破坏可能的帧同步字
-                  if (invalidBuffer[0] === 0xFF && (invalidBuffer[1] & 0xE0) === 0xE0) {
+                  if (invalidBuffer[0] === 0xFF && (requireValue(invalidBuffer[1]) & 0xE0) === 0xE0) {
                     invalidBuffer[0] = 0x00
                   }
                 } else if (ext === '.ogg') {
@@ -389,7 +393,7 @@ describe('文件管理属性测试', () => {
                 const isValidHeader = 
                   (ext === '.mp3' && (
                     invalidBuffer.subarray(0, 3).toString('ascii') === 'ID3' ||
-                    (invalidBuffer[0] === 0xFF && (invalidBuffer[1] & 0xE0) === 0xE0)
+                    (invalidBuffer[0] === 0xFF && (requireValue(invalidBuffer[1]) & 0xE0) === 0xE0)
                   )) ||
                   (ext === '.ogg' && invalidBuffer.subarray(0, 4).toString('ascii') === 'OggS')
                 
@@ -411,9 +415,9 @@ describe('文件管理属性测试', () => {
    * **Validates: Requirements 5.1.2**
    */
   describe('Property 9: 简历版本管理正确性', () => {
-    it('上传简历后版本数不应超过最大限制', () => {
-      fc.assert(
-        fc.property(
+    it('上传简历后版本数不应超过最大限制', async () => {
+      await fc.assert(
+        fc.asyncProperty(
           fc.integer({ min: 1, max: 10 }),
           async (uploadCount) => {
             await initDatabase(':memory:', true)
@@ -427,7 +431,7 @@ describe('文件管理属性测试', () => {
               // 上传多个简历
               for (let i = 0; i < uploadCount; i++) {
                 const filename = `resume_${i}.pdf`
-                uploadResume(pdfBuffer, filename)
+                await uploadResume(pdfBuffer, filename)
               }
               
               // 获取版本列表
@@ -460,9 +464,9 @@ describe('文件管理属性测试', () => {
       )
     })
 
-    it('删除旧版本后应该保留正确的版本', () => {
-      fc.assert(
-        fc.property(
+    it('删除旧版本后应该保留正确的版本', async () => {
+      await fc.assert(
+        fc.asyncProperty(
           fc.integer({ min: MAX_RESUME_VERSIONS + 1, max: MAX_RESUME_VERSIONS + 5 }),
           async (uploadCount) => {
             await initDatabase(':memory:', true)
@@ -476,7 +480,7 @@ describe('文件管理属性测试', () => {
               // 上传多个简历（超过最大限制）
               for (let i = 0; i < uploadCount; i++) {
                 const filename = `resume_${i}.pdf`
-                uploadResume(pdfBuffer, filename)
+                await uploadResume(pdfBuffer, filename)
               }
               
               // 获取版本列表
@@ -505,9 +509,9 @@ describe('文件管理属性测试', () => {
       )
     })
 
-    it('手动删除版本后版本数应该正确减少', () => {
-      fc.assert(
-        fc.property(
+    it('手动删除版本后版本数应该正确减少', async () => {
+      await fc.assert(
+        fc.asyncProperty(
           fc.integer({ min: 2, max: MAX_RESUME_VERSIONS }),
           fc.integer({ min: 0, max: MAX_RESUME_VERSIONS - 1 }),
           async (uploadCount, deleteIndex) => {
@@ -527,12 +531,12 @@ describe('文件管理属性测试', () => {
               // 上传多个简历
               for (let i = 0; i < uploadCount; i++) {
                 const filename = `resume_${i}.pdf`
-                uploadResume(pdfBuffer, filename)
+                await uploadResume(pdfBuffer, filename)
               }
               
               // 获取版本列表
               const versionsBefore = getResumeVersions()
-              const versionToDelete = versionsBefore[deleteIndex].version
+              const versionToDelete = requireValue(versionsBefore[deleteIndex]).version
               
               // 删除指定版本
               const deleteResult = deleteResumeVersion(versionToDelete)
@@ -556,9 +560,9 @@ describe('文件管理属性测试', () => {
       )
     })
 
-    it('版本号应该单调递增', () => {
-      fc.assert(
-        fc.property(
+    it('版本号应该单调递增', async () => {
+      await fc.assert(
+        fc.asyncProperty(
           fc.integer({ min: 1, max: 10 }),
           async (uploadCount) => {
             await initDatabase(':memory:', true)
@@ -573,7 +577,7 @@ describe('文件管理属性测试', () => {
               const uploadedVersions: number[] = []
               for (let i = 0; i < uploadCount; i++) {
                 const filename = `resume_${i}.pdf`
-                const result = uploadResume(pdfBuffer, filename)
+                const result = await uploadResume(pdfBuffer, filename)
                 if (result.success && result.version) {
                   uploadedVersions.push(result.version)
                 }
@@ -581,7 +585,7 @@ describe('文件管理属性测试', () => {
               
               // 验证版本号单调递增
               for (let i = 1; i < uploadedVersions.length; i++) {
-                expect(uploadedVersions[i]).toBeGreaterThan(uploadedVersions[i - 1])
+                expect(uploadedVersions[i]).toBeGreaterThan(requireValue(uploadedVersions[i - 1]))
               }
               
               // 验证版本号从 1 开始
@@ -597,9 +601,9 @@ describe('文件管理属性测试', () => {
       )
     })
 
-    it('第一个上传的简历应该自动设置为当前使用的简历', () => {
-      fc.assert(
-        fc.property(
+    it('第一个上传的简历应该自动设置为当前使用的简历', async () => {
+      await fc.assert(
+        fc.asyncProperty(
           fc.integer({ min: 1, max: 5 }),
           async (uploadCount) => {
             await initDatabase(':memory:', true)
@@ -613,7 +617,7 @@ describe('文件管理属性测试', () => {
               // 上传多个简历
               for (let i = 0; i < uploadCount; i++) {
                 const filename = `resume_${i}.pdf`
-                uploadResume(pdfBuffer, filename)
+                await uploadResume(pdfBuffer, filename)
               }
               
               // 获取版本列表
@@ -624,7 +628,7 @@ describe('文件管理属性测试', () => {
               expect(activeVersions.length).toBe(1)
               
               // 第一个版本应该是当前使用的版本
-              expect(activeVersions[0].version).toBe(1)
+              expect(requireValue(activeVersions[0]).version).toBe(1)
             } finally {
               closeDatabase()
             }

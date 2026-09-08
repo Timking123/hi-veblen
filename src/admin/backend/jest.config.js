@@ -8,6 +8,7 @@ module.exports = {
   
   // 测试环境
   testEnvironment: 'node',
+  setupFilesAfterEnv: ['<rootDir>/src/__tests__/setup.ts'],
   
   // 根目录
   rootDir: '.',

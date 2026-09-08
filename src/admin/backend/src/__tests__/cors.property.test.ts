@@ -1,3 +1,4 @@
+import { requireValue } from './helpers'
 /**
  * CORS 验证属性测试（Property-Based Testing）
  * 使用 fast-check 库测试 CORS 域名白名单验证的正确性属性
@@ -152,7 +153,7 @@ describe('Property 5: CORS 域名白名单验证', () => {
     await fc.assert(
       fc.asyncProperty(configArb, async (config) => {
         const app = createTestApp(config.allowedOrigins, true)
-        const response = await makeRequestWithOrigin(app, config.selectedOrigin)
+        const response = await makeRequestWithOrigin(app, requireValue(config.selectedOrigin))
         
         // 白名单中的域名应该被允许（返回 200）
         expect(response.status).toBe(200)

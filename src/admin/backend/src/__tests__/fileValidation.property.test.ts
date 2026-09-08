@@ -1,3 +1,4 @@
+import { requireValue } from './helpers'
 /**
  * 文件验证属性测试（Property-Based Testing）
  * 使用 fast-check 库测试文件上传安全验证的正确性属性
@@ -84,11 +85,11 @@ function createFileWithMagicBytes(mimeType: string, additionalSize: number = 100
   const signature = signatures[0]
   
   // 创建包含签名和额外数据的缓冲区
-  const buffer = Buffer.alloc(signature.length + additionalSize)
-  signature.copy(buffer, 0)
+  const buffer = Buffer.alloc(requireValue(signature).length + additionalSize)
+  requireValue(signature).copy(buffer, 0)
   
   // 填充随机数据
-  for (let i = signature.length; i < buffer.length; i++) {
+  for (let i = requireValue(signature).length; i < buffer.length; i++) {
     buffer[i] = Math.floor(Math.random() * 256)
   }
   

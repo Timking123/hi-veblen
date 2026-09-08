@@ -20,10 +20,14 @@ const logger = createLogger('fileSync')
 // ========== 路径常量 ==========
 
 /** 后台文件存储根目录 */
-const ADMIN_FILE_ROOT = path.resolve(__dirname, '../../file')
+const ADMIN_FILE_ROOT = process.env.NODE_ENV === 'test' && process.env.TEST_FILE_ROOT
+  ? path.resolve(process.env.TEST_FILE_ROOT)
+  : path.resolve(__dirname, '../../file')
 
 /** 前端公共目录根路径 */
-const PUBLIC_ROOT = path.resolve(__dirname, '../../../../public')
+const PUBLIC_ROOT = process.env.NODE_ENV === 'test' && process.env.TEST_PUBLIC_ROOT
+  ? path.resolve(process.env.TEST_PUBLIC_ROOT)
+  : path.resolve(__dirname, '../../../../public')
 
 // ========== 类型定义 ==========
 
@@ -259,13 +263,13 @@ export class FileSyncService {
     try {
       let filesRemoved = 0
 
-      // 1. 清理临时文件（.tmp 文件）
+      // 1. 清理普通 .tmp 文件及本服务生成的带时间戳简历临时文件。
       const publicDir = PUBLIC_ROOT
       if (fs.existsSync(publicDir)) {
         const files = fs.readdirSync(publicDir)
         
         for (const file of files) {
-          if (file.endsWith('.tmp')) {
+          if (file.endsWith('.tmp') || /^\.resume\.pdf\.tmp\.\d+$/.test(file)) {
             const filePath = path.join(publicDir, file)
             try {
               fs.unlinkSync(filePath)

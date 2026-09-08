@@ -1,3 +1,4 @@
+import { requireValue } from '../../__tests__/helpers'
 /**
  * 下载统计服务属性测试
  * 验证下载统计的一致性和原子性
@@ -6,7 +7,7 @@
  */
 
 import * as fc from 'fast-check'
-import { initDatabase, closeDatabase, saveDatabase, getDatabase } from '../../database/init'
+import { initDatabase, closeDatabase } from '../../database/init'
 import {
   recordResumeDownload,
   getTotalResumeDownloads,
@@ -15,8 +16,6 @@ import {
   type DownloadSource
 } from '../downloadStats'
 import { uploadResume } from '../file'
-import fs from 'fs'
-import path from 'path'
 
 describe('属性测试：下载统计一致性', () => {
   beforeEach(async () => {
@@ -166,14 +165,14 @@ describe('属性测试：下载统计一致性', () => {
             const version = versions[i]
             const count = downloadCounts[i]
             
-            for (let j = 0; j < count; j++) {
-              await recordResumeDownload(version, 'frontend')
+            for (let j = 0; j < requireValue(count); j++) {
+              await recordResumeDownload(requireValue(version), 'frontend')
             }
             
-            expectedTotalIncrease += count
+            expectedTotalIncrease += requireValue(count)
             
             // 验证该版本的下载次数
-            const versionCount = await getVersionDownloads(version)
+            const versionCount = await getVersionDownloads(requireValue(version))
             expect(versionCount).toBe(count)
           }
           
