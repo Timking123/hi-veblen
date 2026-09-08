@@ -94,6 +94,441 @@ class TransactionError(RuntimeError):
         super().__init__(f"{code}: {message}")
 
 
+# BEGIN D087 RESOURCE COMPONENT
+# workflow 从本维护源按固定依赖生成前导；CI 校验真实生成结果。
+import posixpath
+import tarfile
+import zlib
+from typing import BinaryIO, Mapping, NamedTuple, Sequence
+
+
+_BC_LIMITS = types.MappingProxyType({
+    "metadata": 65536, "compressed": 2147483648, "tar": 8589934592,
+    "venv": 8589934592, "members": 100000, "file": 1073741824,
+    "path": 4096, "depth": 64, "scan": 536870912,
+})
+_BC_CHUNK = 65536
+# 固定工作区覆盖 zlib 窗口、输入/输出及尾部复制、TarInfo、短读拼接和有界扩展解析。
+_BC_ARCHIVE_WORK = 2 * 1024 * 1024
+_BC_TREE_WORK = 131072
+
+
+class _BCResourceError(TransactionError):
+    def __init__(self, resource: str, limit: int, observed: int) -> None:
+        if resource not in _BC_LIMITS or type(limit) is not int or type(observed) is not int:
+            raise TransactionError("E_RESOURCE")
+        self._resource, self._limit, self._observed = resource, limit, observed
+        super().__init__("E_RESOURCE", "资源限额校验失败，保留现场")
+
+    resource = property(lambda self: self._resource)
+    limit = property(lambda self: self._limit)
+    observed = property(lambda self: self._observed)
+
+
+class _BCBudget:
+    """先记账再构造；每个字典槽预付 1024 字节，涵盖键和值及扩容旧副本。"""
+    def __init__(self, *, limits: Mapping[str, int] | None = None) -> None:
+        _require(sys.implementation.name == "cpython" and sys.maxsize == (1 << 63) - 1,
+                 "E_PLATFORM", "扫描表计费需要 64 位 CPython")
+        values = dict(_BC_LIMITS)
+        if limits is not None:
+            for key, value in limits.items():
+                _require(key in values and type(value) is int and 0 < value <= values[key], "E_RESOURCE")
+                values[key] = value
+        self.limits = types.MappingProxyType(values)
+        self._counts: dict[tuple[str, str | None], int] = {}
+        self._reservations: dict[int, int] = {}
+        self._failed = False
+        self._serial = 0
+        self.live = 0
+        self.peak = 0
+        self.reserve_scan(4096)  # 预算对象、固定域表、计数表初始容量及固定标量。
+
+    def _check(self, resource: str, value: int) -> None:
+        if self._failed:
+            raise TransactionError("E_RESOURCE", "资源预算已失败")
+        if resource not in self.limits or type(value) is not int or value < 0:
+            self._failed = True
+            raise TransactionError("E_RESOURCE")
+        if value > min(self.limits[resource], MAX_UINT):
+            self._failed = True
+            raise _BCResourceError(resource, self.limits[resource], value)
+
+    def _reject(self) -> None:
+        self._failed = True
+        raise TransactionError("E_RESOURCE", "资源输入或预算状态不合法")
+
+    def _scope(self) -> str:
+        self._check("scan", self.live)
+        self._serial += 1
+        return str(self._serial)
+
+    def add(self, resource: str, amount: int, *, scope: str | None = None) -> None:
+        if resource == "scan" and scope is None:
+            self.reserve_scan(amount)
+            return
+        self._check(resource, 0)
+        if type(amount) is not int or amount < 0 or (scope is not None and
+                (type(scope) is not str or len(scope) > 64)):
+            self._failed = True
+            raise TransactionError("E_RESOURCE")
+        key = (resource, scope)
+        value = self._counts.get(key, 0) + amount
+        self._check(resource, value)
+        if key not in self._counts:
+            self.reserve_scan(1024)
+        self._counts[key] = value
+
+    def reserve_scan(self, amount: int) -> None:
+        if type(amount) is not int or amount < 0:
+            self._failed = True
+            raise TransactionError("E_RESOURCE")
+        # 预留账本的每种槽位也先收费；保留空槽，释放不会隐去字典历史扩容容量。
+        bookkeeping = 1024 if amount not in self._reservations else 0
+        self._check("scan", self.live + amount + bookkeeping)
+        self.live += amount + bookkeeping
+        self._reservations[amount] = self._reservations.get(amount, 0) + 1
+        self.peak = max(self.peak, self.live)
+
+    def release_scan(self, amount: int) -> None:
+        if type(amount) is not int or amount < 0 or self._reservations.get(amount, 0) <= 0:
+            self._failed = True
+            raise TransactionError("E_RESOURCE")
+        self.live -= amount
+        self._reservations[amount] -= 1
+
+    def _transient(self, action: Callable[[], None]) -> None:
+        """只回收不返回对象的资格验证工作区，保留既有对象和全部永久账本。"""
+        self._check("scan", self.live)
+        scratch = 4096 + 128 * (len(self._reservations) + 1)
+        self.reserve_scan(scratch)
+        saved = dict(self._reservations)
+        initial_live, initial_slots, initial_counts = self.live, len(saved), len(self._counts)
+        failure = None
+        try:
+            result = action()
+            if result is not None:
+                # 未承接的返回值可能仍被外部持有，禁止按临时结果回收。
+                self._failed = True
+                raise RuntimeError("资格验证不得返回保留对象")
+        except TransactionError as error:
+            # 只保留标量，不保留异常及其 traceback 中的归档/索引对象。
+            failure = (error.code, error.resource, error.limit, error.observed) if isinstance(error, _BCResourceError) else (error.code,)
+        except BaseException:
+            self._failed = True
+            raise
+        # except 绑定及其 traceback 已离开作用域；临时函数栈与结果此时均已释放。
+        new_counts = len(self._counts) - initial_counts
+        new_slots = len(self._reservations) - initial_slots
+        for amount in self._reservations:
+            self._reservations[amount] = saved.get(amount, 0)
+        if new_counts:
+            self._reservations[1024] += new_counts
+        self.live = initial_live + 1024 * (new_counts + new_slots)
+        saved.clear()
+        self.release_scan(scratch)
+        if failure is not None:
+            if len(failure) == 4:
+                raise _BCResourceError(failure[1], failure[2], failure[3]) from None
+            raise TransactionError(failure[0], "资格或资源校验失败，保留现场") from None
+
+
+def _bc_path(raw: str, *, budget: _BCBudget) -> tuple[str, int, int]:
+    _require(type(raw) is str, "E_PATH")
+    # 原输入上界独立于规范名；编码、split 前先防止任意大输入分配。
+    if len(raw) > 16384:
+        budget._check("path", len(raw))
+    _require(raw and not raw.startswith("/"), "E_PATH")
+    begin = 2 if raw.startswith("./") else 0
+    _require(begin < len(raw), "E_PATH")
+    root = len(raw) - begin == 1 and raw[begin] == "."
+    size, depth, component_start = 0, 0 if root else 1, begin
+    # 编码、复制规范名及 split 之前先逐字符计数；即使原名含数千组件也无列表。
+    for index in range(begin, len(raw)):
+        value = ord(raw[index])
+        _require(value not in (0, 92) and not 0xD800 <= value <= 0xDFFF, "E_PATH")
+        size += 1 if value < 0x80 else 2 if value < 0x800 else 3 if value < 0x10000 else 4
+        budget._check("path", size)
+        if value == 47:
+            length = index - component_start
+            _require(length > 0 and not (length <= 2 and raw[component_start:index] in (".", "..")), "E_PATH")
+            depth += 1
+            budget._check("depth", depth)
+            component_start = index + 1
+    length = len(raw) - component_start
+    _require(length > 0 and (root or not (length <= 2 and raw[component_start:] in (".", ".."))), "E_PATH")
+    budget._check("depth", depth)
+    return raw[begin:] if begin else raw, size, depth
+
+
+def _bc_validate_metadata(raw: bytes, *, budget: _BCBudget | None = None) -> int:
+    budget = budget if budget is not None else _BCBudget()
+    if type(raw) is not bytes:
+        budget._reject()
+    budget.add("metadata", len(raw), scope=budget._scope())
+    return len(raw)
+
+
+class _BCArchiveEntry(NamedTuple):
+    path: str
+    kind: str
+    logical_size: int
+    sha256: str
+    link_text: str
+
+
+class _BCArchiveResult(NamedTuple):
+    compressed_bytes: int
+    tar_bytes: int
+    members: int
+    regular_bytes: int
+    compressed_sha256: str
+    entries: tuple[_BCArchiveEntry, ...]
+    scan_bytes: int
+
+
+class _BCGzipReader:
+    """每次最多产生 64 KiB；只在边界使用一字节超限探针，不接受拼接 gzip。"""
+    def __init__(self, stream: BinaryIO, budget: _BCBudget, scope: str) -> None:
+        self.stream, self.budget, self.scope = stream, budget, scope
+        self.decoder = zlib.decompressobj(31)
+        self.pending = b""
+        self.compressed = self.tar = 0
+        self.digest = hashlib.sha256()
+        self.ended = False
+
+    def _input(self) -> bytes:
+        remaining = self.budget.limits["compressed"] - self.compressed
+        raw = self.stream.read(min(_BC_CHUNK, remaining) if remaining else 1)
+        _require(type(raw) is bytes and len(raw) <= (min(_BC_CHUNK, remaining) if remaining else 1), "E_ARCHIVE")
+        self.budget.add("compressed", len(raw), scope=self.scope)
+        self.compressed += len(raw)
+        self.digest.update(raw)
+        return raw
+
+    def read(self, size: int) -> bytes:
+        _require(type(size) is int and 0 < size <= _BC_CHUNK, "E_ARCHIVE")
+        if self.ended:
+            return b""
+        while True:
+            if self.decoder.eof:
+                _require(not self.decoder.unused_data and not self.pending, "E_ARCHIVE")
+                _require(not self._input(), "E_ARCHIVE")
+                self.ended = True
+                return b""
+            if not self.pending:
+                self.pending = self._input()
+                _require(bool(self.pending), "E_ARCHIVE", "归档提前结束")
+            remaining = self.budget.limits["tar"] - self.tar
+            try:
+                output = self.decoder.decompress(self.pending, min(size, remaining) if remaining else 1)
+            except zlib.error as error:
+                raise TransactionError("E_ARCHIVE", "压缩格式校验失败") from error
+            self.pending = self.decoder.unconsumed_tail
+            self.budget.add("tar", len(output), scope=self.scope)
+            self.tar += len(output)
+            if output:
+                return output
+
+    def exact(self, size: int) -> bytes:
+        _require(0 <= size <= _BC_CHUNK, "E_ARCHIVE")
+        chunks = bytearray()
+        while len(chunks) < size:
+            piece = self.read(size - len(chunks))
+            _require(bool(piece), "E_ARCHIVE", "归档提前结束")
+            chunks.extend(piece)
+        return bytes(chunks)
+
+
+def _bc_entry_charge(path: str, link: str = "") -> int:
+    # NamedTuple、Unicode 最坏四字节、摘要和整数；临时索引/列表容量另计。
+    # 隐式父目录、扩展状态和最终 tuple 另行计费，不能仅按序列化长度计算。
+    return 1024 + 4 * len(path) + 4 * len(link)
+
+
+def _bc_validate_archive(stream: BinaryIO, *, declared_size: int | None = None,
+                         budget: _BCBudget | None = None, purpose: str = "release") -> _BCArchiveResult:
+    budget = budget if budget is not None else _BCBudget()
+    _require(purpose in ("release", "config_backup"), "E_ARCHIVE")
+    if declared_size is not None:
+        budget._check("compressed", declared_size)
+    budget.reserve_scan(_BC_ARCHIVE_WORK)
+    try:
+        return _bc_parse_archive(stream, declared_size=declared_size, budget=budget, purpose=purpose)
+    finally:
+        # 内层解析栈及 zlib 已经收束，不提前释放仍存活的解析状态。
+        budget.release_scan(_BC_ARCHIVE_WORK)
+
+
+def _bc_parse_archive(stream: BinaryIO, *, declared_size: int | None,
+                      budget: _BCBudget, purpose: str) -> _BCArchiveResult:
+    scope = budget._scope()
+    reader = _BCGzipReader(stream, budget, scope)
+    entries: list[_BCArchiveEntry] = []
+    names: dict[str, str] = {}
+    implicit: set[str] = set()
+    retained = 512  # 最终结果对象及固定标量；临时容器另计。
+    budget.reserve_scan(retained)
+    budget.reserve_scan(2048)
+    members = regular = 0
+    extensions: dict[str, str] = {}
+    global_extensions: dict[str, str] = {}
+    extension_pending = False
+
+    def payload(size: int, digest: Any = None) -> None:
+        processed = 0
+        while processed < size:
+            raw = reader.exact(min(_BC_CHUNK, size - processed))
+            processed += len(raw)
+            if digest is not None:
+                budget._check("file", processed)
+                digest.update(raw)
+        padding = (-size) % 512
+        if padding:
+            _require(not any(reader.exact(padding)), "E_ARCHIVE")
+
+    try:
+        while True:
+            header = reader.exact(512)
+            if not any(header):
+                _require(not extension_pending and not any(reader.exact(512)), "E_ARCHIVE")
+                while True:
+                    tail = reader.read(_BC_CHUNK)
+                    if not tail:
+                        break
+                    _require(not any(tail), "E_ARCHIVE")
+                _require(reader.tar % 512 == 0, "E_ARCHIVE")
+                break
+            budget.add("members", 1, scope=scope)
+            members += 1
+            try:
+                # GNU/PAX 的完整字段可能覆盖基础头截断在多字节字符中的前缀。
+                # 这里只保留不可解码字节，最终有效路径与链接仍严格拒绝 surrogate。
+                member = tarfile.TarInfo.frombuf(header, "utf-8", "surrogateescape")
+            except (tarfile.TarError, UnicodeError, ValueError) as error:
+                raise TransactionError("E_ARCHIVE", "归档成员头校验失败") from error
+            _require(type(member.size) is int and 0 <= member.size <= MAX_UINT, "E_ARCHIVE")
+            if member.type in (tarfile.GNUTYPE_LONGNAME, tarfile.GNUTYPE_LONGLINK,
+                               tarfile.XHDTYPE, tarfile.XGLTYPE):
+                # 扩展只允许有限字段/单记录；原始扩展头单独计成员，正文仍计完整 tar。
+                _require(0 < member.size <= 65536, "E_ARCHIVE", "未支持的扩展大小")
+                raw = reader.exact(member.size)
+                if (-member.size) % 512:
+                    _require(not any(reader.exact((-member.size) % 512)), "E_ARCHIVE")
+                if member.type in (tarfile.GNUTYPE_LONGNAME, tarfile.GNUTYPE_LONGLINK):
+                    key = "path" if member.type == tarfile.GNUTYPE_LONGNAME else "linkpath"
+                    _require(raw.endswith(b"\0") and b"\0" not in raw[:-1] and key not in extensions, "E_ARCHIVE")
+                    extensions[key] = raw[:-1].decode("utf-8", "strict")
+                    extension_pending = True
+                else:
+                    target = global_extensions if member.type == tarfile.XGLTYPE else extensions
+                    offset = 0
+                    seen: set[str] = set()
+                    while offset < len(raw):
+                        space = raw.find(b" ", offset, min(len(raw), offset + 22))
+                        _require(space > offset and raw[offset:space].isdigit(), "E_ARCHIVE")
+                        length = int(raw[offset:space])
+                        _require(0 < length <= 16384 and space + 1 < offset + length <= len(raw), "E_ARCHIVE")
+                        record = raw[space + 1:offset + length]
+                        _require(record.endswith(b"\n") and b"=" in record, "E_ARCHIVE")
+                        key_raw, value_raw = record[:-1].split(b"=", 1)
+                        key = key_raw.decode("ascii", "strict")
+                        _require(key in ("path", "linkpath", "size", "mtime", "atime", "ctime", "uid", "gid", "uname", "gname")
+                                 and key not in seen and len(seen) < 10, "E_ARCHIVE", "未支持或重复的扩展字段")
+                        seen.add(key)
+                        value = value_raw.decode("utf-8", "strict")
+                        _require("\0" not in value, "E_ARCHIVE")
+                        if key in ("path", "linkpath", "size"):
+                            _require(key not in target, "E_ARCHIVE")
+                            target[key] = value
+                        offset += length
+                    extension_pending = member.type == tarfile.XHDTYPE or extension_pending
+                continue
+            _require(member.type in (tarfile.REGTYPE, tarfile.AREGTYPE, tarfile.DIRTYPE, tarfile.SYMTYPE), "E_ARCHIVE")
+            effective = dict(global_extensions)
+            effective.update(extensions)
+            raw_path = effective.get("path", member.name)
+            is_directory = member.type == tarfile.DIRTYPE
+            if is_directory and raw_path.endswith("/"):
+                raw_path = raw_path[:-1]
+            path, _, _ = _bc_path(raw_path, budget=budget)
+            _require(path != "." or is_directory, "E_ARCHIVE")
+            _require(path not in names, "E_ARCHIVE", "归档成员重复")
+            kind = "directory" if is_directory else "symlink" if member.type == tarfile.SYMTYPE else "file"
+            size = member.size
+            if "size" in effective:
+                value = effective["size"]
+                _require(value.isascii() and value.isdecimal() and len(value) <= 20, "E_ARCHIVE")
+                size = int(value)
+            link = effective.get("linkpath", member.linkname) if kind == "symlink" else ""
+            if kind == "symlink":
+                _require(purpose == "config_backup" and path.startswith("etc/nginx/sites-enabled/")
+                         and len(path.split("/")) == 4, "E_ARCHIVE")
+                _require(link and "\0" not in link and "\\" not in link and len(link.encode("utf-8")) <= 4096, "E_ARCHIVE")
+            if kind != "file":
+                _require(size == 0, "E_ARCHIVE")
+            else:
+                budget._check("file", size)
+                _require(path not in implicit, "E_ARCHIVE")
+            # 在构造记录和索引之前支付槽位、路径和父索引的最坏容量。
+            charge = _bc_entry_charge(path, link)
+            budget.reserve_scan(charge)
+            retained += charge
+            budget.reserve_scan(1024)  # list/dict 的槽、扩容时新旧容量。
+            for index, char in enumerate(path):
+                if char == "/":
+                    # 前缀复制前检查；短暂前缀也在固定工作区内。
+                    parent = path[:index]
+                    _require(names.get(parent, "directory") == "directory", "E_ARCHIVE")
+                    if parent not in implicit:
+                        cost = 1024 + 4 * len(parent)
+                        budget.reserve_scan(cost)
+                        implicit.add(parent)
+            digest = hashlib.sha256() if kind == "file" else None
+            payload(size, digest)
+            regular += size
+            names[path] = kind
+            entries.append(_BCArchiveEntry(path, kind, size, digest.hexdigest() if digest is not None else "", link))
+            extensions.clear()
+            extension_pending = False
+        if declared_size is not None:
+            _require(reader.compressed == declared_size, "E_ARCHIVE", "归档声明与实际长度不一致")
+        for entry in entries:
+            if entry.kind == "symlink":
+                target = posixpath.normpath(posixpath.join("/" + posixpath.dirname(entry.path), entry.link_text))
+                _require(target.startswith("/etc/nginx/sites-available/") and len(target.split("/")) == 5
+                         and names.get(target[1:]) == "file", "E_ARCHIVE")
+        tuple_charge = 256 + 8 * len(entries)
+        budget.reserve_scan(tuple_charge)
+        result_entries = tuple(entries)
+        result = _BCArchiveResult(reader.compressed, reader.tar, members, regular,
+                                  reader.digest.hexdigest(), result_entries, retained + tuple_charge)
+        return result
+    except (UnicodeError, ValueError, OverflowError) as error:
+        raise TransactionError("E_ARCHIVE", "归档编码或数值不合法") from error
+    finally:
+        # 先回收临时容器/解码器，再释放对应预留；结果引用的 entries 记录继续收费。
+        count = len(entries)
+        while entries:
+            entries.pop()
+        entries.clear()
+        names.clear()
+        for _ in range(count):
+            budget.release_scan(1024)
+        while implicit:
+            parent = implicit.pop()
+            cost = 1024 + 4 * len(parent)
+            del parent
+            budget.release_scan(cost)
+        implicit.clear()
+        extensions.clear()
+        global_extensions.clear()
+        reader.pending = b""
+        reader.decoder = None
+        budget.release_scan(2048)
+# END D087 RESOURCE COMPONENT
+
+
 class _P1ObservationFailure(TransactionError):
     """普通观察失败；不会授权顶层对同一目标自动重观。"""
 
@@ -1034,6 +1469,7 @@ def capture_previous(*, txn_id: str, candidate_revision: str, package_sha256: st
             _lease(fs, txn_id, lease_fd)
             _require(not fs.exists(transaction.record_path) and not fs.exists(transaction.receipt_path), "E_STATE", "事务不允许重复捕获")
             _require(not fs.exists(MAINTENANCE_PATH) and not fs.exists(PRESERVE_PATH), "E_STATE")
+            _bc_scan_trees(fs, (transaction.candidate_path + "/backend/.venv",), mode="venv")
             fs.sync(STAGING_ROOT)
             preserve = fs.file_image(transaction.upload + "/PRESERVE")
             _require(_validate_file_image(preserve) == b"", "E_IDENTITY")
@@ -1788,6 +2224,485 @@ def _public_gates(transaction: _Transaction, record: dict[str, Any], receipt: di
     return {"open_statuses": statuses, "revisions": revisions, "health_sha256": _digest(_canonical(data))}
 
 
+def _bc_validate_config_backup(directory: str, name: str, *, budget: _BCBudget | None = None) -> None:
+    """资源检查与原 metadata/精确成员校验同时满足；不生成新持久字段。"""
+    resource_budget = budget if budget is not None else _BCBudget()
+
+    def validate() -> None:
+        with _Fs() as fs:
+            original = _bc_config_backup_identity(fs, directory, budget=resource_budget)
+            _require(original is not None, "E_ARCHIVE", "备份权限或固定成员资格不符")
+            _bc_check_config_backup(directory, name, budget=resource_budget)
+            _require(_bc_config_backup_identity(fs, directory, budget=resource_budget) == original, "E_DRIFT")
+
+    resource_budget._transient(validate)
+
+
+def _bc_check_config_backup(directory: str, name: str, *, budget: _BCBudget) -> None:
+    """内容资格内核；完整私有入口另绑定 Linux 权限与固定三文件身份。"""
+    from pathlib import Path
+
+    def require(condition: bool, message: str) -> None:
+        if not condition:
+            raise ValueError(message)
+
+
+    def read_backup_control(path: Path, encoding: str) -> str:
+        with _bc_open_archive(str(path)) as handle:
+            raw = handle.read(4 * 1024 * 1024 + 1)
+        require(len(raw) <= 4 * 1024 * 1024 and raw.count(b"\n") <= 64, "配置控制文件过大")
+        text = raw.decode(encoding)
+        # splitlines 还识别 CR、VT、FF 及 Unicode 分隔符，必须在分行/建表前统一计数。
+        boundaries = 0
+        previous_cr = False
+        for char in text:
+            if char in "\n\r\v\f\x1c\x1d\x1e\x85\u2028\u2029":
+                if char != "\n" or not previous_cr:
+                    boundaries += 1
+                    require(boundaries <= 64, "配置控制文件行数过大")
+            previous_cr = char == "\r"
+        return text
+
+
+    def file_sha256(path: Path) -> str:
+        digest = hashlib.sha256()
+        with _bc_open_archive(str(path)) as handle:
+            remaining = 4 * 1024 * 1024
+            while True:
+                chunk = handle.read(min(65536, remaining) if remaining else 1)
+                require(len(chunk) <= remaining, "配置控制文件过大")
+                if not chunk:
+                    break
+                remaining -= len(chunk)
+                digest.update(chunk)
+        return digest.hexdigest()
+
+
+    try:
+        backup_path = Path(directory)
+        backup_name = name
+        name_match = re.fullmatch(
+            r"run-([0-9]+)-([0-9]+)-([0-9a-f]{40})", backup_name
+        )
+        require(name_match is not None, "目录名格式无效")
+        run_id, run_attempt, revision = name_match.groups()
+
+        archive_path = backup_path / "config.tar.gz"
+        resource_budget = budget
+        with _bc_open_archive(str(archive_path)) as resource_stream:
+            resource_result = _bc_validate_archive(resource_stream, declared_size=os.fstat(resource_stream.fileno()).st_size, budget=resource_budget, purpose="config_backup")
+        resource_budget.reserve_scan(67108864 + 1024 * len(resource_result.entries))
+        metadata_path = backup_path / "metadata.txt"
+        manifest_path = backup_path / "SHA256SUMS"
+        manifest_entries: dict[str, str] = {}
+        for line in read_backup_control(manifest_path, "ascii").splitlines():
+            match = re.fullmatch(
+                r"([0-9a-f]{64})  (config\.tar\.gz|metadata\.txt)", line
+            )
+            require(match is not None, "摘要清单格式无效")
+            digest, filename = match.groups()
+            require(filename not in manifest_entries, "摘要清单包含重复项")
+            manifest_entries[filename] = digest
+        require(
+            set(manifest_entries) == {"config.tar.gz", "metadata.txt"},
+            "摘要清单成员不完整",
+        )
+        require(
+            resource_result.compressed_sha256 == manifest_entries["config.tar.gz"]
+            and file_sha256(metadata_path) == manifest_entries["metadata.txt"],
+            "归档摘要不匹配",
+        )
+
+        metadata: dict[str, list[str]] = {}
+        for line in read_backup_control(metadata_path, "utf-8").splitlines():
+            require("=" in line, "metadata 行格式无效")
+            key, value = line.split("=", 1)
+            metadata.setdefault(key, []).append(value)
+        allowed_keys = {
+            "schema",
+            "created_at_utc",
+            "github_run_id",
+            "github_run_attempt",
+            "portal_revision",
+            "apparmor_profile",
+            "ops_env",
+            "path",
+        }
+        require(set(metadata) == allowed_keys, "metadata 字段集合无效")
+
+        def single(key: str) -> str:
+            values = metadata[key]
+            require(len(values) == 1, f"metadata {key} 重复")
+            return values[0]
+
+        require(
+            single("schema") == "myagent-production-config-backup-v1",
+            "schema 无效",
+        )
+        require(
+            re.fullmatch(
+                r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z",
+                single("created_at_utc"),
+            )
+            is not None,
+            "创建时间格式无效",
+        )
+        require(single("github_run_id") == run_id, "run id 与目录名不一致")
+        require(
+            single("github_run_attempt") == run_attempt,
+            "run attempt 与目录名不一致",
+        )
+        require(
+            single("portal_revision") == revision,
+            "revision 与目录名不一致",
+        )
+        apparmor_state = single("apparmor_profile")
+        ops_env_state = single("ops_env")
+        require(apparmor_state in {"present", "absent"}, "AppArmor 状态无效")
+        require(ops_env_state in {"present", "absent"}, "ops.env 状态无效")
+
+        required_files = {
+            "opt/myagent/.env",
+            "etc/systemd/system/myagent-world.service",
+            "etc/systemd/system/myagent-gateway.service",
+        }
+        required_directories = {
+            "etc/nginx/sites-available",
+            "etc/nginx/sites-enabled",
+        }
+        optional_paths = {
+            "etc/apparmor.d/myagent-persona-parser": apparmor_state,
+            "etc/lingxi-ops/ops.env": ops_env_state,
+        }
+        expected_paths = required_files | required_directories | {
+            path for path, state in optional_paths.items() if state == "present"
+        }
+        require(
+            len(metadata["path"]) == len(set(metadata["path"]))
+            and set(metadata["path"]) == expected_paths,
+            "metadata 路径集合无效",
+        )
+
+        normalized_members = {member.path: member for member in resource_result.entries}
+
+        for path in required_files:
+            require(
+                path in normalized_members and normalized_members[path].kind == "file",
+                "归档缺少必需普通文件",
+            )
+        for path in required_directories:
+            require(
+                path in normalized_members and normalized_members[path].kind == "directory",
+                "归档缺少必需目录",
+            )
+        for path, state in optional_paths.items():
+            present = path in normalized_members
+            require(present == (state == "present"), "可选成员状态不一致")
+            if present:
+                require(normalized_members[path].kind == "file", "可选成员不是普通文件")
+
+        fixed_members = required_files | required_directories | set(optional_paths)
+        available_prefix = "etc/nginx/sites-available/"
+        enabled_prefix = "etc/nginx/sites-enabled/"
+        for name, member in normalized_members.items():
+            if name in fixed_members:
+                continue
+            if name.startswith(available_prefix):
+                relative = name[len(available_prefix) :]
+                require("/" not in relative and member.kind == "file", "sites-available 成员无效")
+                continue
+            if name.startswith(enabled_prefix):
+                relative = name[len(enabled_prefix) :]
+                require(
+                    "/" not in relative and (member.kind == "file" or member.kind == "symlink"),
+                    "sites-enabled 成员无效",
+                )
+                if member.kind == "symlink":
+                    live_name = f"/etc/nginx/sites-enabled/{relative}"
+                    target = member.link_text
+                    if not target.startswith("/"):
+                        target = posixpath.join(posixpath.dirname(live_name), target)
+                    resolved = posixpath.normpath(target)
+                    require(
+                        posixpath.dirname(resolved) == "/etc/nginx/sites-available",
+                        "sites-enabled 链接越界",
+                    )
+                    available_name = resolved.removeprefix("/")
+                    require(
+                        available_name in normalized_members
+                        and normalized_members[available_name].kind == "file",
+                        "sites-enabled 链接目标无效",
+                    )
+                continue
+            raise ValueError("归档包含未声明成员")
+    except TransactionError:
+        raise
+    except (OSError, UnicodeError, ValueError, tarfile.TarError) as error:
+        raise TransactionError("E_ARCHIVE", "配置归档字段或成员校验失败") from error
+
+
+class _BCBackupIdentity(NamedTuple):
+    root: tuple[int, ...]
+    files: tuple[tuple[str, tuple[int, ...], int, int, int], ...]
+
+
+def _bc_config_backup_identity(fs: _Fs, directory: str, *, budget: _BCBudget) -> _BCBackupIdentity | None:
+    """资格异常返回 None；读取中断或已捕获对象改变一律中止。"""
+    _require(type(directory) is str and directory.startswith("/"), "E_PATH")
+    if len(directory) > 16385:
+        budget._check("path", len(directory) - 1)
+    budget.reserve_scan(16384 + 4 * len(directory))
+    _bc_path(directory[1:], budget=budget)
+    with fs.parent(directory) as (parent, name):
+        info = os.stat(name, dir_fd=parent, follow_symlinks=False)
+    root_identity = _bc_frozen_identity(info)
+    if not (stat.S_ISDIR(info.st_mode) and info.st_uid == info.st_gid == 0
+            and stat.S_IMODE(info.st_mode) == 0o700):
+        return None
+    expected = ("SHA256SUMS", "config.tar.gz", "metadata.txt")
+    files = []
+    eligible = True
+    count = 0
+    with fs.directory(directory) as fd:
+        _require(_bc_frozen_identity(os.fstat(fd)) == root_identity, "E_DRIFT")
+        for name in _bc_directory_names(fd, budget=budget):
+            count += 1
+            if name not in expected:
+                eligible = False
+                continue
+            info = os.stat(name, dir_fd=fd, follow_symlinks=False)
+            if not (stat.S_ISREG(info.st_mode) and info.st_nlink == 1 and info.st_uid == info.st_gid == 0
+                    and stat.S_IMODE(info.st_mode) == 0o600):
+                eligible = False
+                continue
+            budget._check("file", info.st_size)
+            files.append((name, _bc_frozen_identity(info), info.st_size, info.st_mtime_ns, info.st_ctime_ns))
+        _require(_bc_frozen_identity(os.fstat(fd)) == root_identity, "E_DRIFT")
+    if not eligible or count != 3 or len(files) != 3:
+        return None
+    files.sort()
+    return _BCBackupIdentity(root_identity, tuple(files))
+
+
+def _bc_prune_config_backups(root: str, current_name: str, *, budget: _BCBudget) -> None:
+    """原保留语义、最初身份、全部预扫描与逐项删除共用一次预算。"""
+    _require(type(root) is str and root.startswith("/") and type(current_name) is str, "E_ARGUMENT")
+    if len(root) > 16385:
+        budget._check("path", len(root) - 1)
+    budget.reserve_scan(_BC_TREE_WORK)
+    _bc_path(root[1:], budget=budget)
+    _bc_path(current_name, budget=budget)
+    pattern = r"run-[0-9]+-[0-9]+-[0-9a-f]{40}"
+    _require(re.fullmatch(pattern, current_name) is not None, "E_ARGUMENT")
+    rows: list[tuple[int, str, tuple[int, ...]]] = []
+    selected: list[tuple[str, _BCBackupIdentity]] = []
+    with _Fs() as fs:
+        with fs.directory(root) as fd:
+            parent_identity = _bc_frozen_identity(os.fstat(fd))
+            for name in _bc_directory_names(fd, budget=budget):
+                info = os.stat(name, dir_fd=fd, follow_symlinks=False)
+                if name.startswith("run-") and stat.S_ISDIR(info.st_mode):
+                    # 原清单、选择表、名字拼接、身份与排序暂存一并先预付。
+                    budget.reserve_scan(8192 + 8 * len(name) + 4 * len(root))
+                    rows.append((info.st_mtime_ns, name, _bc_frozen_identity(info)))
+            _require(_bc_frozen_identity(os.fstat(fd)) == parent_identity, "E_DRIFT")
+        rows.sort(reverse=True)
+        latest = None
+        valid_rank = 0
+        for _, name, original_root in rows:
+            if re.fullmatch(pattern, name) is None:
+                continue
+            if latest is None:
+                latest = name
+            path = root + "/" + name
+            with fs.parent(path) as (fd, leaf):
+                _require(_bc_frozen_identity(os.stat(leaf, dir_fd=fd, follow_symlinks=False)) == original_root, "E_DRIFT")
+            original = _bc_config_backup_identity(fs, path, budget=budget)
+            if original is None:
+                continue
+            _require(original.root == original_root, "E_DRIFT")
+            try:
+                _bc_validate_config_backup(path, name, budget=budget)
+            except TransactionError as error:
+                if error.code in ("E_RESOURCE", "E_DRIFT"):
+                    raise
+                _require(_bc_config_backup_identity(fs, path, budget=budget) == original, "E_DRIFT")
+                continue
+            _require(_bc_config_backup_identity(fs, path, budget=budget) == original, "E_DRIFT")
+            valid_rank += 1
+            if name in (current_name, latest) or valid_rank <= 30:
+                continue
+            if len(selected) >= 4097:
+                budget._reject()
+            selected.append((path, original))
+        # 所有资格与资源读取完成之后，才能构造并验证同预算全集计划。
+        budget.reserve_scan(4096 + 2048 * len(selected))
+        roots = tuple(path for path, _ in selected)
+        originals = tuple(_BCTreeRoot(path, identity.root) for path, identity in selected)
+        plan = _bc_scan_trees(fs, roots, mode="delete", budget=budget)
+        expected_files = {(path, name): (identity, size) for path, backup in selected
+                          for name, identity, size, _, _ in backup.files}
+        _require(len(plan.entries) == len(expected_files), "E_DRIFT")
+        for entry in plan.entries:
+            _require(entry.kind == "file" and expected_files.get((entry.root, entry.relative_path)) ==
+                     (entry.identity, entry.logical_size), "E_DRIFT")
+        for path, original in selected:
+            _require(_bc_config_backup_identity(fs, path, budget=budget) == original, "E_DRIFT")
+
+        def protected() -> None:
+            with fs.directory(root) as fd:
+                # 已开始删除会减少目录 nlink，其余最初五值继续绑定。
+                _require(_bc_frozen_identity(os.fstat(fd))[:5] == parent_identity[:5], "E_DRIFT")
+
+        with fs.directory(root) as fd:
+            _require(_bc_frozen_identity(os.fstat(fd)) == parent_identity, "E_DRIFT")
+        _bc_execute_tree_plan(fs, plan, budget=budget, before_delete=protected, expected_roots=originals)
+
+
+@contextmanager
+def _bc_open_archive(path: str) -> Iterator[BinaryIO]:
+    before = os.stat(path, follow_symlinks=False)
+    _require(stat.S_ISREG(before.st_mode), "E_ARCHIVE")
+    flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0)
+    fd = os.open(path, flags)
+    try:
+        opened = os.fstat(fd)
+        _require(stat.S_ISREG(opened.st_mode) and _bc_frozen_identity(opened) == _bc_frozen_identity(before), "E_ARCHIVE")
+        with os.fdopen(fd, "rb", closefd=False) as stream:
+            yield stream
+    finally:
+        os.close(fd)
+
+
+def _bc_resource_action(args: Sequence[str]) -> None:
+    """仅供 workflow 生成的 stdin 前导调用；不加入 main 的公开命令。"""
+    budget = _BCBudget()
+    # argv 的切片、路径暂存与固定分派对象在构造前记账。
+    budget.reserve_scan(_BC_TREE_WORK)
+    if len(args) > 4098:
+        budget._reject()
+    _require(args and args[0] in ("archive", "config_backup", "cleanup", "inventory", "venv"), "E_ARGUMENT")
+    action = args[0]
+    if action == "archive":
+        _require(len(args) == 3 and re.fullmatch(r"[0-9a-f]{64}", args[2]) is not None, "E_ARGUMENT")
+        with _bc_open_archive(args[1]) as stream:
+            result = _bc_validate_archive(stream, declared_size=os.fstat(stream.fileno()).st_size, budget=budget)
+        _require(result.compressed_sha256 == args[2], "E_ARCHIVE")
+    elif action == "config_backup":
+        _require(len(args) == 3, "E_ARGUMENT")
+        _bc_validate_config_backup(args[1], args[2], budget=budget)
+    elif action == "cleanup" and len(args) >= 2 and args[1] == "--retention":
+        _require(len(args) == 4, "E_ARGUMENT")
+        _bc_prune_config_backups(args[2], args[3], budget=budget)
+    elif action == "cleanup" and len(args) >= 2 and args[1] == "--snapshot":
+        _require(len(args) == 3 and args[2].startswith("/"), "E_ARGUMENT")
+        if len(args[2]) > 16385:
+            budget._check("path", len(args[2]) - 1)
+        _bc_path(args[2][1:], budget=budget)
+        budget.reserve_scan(4096 + 4 * len(args[2]))
+        with _Fs() as fs:
+            with fs.directory(args[2]) as fd:
+                info = os.fstat(fd)
+                _require(info.st_uid == info.st_gid == 0 and stat.S_IMODE(info.st_mode) == 0o700, "E_IDENTITY")
+                original = (_BCTreeRoot(args[2], _bc_frozen_identity(info)),)
+            plan = _bc_scan_trees(fs, (args[2],), mode="snapshot", budget=budget)
+            _require(plan.roots == original, "E_DRIFT", "暂存根必须保持原完整身份")
+            _bc_execute_tree_plan(fs, plan, budget=budget, before_delete=lambda: None, expected_roots=original)
+    elif action in ("cleanup", "venv"):
+        _require(action == "cleanup" or len(args) == 2, "E_ARGUMENT")
+        with _Fs() as fs:
+            plan = _bc_scan_trees(fs, tuple(args[1:]), mode="delete" if action == "cleanup" else "venv", budget=budget)
+            if action == "cleanup":
+                _bc_execute_tree_plan(fs, plan, budget=budget, before_delete=lambda: None)
+    else:
+        _require(len(args) == 2 and args[1].startswith("/"), "E_ARGUMENT")
+        if len(args[1]) > 16385:
+            budget._check("path", len(args[1]) - 1)
+        _bc_path(args[1][1:], budget=budget)
+        budget.reserve_scan(_BC_TREE_WORK)
+        rows: list[tuple[int, str]] = []
+        with _Fs() as fs, fs.directory(args[1]) as fd:
+            identity = _bc_frozen_identity(os.fstat(fd))
+            for name in _bc_directory_names(fd, budget=budget):
+                info = os.stat(name, dir_fd=fd, follow_symlinks=False)
+                if name.startswith("run-") and stat.S_ISDIR(info.st_mode):
+                    budget.reserve_scan(2048 + 4 * len(name))
+                    rows.append((info.st_mtime_ns, name))
+            _require(_bc_frozen_identity(os.fstat(fd)) == identity, "E_DRIFT")
+        rows.sort(reverse=True)
+        for timestamp, name in rows:
+            sys.stdout.write(str(timestamp) + " " + name + "\0")
+
+
+def _bc_workflow_prelude() -> str:
+    """从唯一维护源生成同次 SSH stdin 的私有函数，避开 workflow run 长度限制。"""
+    import ast
+    import builtins
+    import symtable
+    with open(__file__, "rb") as handle:
+        raw = handle.read(4 * 1024 * 1024 + 1)
+    _require(len(raw) <= 4 * 1024 * 1024, "E_GATES", "控制源码过大")
+    text = raw.decode("utf-8", errors="strict")
+    source_lines = text.splitlines(keepends=True)
+    tree = ast.parse(text)
+    constants = {"MAX_UINT", "IDENTITY_KEYS", "DIR_FD_SUPPORTED", "_BC_LIMITS", "_BC_CHUNK", "_BC_ARCHIVE_WORK", "_BC_TREE_WORK"}
+    helpers = {"TransactionError", "_require", "_keys", "_uint", "_identity", "_validate_identity", "_same", "_path",
+               "_platform", "_open_root_fd", "_BCResourceError", "_BCBudget", "_bc_path", "_bc_validate_metadata",
+               "_BCArchiveEntry", "_BCArchiveResult", "_BCGzipReader", "_bc_entry_charge", "_bc_validate_archive", "_bc_parse_archive",
+               "_bc_directory_names", "_BCTreeRoot", "_BCTreeEntry", "_BCTreePlan", "_bc_frozen_identity", "_bc_scan_trees",
+               "_bc_execute_tree_plan", "_bc_validate_config_backup", "_bc_check_config_backup", "_BCBackupIdentity",
+               "_bc_config_backup_identity", "_bc_prune_config_backups", "_bc_open_archive", "_bc_resource_action"}
+    methods = {"__init__", "__enter__", "__exit__", "directory", "parent", "ref", "remove"}
+    found: set[str] = set()
+    chunks = ["from __future__ import annotations\nimport errno, hashlib, os, posixpath, re, stat, sys, tarfile, types, zlib\n"
+              "try:\n    import fcntl\nexcept ImportError:\n    fcntl = None\n"
+              "from contextlib import contextmanager\nfrom typing import Any, BinaryIO, Callable, Iterator, Mapping, NamedTuple, Sequence\n"]
+
+    def source(node: Any) -> str:
+        begin = min([node.lineno] + [decorator.lineno for decorator in getattr(node, "decorator_list", [])])
+        return "".join(source_lines[begin - 1:node.end_lineno]).replace("\r\n", "\n").rstrip() + "\n"
+
+    for node in tree.body:
+        if isinstance(node, ast.Assign):
+            names = {target.id for target in node.targets if isinstance(target, ast.Name)}
+            if names & constants:
+                _require(len(names) == 1 and names <= constants and not names & found, "E_GATES", "资源常量依赖重复或未知")
+                found.update(names & constants)
+                chunks.append(source(node))
+        elif isinstance(node, (ast.FunctionDef, ast.ClassDef)) and node.name in helpers:
+            _require(node.name not in found, "E_GATES", "资源函数依赖重复")
+            found.add(node.name)
+            chunks.append(source(node))
+        elif isinstance(node, ast.ClassDef) and node.name == "_Fs":
+            _require("_Fs" not in found, "E_GATES", "文件系统依赖重复")
+            selected = [method for method in node.body if getattr(method, "name", None) in methods]
+            _require(len(selected) == len(methods) and {method.name for method in selected} == methods, "E_GATES")
+            chunks.append("class _Fs:\n" + "\n".join(source(method) for method in selected))
+            found.add("_Fs")
+    _require(found == constants | helpers | {"_Fs"}, "E_GATES", "资源前导源码依赖不完整")
+    chunks.append('try:\n    _bc_resource_action(sys.argv[1:])\n'
+                  'except TransactionError as error:\n'
+                  '    print("资源或资格校验失败，停止并保留现场", file=sys.stderr)\n'
+                  '    raise SystemExit(3 if error.code == "E_RESOURCE" else 1)\n'
+                  'except (OSError, UnicodeError, ValueError) as error:\n'
+                  '    print("资源输入或对象状态校验失败，停止并保留现场", file=sys.stderr)\n'
+                  '    raise SystemExit(1)\n')
+    python = "\n".join(chunks)
+    compile(python, "<myweb-resource-prelude>", "exec")
+    symbols = symtable.symtable(python, "<myweb-resource-prelude>", "exec")
+    available = {symbol.get_name() for symbol in symbols.get_symbols() if symbol.is_assigned() or symbol.is_imported()} | set(vars(builtins))
+    pending = [symbols]
+    while pending:
+        scope = pending.pop()
+        _require(all(not symbol.is_global() or not symbol.is_referenced() or symbol.get_name() in available
+                     for symbol in scope.get_symbols()), "E_GATES", "资源前导引用了未承接依赖")
+        pending.extend(scope.get_children())
+    _require("PY_BC_RESOURCE" not in python.splitlines(), "E_GATES", "资源前导定界冲突")
+    result = "bc_resource_python() {\n  python3 -I -B - \"$@\" <<'PY_BC_RESOURCE'\n" + python + "PY_BC_RESOURCE\n}\n"
+    _require(len(result.encode("utf-8")) <= 4 * 1024 * 1024, "E_GATES", "生成控制源码过大")
+    return result
+
+
 def _prune_plan(transaction: _Transaction, record: dict[str, Any]) -> dict[str, Any]:
     fs = transaction.fs
     protected = {record[bundle][slot]["directory"]["path"].rsplit("/", 1)[0]
@@ -1796,9 +2711,11 @@ def _prune_plan(transaction: _Transaction, record: dict[str, Any]) -> dict[str, 
         target = _link_target(fs, path, fs.link(path))
         _require(re.fullmatch(re.escape(RELEASES_ROOT) + r"/[A-Za-z0-9._-]+/" + slot, target) is not None, "E_PATH")
         protected.add(target.rsplit("/", 1)[0])
+    budget = _BCBudget()
+    budget.reserve_scan(16384)
     candidates = []
     with fs.directory(RELEASES_ROOT) as fd:
-        for name in os.listdir(fd):
+        for name in _bc_directory_names(fd, budget=budget):
             if not name.startswith("release-"):
                 continue
             _require(re.fullmatch(r"release-[A-Za-z0-9._-]+", name) is not None, "E_PATH")
@@ -1806,20 +2723,23 @@ def _prune_plan(transaction: _Transaction, record: dict[str, Any]) -> dict[str, 
             _validate_identity(_identity(info), "directory")
             path = RELEASES_ROOT + "/" + name
             _require(not fs.exists(path + "/PRESERVE"), "E_STATE")
+            budget.reserve_scan(4096 + 8 * len(path))
             candidates.append((info.st_mtime_ns, path, _identity(info)))
     candidates.sort(reverse=True)
     protected.update(path for _, path, _ in candidates[:5])
     releases = sorted(({"path": path, "identity": identity} for _, path, identity in candidates if path not in protected), key=lambda value: value["path"])
     payloads = []
     with fs.directory(transaction.upload) as fd:
-        for name in sorted(os.listdir(fd)):
+        for name in _bc_directory_names(fd, budget=budget):
             if name in ("portal-dist.tar.gz", "portal-dist.tar.gz.sha256", "DEPLOYED", "rollback") or re.fullmatch(
                     r"\.release-transaction-state-v1\.json\.[0-9a-f]{32}\.tmp", name):
                 identity = fs.info(transaction.upload + "/" + name)
                 _validate_identity(identity, "directory" if name == "rollback" else "file")
+                budget.reserve_scan(4096 + 8 * len(name))
                 payloads.append({"relative_path": name, "identity": identity})
             else:
                 _require(name in ("control", RECEIPT_NAME), "E_STATE", "run 目录出现未知材料，拒绝猜测清理")
+    payloads.sort(key=lambda item: item["relative_path"])
     links = []
     for slot in SLOTS:
         for role in ("candidate", "restore"):
@@ -1831,48 +2751,345 @@ def _prune_plan(transaction: _Transaction, record: dict[str, Any]) -> dict[str, 
     return plan
 
 
-def _remove_tree(fs: _Fs, path: str, identity: dict[str, int]) -> None:
-    _same(fs.ref(path)["identity"], identity, directory_children=True)
-    with fs.directory(path) as fd:
-        device = os.fstat(fd).st_dev
-        for name in os.listdir(fd):
-            child = _identity(os.stat(name, dir_fd=fd, follow_symlinks=False))
-            _require(child["device"] == device, "E_PATH", "拒绝跨文件系统递归删除")
-            kind = "directory" if stat.S_ISDIR(child["mode"]) else "symlink" if stat.S_ISLNK(child["mode"]) else "file"
-            _validate_identity(child, kind)
-            child_path = path + "/" + name
-            if kind == "directory":
-                _remove_tree(fs, child_path, child)
-            else:
-                _same(_identity(os.stat(name, dir_fd=fd, follow_symlinks=False)), child)
-                os.unlink(name, dir_fd=fd)
+def _bc_directory_names(fd: int, *, budget: _BCBudget) -> Iterator[str]:
+    """单目录 inventory 的有界读取；调用者对保留记录另行预付容量。"""
+    budget.reserve_scan(_BC_TREE_WORK)
+    scope = budget._scope()
+    try:
+        with os.scandir(fd) as items:
+            for item in items:
+                budget.add("members", 1, scope=scope)
+                name, _, _ = _bc_path(item.name, budget=budget)
+                _require(name == item.name and "/" not in name and name != ".", "E_PATH")
+                yield name
+    finally:
+        budget.release_scan(_BC_TREE_WORK)
+
+
+class _BCTreeRoot(NamedTuple):
+    path: str
+    identity: tuple[int, ...]
+
+
+class _BCTreeEntry(NamedTuple):
+    root: str
+    relative_path: str
+    kind: str
+    logical_size: int
+    identity: tuple[int, ...]
+    link_text: bytes
+
+
+class _BCTreePlan(NamedTuple):
+    roots: tuple[_BCTreeRoot, ...]
+    entries: tuple[_BCTreeEntry, ...]
+    members_by_root: tuple[tuple[str, int], ...]
+    regular_bytes_by_root: tuple[tuple[str, int], ...]
+    scan_bytes: int
+
+
+def _bc_frozen_identity(info: os.stat_result) -> tuple[int, ...]:
+    return (info.st_dev, info.st_ino, info.st_uid, info.st_gid, info.st_mode, info.st_nlink)
+
+
+def _bc_scan_trees(fs: _Fs, roots: Sequence[str], *, mode: str,
+                    budget: _BCBudget | None = None) -> _BCTreePlan:
+    budget = budget if budget is not None else _BCBudget()
+    if mode not in ("venv", "delete", "snapshot") or type(roots) not in (list, tuple):
+        budget._reject()
+    # 既有正式 prune plan 本来最多 4096 releases 加一个 rollback；拒绝无界 iterable。
+    if len(roots) > 4097:
+        budget._reject()
+    budget.reserve_scan(_BC_TREE_WORK)
+    retained = 2048
+    budget.reserve_scan(retained)
+    root_refs: list[_BCTreeRoot] = []
+    entries: list[_BCTreeEntry] = []
+    members: list[tuple[str, int]] = []
+    regulars: list[tuple[str, int]] = []
+    root_ids: set[tuple[int, int]] = set()
+
+    def visit(fd: int, root: str, relative: str, device: int, scope: str,
+              totals: list[int]) -> None:
+        nonlocal retained
+        # 每层的迭代器、dirent、stat、路径暂存及 Python frame 在进入之前预留。
+        budget.reserve_scan(_BC_TREE_WORK)
+        before = _bc_frozen_identity(os.fstat(fd))
+        try:
+            with os.scandir(fd) as children:
+                for child in children:
+                    budget.add("members", 1, scope=scope)
+                    totals[0] += 1
+                    name = child.name
+                    _require(type(name) is str and name not in ("", ".", "..") and "/" not in name, "E_PATH")
+                    path = relative + "/" + name if relative else name
+                    path, _, _ = _bc_path(path, budget=budget)
+                    info = os.stat(name, dir_fd=fd, follow_symlinks=False)
+                    identity = _bc_frozen_identity(info)
+                    _require(info.st_dev == device, "E_PATH", "拒绝跨文件系统扫描")
+                    kind = "directory" if stat.S_ISDIR(info.st_mode) else "symlink" if stat.S_ISLNK(info.st_mode) else "file"
+                    if mode == "snapshot":
+                        # 私有配置副本保留原属主/权限；原根与所有后代身份仍逐项绑定。
+                        predicate = {"directory": stat.S_ISDIR, "symlink": stat.S_ISLNK, "file": stat.S_ISREG}[kind]
+                        _require(predicate(info.st_mode) and info.st_ino > 0 and info.st_nlink > 0, "E_IDENTITY")
+                        _require(kind == "directory" or info.st_nlink == 1, "E_IDENTITY")
+                    else:
+                        _validate_identity(dict(zip(IDENTITY_KEYS, identity)), kind)
+                    size = info.st_size if kind == "file" else 0
+                    _require(type(size) is int and size >= 0, "E_IDENTITY")
+                    if kind == "file":
+                        budget._check("file", size)
+                        totals[1] += size
+                        if mode == "venv":
+                            budget.add("venv", size, scope=scope)
+                    # Linux readlink 的上限以 st_size 预检，返回值复检；不打开目标。
+                    link = b""
+                    if kind == "symlink":
+                        _require(0 <= info.st_size <= 4096, "E_PATH")
+                        link = os.readlink(os.fsencode(name), dir_fd=fd)
+                        _require(type(link) is bytes and len(link) <= 4096, "E_PATH")
+                    cost = 2048 + 4 * len(root) + 4 * len(path) + len(link)
+                    budget.reserve_scan(cost)
+                    retained += cost
+                    if kind == "directory":
+                        child_fd = os.open(name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC, dir_fd=fd)
+                        try:
+                            _require(_bc_frozen_identity(os.fstat(child_fd)) == identity, "E_DRIFT")
+                            visit(child_fd, root, path, device, scope, totals)
+                        finally:
+                            os.close(child_fd)
+                    after = os.stat(name, dir_fd=fd, follow_symlinks=False)
+                    _require(_bc_frozen_identity(after) == identity and
+                             (kind != "file" or after.st_size == size), "E_DRIFT")
+                    if kind == "symlink":
+                        _require(os.readlink(os.fsencode(name), dir_fd=fd) == link, "E_DRIFT")
+                    entries.append(_BCTreeEntry(root, path, kind, size, identity, link))
+            _require(_bc_frozen_identity(os.fstat(fd)) == before, "E_DRIFT")
+        finally:
+            budget.release_scan(_BC_TREE_WORK)
+
+    try:
+        for raw_root in roots:
+            _require(type(raw_root) is str and raw_root.startswith("/"), "E_PATH")
+            if len(raw_root) > 16385:
+                budget._check("path", len(raw_root) - 1)
+            normalized, _, _ = _bc_path(raw_root[1:], budget=budget)
+            root = "/" + normalized
+            _require(root == raw_root and all(root != ref.path and not root.startswith(ref.path + "/")
+                     and not ref.path.startswith(root + "/") for ref in root_refs), "E_PATH")
+            cost = 4096 + 8 * len(root)
+            budget.reserve_scan(cost)
+            retained += cost
+            with fs.directory(root) as fd:
+                root_info = os.fstat(fd)
+                if mode == "snapshot":
+                    _require(root_info.st_uid == root_info.st_gid == 0 and stat.S_IMODE(root_info.st_mode) == 0o700, "E_IDENTITY")
+                identity = _bc_frozen_identity(root_info)
+                _require(identity[:2] not in root_ids, "E_PATH", "根别名不能重领额度")
+                root_ids.add(identity[:2])
+                root_refs.append(_BCTreeRoot(root, identity))
+                totals = [0, 0]
+                visit(fd, root, "", identity[0], budget._scope(), totals)
+                members.append((root, totals[0]))
+                regulars.append((root, totals[1]))
+                _require(_bc_frozen_identity(os.fstat(fd)) == identity, "E_DRIFT")
+        # 先完成所有树，再复读全部根的完整六值身份。
+        for ref in root_refs:
+            with fs.directory(ref.path) as fd:
+                _require(_bc_frozen_identity(os.fstat(fd)) == ref.identity, "E_DRIFT")
+        tuple_charge = 1024 + 8 * (len(entries) + 3 * len(root_refs))
+        budget.reserve_scan(tuple_charge)
+        return _BCTreePlan(tuple(root_refs), tuple(entries), tuple(members), tuple(regulars), retained + tuple_charge)
+    finally:
+        budget.release_scan(_BC_TREE_WORK)
+
+
+def _bc_execute_tree_plan(fs: _Fs, plan: _BCTreePlan, *, budget: _BCBudget,
+                           before_delete: Callable[[], None],
+                           expected_roots: tuple[_BCTreeRoot, ...] | None = None) -> None:
+    """消费已扫描的后序清单；索引与复验仍计同一预算，不回退递归删除。"""
+    index_charge = 4096 + 1024 * (len(plan.entries) + len(plan.roots))
+    budget.reserve_scan(index_charge)
+    index = {(entry.root, entry.relative_path): entry for entry in plan.entries}
+    authorized = {ref.path: ref.identity for ref in (expected_roots if expected_roots is not None else plan.roots)}
+    budget.reserve_scan(_BC_TREE_WORK)
+
+    def current(fd: int, name: str, entry: _BCTreeEntry, *, changed_children: bool = False) -> None:
+        info = os.stat(name, dir_fd=fd, follow_symlinks=False)
+        actual = _bc_frozen_identity(info)
+        _require((actual[:5] == entry.identity[:5] if changed_children else actual == entry.identity), "E_DRIFT")
+        if entry.kind == "file":
+            _require(info.st_size == entry.logical_size, "E_DRIFT")
+        if entry.kind == "symlink":
+            _require(os.readlink(os.fsencode(name), dir_fd=fd) == entry.link_text, "E_DRIFT")
+
+    @contextmanager
+    def bound_parent(entry: _BCTreeEntry) -> Iterator[tuple[int, str]]:
+        # 按原根身份和已扫祖先逐级取得 fd，不能经替换后的同名根删除旧清单对象。
+        with fs.directory(entry.root) as root_fd:
+            _require(_bc_frozen_identity(os.fstat(root_fd))[:5] == authorized[entry.root][:5], "E_DRIFT")
+            fd = os.dup(root_fd)
+            prefix = ""
+            parts = entry.relative_path.split("/")
+            try:
+                for part in parts[:-1]:
+                    prefix = prefix + "/" + part if prefix else part
+                    expected = index.get((entry.root, prefix))
+                    _require(expected is not None and expected.kind == "directory", "E_DRIFT")
+                    nested = os.open(part, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC, dir_fd=fd)
+                    try:
+                        _require(_bc_frozen_identity(os.fstat(nested))[:5] == expected.identity[:5], "E_DRIFT")
+                    except BaseException:
+                        os.close(nested)
+                        raise
+                    os.close(fd)
+                    fd = nested
+                yield fd, parts[-1]
+            finally:
+                os.close(fd)
+
+    try:
+        _require(len(authorized) == len(plan.roots), "E_DRIFT")
+        for ref in plan.roots:
+            _require(ref.path in authorized and ref.identity[:5] == authorized[ref.path][:5], "E_DRIFT", "扫描根必须绑定原删除资格")
+        # 首删前逐目录复验全集，新增项也会失败；不先删除第一棵再检查第二棵。
+        for ref in plan.roots:
+            scope = budget._scope()
+            visited = 0
+            with fs.directory(ref.path) as fd:
+                _require(_bc_frozen_identity(os.fstat(fd)) == ref.identity, "E_DRIFT")
+            directories = (("", ref.path),)
+            for relative, full in directories:
+                with fs.directory(full) as fd, os.scandir(fd) as children:
+                    for child in children:
+                        budget.add("members", 1, scope=scope)
+                        entry = index.get((ref.path, child.name))
+                        _require(entry is not None, "E_DRIFT")
+                        current(fd, child.name, entry)
+                        visited += 1
+            for entry in plan.entries:
+                if entry.root != ref.path or entry.kind != "directory":
+                    continue
+                with bound_parent(entry) as (parent, leaf):
+                    fd = os.open(leaf, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC, dir_fd=parent)
+                    try:
+                        _require(_bc_frozen_identity(os.fstat(fd)) == entry.identity, "E_DRIFT")
+                        with os.scandir(fd) as children:
+                            for child in children:
+                                budget.add("members", 1, scope=scope)
+                                nested = index.get((ref.path, entry.relative_path + "/" + child.name))
+                                _require(nested is not None, "E_DRIFT")
+                                current(fd, child.name, nested)
+                                visited += 1
+                    finally:
+                        os.close(fd)
+            expected = next(count for root, count in plan.members_by_root if root == ref.path)
+            _require(visited == expected, "E_DRIFT")
+        before_delete()
+        for entry in plan.entries:
+            before_delete()
+            with bound_parent(entry) as (fd, name):
+                current(fd, name, entry, changed_children=entry.kind == "directory")
+                if entry.kind == "directory":
+                    # rmdir 原子拒绝新增子项；只消费清单，不发现并删除未知对象。
+                    os.rmdir(name, dir_fd=fd)
+                else:
+                    os.unlink(name, dir_fd=fd)
                 os.fsync(fd)
-        os.fsync(fd)
-    fs.remove(path, identity, directory=True)
+        for ref in plan.roots:
+            before_delete()
+            fs.remove(ref.path, dict(zip(IDENTITY_KEYS, authorized[ref.path])), directory=True)
+    finally:
+        index.clear()
+        authorized.clear()
+        budget.release_scan(_BC_TREE_WORK)
+        budget.release_scan(index_charge)
+
+
+def _remove_tree(fs: _Fs, path: str, identity: dict[str, int]) -> None:
+    """单棵树的私有调用也必须消费完整有界计划；事务清理使用下方全集入口。"""
+    budget = _BCBudget()
+    budget.reserve_scan(4096 + 4 * len(path))
+    _same(fs.ref(path)["identity"], identity, directory_children=True)
+    original = (_BCTreeRoot(path, tuple(identity[key] for key in IDENTITY_KEYS)),)
+    plan = _bc_scan_trees(fs, (path,), mode="delete", budget=budget)
+    _bc_execute_tree_plan(fs, plan, budget=budget, before_delete=lambda: None, expected_roots=original)
 
 
 def _execute_prune(transaction: _Transaction, record: dict[str, Any], receipt: dict[str, Any]) -> None:
     fs = transaction.fs
     plan = receipt["prune_plan"]
     _validate_prune(plan, record)
-    _require(not fs.exists(MAINTENANCE_PATH) and not fs.exists(PRESERVE_PATH), "E_STATE", "全局保护现场禁止清理")
-    protected = {_link_target(fs, path, fs.link(path)).rsplit("/", 1)[0] for path in CURRENT.values()}
-    _require(not any(ref["path"] in protected for ref in plan["releases"]), "E_STATE", "计划与实际 current 保护冲突")
+    budget = _BCBudget()
+    # 既有正式计划、下列候选/缺席/单文件表及六值身份的保守容量；先预留再构造。
+    budget.reserve_scan(16384 + 4096 * sum(len(plan[key]) for key in plan))
+    roots: list[str] = []
+    original_roots: list[_BCTreeRoot] = []
+    absent: list[str] = []
+    files: list[tuple[str, dict[str, int], int, bytes | None]] = []
+
+    def protected() -> None:
+        _require(not fs.exists(MAINTENANCE_PATH) and not fs.exists(PRESERVE_PATH), "E_STATE", "全局保护现场禁止清理")
+        current_roots = {_link_target(fs, path, fs.link(path)).rsplit("/", 1)[0] for path in CURRENT.values()}
+        _require(not any(ref["path"] in current_roots for ref in plan["releases"]), "E_STATE", "计划与实际 current 保护冲突")
+        _require(not any(fs.exists(path) for path in absent), "E_DRIFT", "原缺席对象重新出现")
+        _require(not any(fs.exists(ref["path"] + "/PRESERVE") for ref in plan["releases"]), "E_STATE")
+
+    def add_file(path: str, identity: dict[str, int], *, link: bool = False) -> None:
+        if not fs.exists(path):
+            absent.append(path)
+            return
+        _bc_path(path[1:], budget=budget)
+        with fs.parent(path) as (fd, name):
+            info = os.stat(name, dir_fd=fd, follow_symlinks=False)
+            _same(_identity(info), identity)
+            if link:
+                _require(0 <= info.st_size <= 4096, "E_PATH")
+                text = os.readlink(os.fsencode(name), dir_fd=fd)
+                _require(len(text) <= 4096, "E_PATH")
+            else:
+                budget._check("file", info.st_size)
+                text = None
+            files.append((path, identity, info.st_size, text))
+
+    protected()
     for ref in plan["releases"]:
         if fs.exists(ref["path"]):
-            _require(not fs.exists(ref["path"] + "/PRESERVE"), "E_STATE")
-            _remove_tree(fs, ref["path"], ref["identity"])
+            _same(fs.ref(ref["path"])["identity"], ref["identity"], directory_children=True)
+            roots.append(ref["path"])
+            original_roots.append(_BCTreeRoot(ref["path"], tuple(ref["identity"][key] for key in IDENTITY_KEYS)))
+        else:
+            absent.append(ref["path"])
     for item in plan["payloads"]:
         path = transaction.upload + "/" + item["relative_path"]
-        if fs.exists(path):
-            if item["relative_path"] == "rollback":
-                _remove_tree(fs, path, item["identity"])
+        if item["relative_path"] == "rollback":
+            if fs.exists(path):
+                _same(fs.ref(path)["identity"], item["identity"], directory_children=True)
+                roots.append(path)
+                original_roots.append(_BCTreeRoot(path, tuple(item["identity"][key] for key in IDENTITY_KEYS)))
             else:
-                fs.remove(path, item["identity"])
+                absent.append(path)
+        else:
+            add_file(path, item["identity"])
     for item in plan["temporary_links"]:
-        path = _temporary_link(transaction.txn_id, item["slot"], item["role"])
-        if fs.exists(path):
-            fs.remove(path, item["identity"])
+        add_file(_temporary_link(transaction.txn_id, item["slot"], item["role"]), item["identity"], link=True)
+    tree_plan = _bc_scan_trees(fs, roots, mode="delete", budget=budget)
+    # 所有普通待删项也先完成资源与身份复验，之后才进入第一棵树的删除。
+    def verify_file(item: tuple[str, dict[str, int], int, bytes | None]) -> None:
+        path, identity, size, link = item
+        with fs.parent(path) as (fd, name):
+            info = os.stat(name, dir_fd=fd, follow_symlinks=False)
+            _same(_identity(info), identity)
+            _require(info.st_size == size, "E_DRIFT")
+            if link is not None:
+                _require(os.readlink(os.fsencode(name), dir_fd=fd) == link, "E_DRIFT")
+    for item in files:
+        verify_file(item)
+    _bc_execute_tree_plan(fs, tree_plan, budget=budget, before_delete=protected, expected_roots=tuple(original_roots))
+    for item in files:
+        protected()
+        verify_file(item)
+        fs.remove(item[0], item[1])
     fs.sync(RELEASES_ROOT)
     fs.sync(transaction.upload)
 

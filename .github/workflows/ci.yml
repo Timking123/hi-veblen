@@ -300,7 +300,7 @@ jobs:
           assert 'mv -T -- "$lease_tmp" "$lease_dir"' in preflight
           assert "trap cleanup_lease_tmp EXIT" in preflight
           assert (
-              '"$GITHUB_RUN_ID" "$GITHUB_RUN_ATTEMPT" "$GITHUB_SHA" <<\'REMOTE\''
+              '"$GITHUB_RUN_ID" "$GITHUB_RUN_ATTEMPT" "$GITHUB_SHA" < "$bc_remote_script"'
               in preflight
           )
           assert 'portal_revision="$3"' in preflight
@@ -353,7 +353,7 @@ jobs:
           assert 'test "$(dirname -- "$target")" != \\' in backup
           assert '--directory "$config_backup_snapshot"' in backup
           assert "--directory /" not in backup
-          assert 'rm -rf --one-file-system -- "$config_backup_snapshot"' in backup
+          assert 'bc_resource_python cleanup --snapshot "$config_backup_snapshot"' in backup
           assert 'tar --create --gzip --file' in backup
           assert 'sha256sum config.tar.gz metadata.txt > SHA256SUMS' in backup
           assert 'sha256sum --check SHA256SUMS' in backup
@@ -362,11 +362,13 @@ jobs:
               backup.index("validate_config_backup_payload() {"):
               backup.index('          for path in "${required_config_paths[@]}"; do')
           ]
+          assert 'bc_resource_python config_backup "$backup_path" "$backup_name"' in validator
+          validator = core[core.index("def _bc_validate_config_backup("):core.index("def _bc_workflow_prelude(")]
           for required in (
-              "tarfile.open",
+              "_bc_validate_archive",
               "manifest_entries",
               "metadata 路径集合无效",
-              "归档包含越界路径",
+              'purpose="config_backup"',
               "sites-enabled 链接越界",
           ):
               assert required in validator
@@ -382,36 +384,32 @@ jobs:
           durable_sync = backup.index(
               'sync -f "$config_backup_dir/config.tar.gz"'
           )
-          retention_start = backup.index("config_backup_retention=30")
-          retention_delete = backup.index('rmdir -- "$backup_path"')
-          success_log = backup.index('printf \'持久生产配置备份已创建：')
-          assert (
-              archive_creation
-              < atomic_publish
-              < published_tmp_reset
-              < published_validation
-              < durable_sync
-              < retention_start
-              < retention_delete
-              < success_log
-          )
-          assert "^run-[0-9]+-[0-9]+-[0-9a-f]{40}$" in backup
-          retention = backup[retention_start:retention_delete]
-          retention_guard = (
-              'if test "$backup_name" = "$config_backup_name" || \\\n'
-              '                  test "$backup_name" = "$latest_backup_name" || \\\n'
-              '                  test "$valid_backup_rank" -le "$config_backup_retention"; then'
-          )
-          assert retention_guard in retention
-          assert "backup_member_count=" in retention
-          assert "test \"$backup_member_count\" -ne 3" in retention
-          assert (
-              'validate_config_backup_payload "$backup_path" "$backup_name"'
-              in retention
-          )
+          retention_start = backup.index('bc_resource_python cleanup --retention "$config_backup_root" "$config_backup_name"')
+          success_log = backup.index("printf '持久生产配置备份已创建：")
+          assert archive_creation < atomic_publish < published_tmp_reset < published_validation < durable_sync < retention_start < success_log
+          retention = core[core.index("def _bc_prune_config_backups("):core.index("def _bc_open_archive(")]
+          identity = core[core.index("def _bc_config_backup_identity("):core.index("def _bc_prune_config_backups(")]
+          assert 'rows.sort(reverse=True)' in retention
+          assert 'if latest is None:' in retention and 'latest = name' in retention
+          assert 'name in (current_name, latest) or valid_rank <= 30' in retention
+          assert 'original.root == original_root' in retention
+          assert 'expected_roots=originals' in retention
+          assert 'len(plan.entries) == len(expected_files)' in retention
+          assert 'count != 3 or len(files) != 3' in identity
+          assert 'stat.S_IMODE(info.st_mode) == 0o700' in identity
+          assert 'stat.S_IMODE(info.st_mode) == 0o600' in identity
+          assert '_bc_validate_config_backup(path, name, budget=budget)' in retention
+          assert 'if error.code in ("E_RESOURCE", "E_DRIFT"):' in retention
+          assert retention.index('_bc_validate_config_backup(path, name, budget=budget)') < retention.index('_bc_scan_trees(') < retention.index('_bc_execute_tree_plan(')
+          assert 'bc_backup_order "$config_backup_root" |' not in backup
+          assert 'bc_cleanup_trees "${delete_candidates[@]}"' not in backup
           assert 'rm -rf --one-file-system -- "$backup_path"' not in backup
-          assert 'rm -f -- "$backup_path/config.tar.gz"' in backup
-          assert 'rmdir -- "$backup_path"' in backup
+          assert 'rm -f -- "$backup_path/config.tar.gz"' not in backup
+          assert 'rmdir -- "$backup_path"' not in backup
+          assert 'bc_resource_python cleanup "$@"' in backup
+          assert 'bc_resource_python inventory "$1"' in backup
+          assert 'transaction._bc_workflow_prelude()' in workflow
+          assert 'ref: ${{ github.sha }}' in workflow and 'persist-credentials: false' in workflow
           lease_publish = preflight.index('mv -T -- "$lease_tmp" "$lease_dir"')
           assert lease_publish < backup_start
           staging = workflow[workflow.index("      - name: 创建私有暂存目录"):workflow.index("      - name: 上传发布包")]
@@ -447,13 +445,13 @@ jobs:
 
           workflow = Path(".github/workflows/deploy.yml").read_text(encoding="utf-8")
           validator_start = workflow.index(
-              "          validate_config_backup_payload() {"
+              "          bc_cleanup_trees() {"
           )
           validator_end = workflow.index(
               '          for path in "${required_config_paths[@]}"; do',
               validator_start,
           )
-          start = workflow.index("          config_backup_retention=30")
+          start = workflow.index('          bc_resource_python cleanup --retention "$config_backup_root" "$config_backup_name"')
           end = workflow.index(
               "          printf '持久生产配置备份已创建：", start
           )
@@ -464,8 +462,16 @@ jobs:
           retention = "\n".join(
               line[10:] for line in workflow[start:end].splitlines()
           )
+          import importlib.util
+          spec = importlib.util.spec_from_file_location("resource_source", "scripts/release_transaction.py")
+          resources = importlib.util.module_from_spec(spec)
+          spec.loader.exec_module(resources)
+          prelude = resources._bc_workflow_prelude()
+          import subprocess
+          subprocess.run(["bash", "-n"], input=prelude, text=True, check=True)
+          validator = prelude + "\n" + validator
           fixture = r'''set -euo pipefail
-          fixture_root="$(mktemp -d)"
+          fixture_root="$(mktemp -d /root/myweb-config-retention.XXXXXX)"
           trap 'rm -rf --one-file-system -- "$fixture_root"' EXIT
           config_backup_root="$fixture_root/backups"
           install -d -o root -g root -m 0700 "$config_backup_root"

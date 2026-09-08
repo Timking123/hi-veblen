@@ -4,6 +4,9 @@
 from __future__ import annotations
 
 import copy
+import gzip
+import hashlib
+import tarfile
 import builtins
 import io
 import importlib
@@ -96,6 +99,978 @@ class FormatTests(unittest.TestCase):
                                           b"LINGXI_WORLD_LEDGER_SCHEMA_CAPABILITY=dual-read-v2-preserve"])
         self.assertTrue(raw.endswith(b"\n"))
         self.assertEqual(len(transaction._release_env(BACKEND, True).splitlines()), 2)
+
+
+class ResourceTests(unittest.TestCase):
+    """真实小字节流与明确缩小的预算；大容量证据另行执行，不能由本组冒充。"""
+
+    def archive(self, items, *, format=tarfile.GNU_FORMAT):
+        output = io.BytesIO()
+        with tarfile.open(fileobj=output, mode="w:gz", format=format) as archive:
+            for name, kind, value in items:
+                member = tarfile.TarInfo(name)
+                if kind == "directory":
+                    member.type = tarfile.DIRTYPE
+                    archive.addfile(member)
+                elif kind == "symlink":
+                    member.type = tarfile.SYMTYPE
+                    member.linkname = value
+                    archive.addfile(member)
+                elif kind == "file":
+                    member.size = len(value)
+                    archive.addfile(member, io.BytesIO(value))
+                else:
+                    member.type = kind
+                    archive.addfile(member)
+        return output.getvalue()
+
+    def validate(self, raw, **kwargs):
+        return transaction._bc_validate_archive(io.BytesIO(raw), **kwargs)
+
+    def test_resource_contract_values_and_lower_only_overrides(self):
+        self.assertEqual(dict(transaction._BC_LIMITS), {
+            "metadata": 65536, "compressed": 2147483648, "tar": 8589934592,
+            "venv": 8589934592, "members": 100000, "file": 1073741824,
+            "path": 4096, "depth": 64, "scan": 536870912,
+        })
+        for limits in ({"other": 1}, {"file": True}, {"file": 0}, {"file": -1}, {"file": 1073741825}):
+            with self.subTest(limits=limits), self.assertRaises(transaction.TransactionError):
+                transaction._BCBudget(limits=limits)
+        budget = transaction._BCBudget(limits={"file": 7})
+        self.assertEqual(budget.limits["file"], 7)
+        with self.assertRaises(TypeError):
+            budget.limits["file"] = 8
+
+    def test_scalar_counter_boundaries_do_not_claim_large_io(self):
+        # 这里只检计数器，不把整数 add 或常量检查写成 GiB 实际输入证明。
+        for resource, maximum in transaction._BC_LIMITS.items():
+            if resource == "scan":
+                continue
+            for delta in (-1, 0, 1):
+                with self.subTest(resource=resource, delta=delta):
+                    budget = transaction._BCBudget()
+                    if delta > 0:
+                        with self.assertRaises(transaction._BCResourceError) as caught:
+                            budget.add(resource, maximum + delta)
+                        self.assertEqual(caught.exception.observed, maximum + delta)
+                    else:
+                        budget.add(resource, maximum + delta)
+
+    def test_budget_sticky_failure_and_readonly_redacted_error(self):
+        budget = transaction._BCBudget(limits={"file": 7})
+        budget.add("file", 4, scope="one")
+        with self.assertRaises(transaction._BCResourceError) as caught:
+            budget.add("file", 4, scope="one")
+        self.assertEqual((caught.exception.resource, caught.exception.limit, caught.exception.observed), ("file", 7, 8))
+        self.assertNotIn("one", str(caught.exception))
+        with self.assertRaises(AttributeError):
+            caught.exception.limit = 100
+        with self.assertRaises(transaction.TransactionError):
+            budget.add("file", 0, scope="new")
+
+    def test_scan_accounting_boundaries_and_duplicate_release(self):
+        probe = transaction._BCBudget()
+        overhead = probe.live + 1024  # 下一种预留账本槽也计费。
+        for delta in (-1, 0, 1):
+            budget = transaction._BCBudget(limits={"scan": 10000})
+            amount = 10000 - overhead + delta
+            if delta > 0:
+                with self.assertRaises(transaction._BCResourceError):
+                    budget.reserve_scan(amount)
+            else:
+                budget.reserve_scan(amount)
+                self.assertEqual(budget.live, 10000 + delta)
+                budget.release_scan(amount)
+        budget = transaction._BCBudget()
+        budget.reserve_scan(137)
+        budget.release_scan(137)
+        with self.assertRaises(transaction.TransactionError):
+            budget.release_scan(137)
+        for resource, amount in (("file", True), ("file", -1), ("missing", 1), ("scan", True)):
+            with self.subTest(resource=resource, amount=amount), self.assertRaises(transaction.TransactionError):
+                transaction._BCBudget().add(resource, amount)
+
+    def test_metadata_actual_utf8_bytes_at_64k_boundary(self):
+        for size in (65535, 65536, 65537):
+            raw = ("中" * (size // 3)).encode("utf-8") + b"x" * (size % 3)
+            self.assertEqual(len(raw), size)
+            if size > 65536:
+                with self.assertRaises(transaction._BCResourceError):
+                    transaction._bc_validate_metadata(raw)
+            else:
+                self.assertEqual(transaction._bc_validate_metadata(raw), size)
+
+    def test_path_real_bytes_depth_and_crossed_boundaries(self):
+        for size in (4095, 4096, 4097):
+            path = "中" * (size // 3) + "x" * (size % 3)
+            if size > 4096:
+                with self.assertRaises(transaction._BCResourceError):
+                    transaction._bc_path(path, budget=transaction._BCBudget())
+            else:
+                self.assertEqual(transaction._bc_path(path, budget=transaction._BCBudget())[1:], (size, 1))
+        for depth in (63, 64, 65):
+            path = "/".join(["x"] * depth)
+            if depth > 64:
+                with self.assertRaises(transaction._BCResourceError):
+                    transaction._bc_path(path, budget=transaction._BCBudget())
+            else:
+                self.assertEqual(transaction._bc_path(path, budget=transaction._BCBudget())[2], depth)
+        for path in ("", "/a", "../a", "././a", "a//b", "a/./b", "a/../b", "a\\b", "a\0b", "\ud800"):
+            with self.subTest(path=repr(path)), self.assertRaises(transaction.TransactionError):
+                transaction._bc_path(path, budget=transaction._BCBudget())
+        self.assertEqual(transaction._bc_path("./.", budget=transaction._BCBudget()), (".", 1, 0))
+
+    def test_archive_gnu_pax_normal_and_raw_extension_counts(self):
+        for format in (tarfile.GNU_FORMAT, tarfile.PAX_FORMAT):
+            with self.subTest(format=format):
+                raw = self.archive([("./", "directory", None), ("folder/" + "中文" * 40, "file", b"payload")], format=format)
+                result = self.validate(raw, declared_size=len(raw))
+                self.assertEqual((result.compressed_bytes, result.tar_bytes, result.members, result.regular_bytes),
+                                 (len(raw), len(gzip.decompress(raw)), 3, 7))
+                self.assertEqual(result.compressed_sha256, hashlib.sha256(raw).hexdigest())
+                self.assertEqual(result.entries[-1].sha256, hashlib.sha256(b"payload").hexdigest())
+                self.assertEqual(result.entries[0].path, ".")
+                with self.assertRaises(AttributeError):
+                    result.entries[0].path = "changed"
+
+    def test_gnu_base_header_partial_utf8_is_replaced_before_strict_final_name(self):
+        name = "./portal/" + "中" * 50 + ".txt"
+        raw = self.archive([(name, "file", b"normal")])
+        # 标准库完整 GNU oracle 能读；基础 100 字节字段会在中文字节中截断。
+        with tarfile.open(fileobj=io.BytesIO(raw), mode="r:gz") as reference:
+            self.assertEqual(reference.getmembers()[0].name, name)
+        result = self.validate(raw)
+        self.assertEqual(result.entries[0].path, name[2:])
+        self.assertEqual(result.members, 2)
+        header = bytearray(tarfile.TarInfo("valid").tobuf(format=tarfile.GNU_FORMAT))
+        header[0] = 255
+        header[148:156] = b"        "
+        header[148:156] = ("%06o\0 " % sum(header)).encode("ascii")
+        with self.assertRaises(transaction.TransactionError):
+            self.validate(gzip.compress(bytes(header) + b"\0" * 1024))
+
+    def test_all_resource_input_rejections_lock_the_same_budget(self):
+        for invoke in (lambda budget: transaction._bc_validate_metadata("bad", budget=budget),
+                       lambda budget: transaction._bc_scan_trees(None, (), mode="bad", budget=budget),
+                       lambda budget: transaction._bc_scan_trees(None, "bad", mode="delete", budget=budget),
+                       lambda budget: transaction._bc_scan_trees(None, ("/a",) * 4098, mode="delete", budget=budget)):
+            budget = transaction._BCBudget()
+            with self.assertRaises(transaction.TransactionError) as caught:
+                invoke(budget)
+            self.assertEqual(caught.exception.code, "E_RESOURCE")
+            with self.assertRaises(transaction.TransactionError):
+                transaction._bc_validate_metadata(b"valid", budget=budget)
+
+    def test_many_short_path_components_are_rejected_before_large_allocation(self):
+        import tracemalloc
+        path = "aa/" * 5461
+        budget = transaction._BCBudget()
+        tracemalloc.start()
+        try:
+            start, _ = tracemalloc.get_traced_memory()
+            with self.assertRaises(transaction._BCResourceError):
+                transaction._bc_path(path, budget=budget)
+            _, peak = tracemalloc.get_traced_memory()
+            self.assertLess(peak - start, 131072)
+        finally:
+            tracemalloc.stop()
+        raw_root = "/aa" * 5461
+        budget = transaction._BCBudget()
+        tracemalloc.start()
+        try:
+            start, _ = tracemalloc.get_traced_memory()
+            with self.assertRaises(transaction._BCResourceError):
+                transaction._bc_scan_trees(None, (raw_root,), mode="delete", budget=budget)
+            _, peak = tracemalloc.get_traced_memory()
+            self.assertLess(peak - start, 131072)
+            self.assertLessEqual(peak - start, budget.peak)
+            print("D087_PATH_PEAK", peak - start, "ACCOUNTED", budget.peak)
+        finally:
+            tracemalloc.stop()
+
+    def test_archive_short_reads_borrow_stream_and_bad_eof(self):
+        class ShortReader(io.BytesIO):
+            def read(self, size=-1):
+                return super().read(min(size, 7))
+        raw = self.archive([("file", "file", b"payload")])
+        stream = ShortReader(raw)
+        result = transaction._bc_validate_archive(stream, declared_size=len(raw))
+        self.assertFalse(stream.closed)
+        self.assertEqual(result.regular_bytes, 7)
+        for bad in (raw[:-1], raw[:-8], b"not gzip", raw + b"extra", raw + raw):
+            with self.subTest(length=len(bad)), self.assertRaises(transaction.TransactionError):
+                self.validate(bad)
+        for size in (len(raw) - 1, len(raw) + 1, -1, True, 2147483649):
+            with self.subTest(size=size), self.assertRaises(transaction.TransactionError):
+                self.validate(raw, declared_size=size)
+
+    def test_archive_compressed_real_scaled_boundary_and_constant_probe(self):
+        raw = self.archive([("file", "file", bytes(range(256)))])
+        for delta in (-1, 0, 1):
+            budget = transaction._BCBudget(limits={"compressed": len(raw) + delta})
+            stream = io.BytesIO(raw)
+            if delta < 0:
+                with self.assertRaises(transaction._BCResourceError):
+                    transaction._bc_validate_archive(stream, budget=budget)
+                self.assertLessEqual(stream.tell(), budget.limits["compressed"] + 1)
+            else:
+                self.assertEqual(transaction._bc_validate_archive(stream, budget=budget).compressed_bytes, len(raw))
+
+    def test_archive_complete_tar_padding_and_tail_scaled_boundary(self):
+        raw = self.archive([("file", "file", b"payload")])
+        size = len(gzip.decompress(raw))
+        for limit in (size - 1, size, size + 1):
+            budget = transaction._BCBudget(limits={"tar": limit})
+            if limit < size:
+                with self.assertRaises(transaction._BCResourceError) as caught:
+                    self.validate(raw, budget=budget)
+                self.assertEqual(caught.exception.resource, "tar")
+            else:
+                self.assertEqual(self.validate(raw, budget=budget).tar_bytes, size)
+        body = gzip.decompress(raw)
+        with self.assertRaises(transaction._BCResourceError):
+            self.validate(gzip.compress(body + b"\0" * 512), budget=transaction._BCBudget(limits={"tar": size}))
+        for malformed in (body[:-1], body + b"x" * 512):
+            with self.assertRaises(transaction.TransactionError):
+                self.validate(gzip.compress(malformed))
+
+    def test_archive_members_file_and_cumulative_scaled_limits(self):
+        raw = self.archive([("a", "file", b"1234567"), ("b", "file", b"1234567")])
+        for member_limit in (1, 2, 3):
+            budget = transaction._BCBudget(limits={"members": member_limit, "file": 7})
+            if member_limit == 1:
+                with self.assertRaises(transaction._BCResourceError):
+                    self.validate(raw, budget=budget)
+            else:
+                self.assertEqual(self.validate(raw, budget=budget).regular_bytes, 14)
+        for limit in (6, 7, 8):
+            budget = transaction._BCBudget(limits={"file": limit})
+            if limit == 6:
+                with self.assertRaises(transaction._BCResourceError):
+                    self.validate(raw, budget=budget)
+            else:
+                self.assertEqual(self.validate(raw, budget=budget).regular_bytes, 14)
+
+    def test_archive_root_extension_and_unsupported_types_are_counted(self):
+        raw = self.archive([("./", "directory", None), ("x" * 101, "file", b"")])
+        with self.assertRaises(transaction._BCResourceError) as caught:
+            self.validate(raw, budget=transaction._BCBudget(limits={"members": 2}))
+        self.assertEqual(caught.exception.observed, 3)
+        for kind in (tarfile.LNKTYPE, tarfile.CHRTYPE, tarfile.FIFOTYPE, tarfile.GNUTYPE_SPARSE):
+            raw = self.archive([("special", kind, None)])
+            with self.subTest(kind=kind), self.assertRaises(transaction.TransactionError):
+                self.validate(raw)
+        raw = self.archive([(".", "file", b"")])
+        with self.assertRaises(transaction.TransactionError):
+            self.validate(raw)
+
+    def test_archive_rejects_duplicate_and_implicit_parent_conflicts(self):
+        for items in ([('a', 'file', b''), ('a', 'file', b'')],
+                      [('a', 'file', b''), ('a/b', 'file', b'')],
+                      [('a/b', 'file', b''), ('a', 'file', b'')]):
+            with self.assertRaises(transaction.TransactionError):
+                self.validate(self.archive(items))
+
+    def test_backup_link_late_target_and_equivalent_file_positive(self):
+        enabled = "etc/nginx/sites-enabled/site.conf"
+        available = "etc/nginx/sites-available/site.conf"
+        for target in ("../sites-available/site.conf", "/etc/nginx/sites-available/site.conf"):
+            raw = self.archive([(enabled, "symlink", target), (available, "file", b"config")])
+            result = self.validate(raw, purpose="config_backup")
+            self.assertEqual(result.entries[0].link_text, target)
+            with self.assertRaises(transaction.TransactionError):
+                self.validate(raw)
+        result = self.validate(self.archive([(enabled, "file", b"config")]), purpose="config_backup")
+        self.assertEqual(result.entries[0].kind, "file")
+
+    def test_backup_link_missing_outside_and_nonregular_target_negative(self):
+        enabled = "etc/nginx/sites-enabled/site.conf"
+        available = "etc/nginx/sites-available/site.conf"
+        for items in ([(enabled, "symlink", "../sites-available/missing")],
+                      [(enabled, "symlink", "../../outside")],
+                      [(enabled, "symlink", "../sites-available/site.conf"), (available, "directory", None)],
+                      [(enabled + "/nested", "symlink", "../sites-available/site.conf"), (available, "file", b"")]):
+            with self.assertRaises(transaction.TransactionError):
+                self.validate(self.archive(items), purpose="config_backup")
+        with self.assertRaises(transaction.TransactionError):
+            self.validate(self.archive([]), purpose="untrusted")
+
+    def test_retained_scan_charge_covers_independent_python_object_walk(self):
+        def measured(value, seen=None):
+            seen = set() if seen is None else seen
+            if id(value) in seen:
+                return 0
+            seen.add(id(value))
+            total = sys.getsizeof(value)
+            if isinstance(value, (tuple, list)):
+                total += sum(measured(item, seen) for item in value)
+            elif isinstance(value, dict):
+                total += sum(measured(key, seen) + measured(item, seen) for key, item in value.items())
+            return total
+        raw = self.archive([("parent/" + str(index) + "中文😀" * 20, "file", b"body") for index in range(40)])
+        budget = transaction._BCBudget()
+        first = self.validate(raw, budget=budget)
+        second = self.validate(raw, budget=budget)
+        self.assertGreaterEqual(first.scan_bytes, measured(first))
+        self.assertGreaterEqual(second.scan_bytes, measured(second))
+        self.assertGreaterEqual(budget.live, first.scan_bytes + second.scan_bytes)
+        self.assertGreater(budget.peak, budget.live)
+
+    def test_scan_budget_shared_across_held_archive_results(self):
+        raw = self.archive([("f" + str(index), "file", b"x") for index in range(100)])
+        probe = transaction._BCBudget()
+        first = self.validate(raw, budget=probe)
+        budget = transaction._BCBudget(limits={"scan": probe.peak + first.scan_bytes // 2})
+        held = self.validate(raw, budget=budget)
+        with self.assertRaises(transaction._BCResourceError) as caught:
+            self.validate(raw, budget=budget)
+        self.assertEqual(caught.exception.resource, "scan")
+        self.assertEqual(len(held.entries), 100)
+
+    def test_resource_failure_has_no_consumer_or_extract_side_effect(self):
+        actions = []
+        raw = self.archive([("/absolute", "file", b"x")])
+        with patch.object(tarfile.TarFile, "extractall", side_effect=AssertionError("不得解包")):
+            with self.assertRaises(transaction.TransactionError):
+                result = self.validate(raw)
+                actions.append(result)
+        self.assertEqual(actions, [])
+
+    def workflow(self):
+        text = (Path(__file__).resolve().parents[1] / ".github/workflows/deploy.yml").read_text(encoding="utf-8")
+        return "\n".join(line[10:] if line.startswith(" " * 10) else line for line in text.splitlines()) + "\n"
+
+    def generated_python(self):
+        return transaction._bc_workflow_prelude().split("<<'PY_BC_RESOURCE'\n", 1)[1].split("\nPY_BC_RESOURCE", 1)[0]
+
+    def test_workflow_generated_source_is_identical_and_uses_tree_plan(self):
+        import inspect
+        source = self.generated_python()
+        for function in (transaction._BCBudget, transaction._bc_path, transaction._bc_validate_archive,
+                         transaction._bc_parse_archive, transaction._bc_scan_trees, transaction._bc_execute_tree_plan,
+                         transaction._bc_validate_config_backup, transaction._Fs.directory, transaction._Fs.remove):
+            self.assertIn(inspect.getsource(function).strip(), source)
+        self.assertLessEqual(len(transaction._bc_workflow_prelude().encode("utf-8")), 4 * 1024 * 1024)
+        self.assertEqual(self.workflow().count("transaction._bc_workflow_prelude()"), 2)
+        self.assertIn('ref: ${{ github.sha }}', self.workflow())
+        self.assertIn('persist-credentials: false', self.workflow())
+        self.assertIn('path: ${{ runner.temp }}/myweb-artifacts-${{ github.sha }}', self.workflow())
+
+    def test_generated_source_rejects_missing_duplicate_unknown_and_heredoc_collision(self):
+        import inspect
+        original = Path(transaction.__file__).read_text(encoding="utf-8")
+        variants = (original.replace("def _bc_path(", "def _bc_missing_path(", 1),
+                    original + "\n" + inspect.getsource(transaction._bc_path),
+                    original.replace("return len(raw)", "return unknown_resource_dependency(raw)", 1),
+                    original.replace('class _BCArchiveEntry(NamedTuple):',
+                                     'class _BCArchiveEntry(NamedTuple):\n    """\nPY_BC_RESOURCE\n    """', 1))
+        with tempfile.TemporaryDirectory(prefix="myweb-resource-source-") as directory:
+            source = Path(directory) / "source.py"
+            for variant in variants:
+                source.write_text(variant, encoding="utf-8")
+                with patch.object(transaction, "__file__", str(source)), self.assertRaises(transaction.TransactionError):
+                    transaction._bc_workflow_prelude()
+
+    def test_workflow_every_run_segment_respects_github_character_limit(self):
+        import re
+        for name in ("deploy.yml", "ci.yml"):
+            lines = (Path(__file__).resolve().parents[1] / ".github/workflows" / name).read_text(encoding="utf-8").splitlines()
+            index = 0
+            while index < len(lines):
+                match = re.fullmatch(r"(\s*)run: \|", lines[index])
+                index += 1
+                if not match:
+                    continue
+                indent = len(match[1])
+                block = []
+                while index < len(lines) and (not lines[index].strip() or len(lines[index]) - len(lines[index].lstrip()) > indent):
+                    block.append(lines[index])
+                    index += 1
+                self.assertLessEqual(len(textwrap.dedent("\n".join(block)) + "\n"), 21000, name)
+
+    def test_real_remote_archive_gate_normal_and_rejection_stop_consumer(self):
+        body = self.generated_python()
+        self.assertIn('bc_resource_python archive "$archive" "$expected_archive_sha"', self.workflow())
+        with tempfile.TemporaryDirectory(prefix="myweb-resource-gate-") as directory:
+            root = Path(directory)
+            archive = root / "package.tar.gz"
+            marker = root / "consumer"
+            script = body + '\nfrom pathlib import Path\nPath(' + repr(str(marker)) + ').write_text("executed", encoding="utf-8")\n'
+            for name, allowed in (("./portal/" + "中" * 50 + ".txt", True), ("/".join(["x"] * 65), False)):
+                raw = self.archive([(name, "file", b"valid")])
+                archive.write_bytes(raw)
+                if marker.exists():
+                    marker.unlink()
+                result = subprocess.run([sys.executable, "-I", "-B", "-", "archive", str(archive), hashlib.sha256(raw).hexdigest()],
+                                        input=script, text=True, encoding="utf-8", capture_output=True)
+                self.assertEqual(result.returncode, 0 if allowed else 3, result.stderr)
+                self.assertEqual(marker.exists(), allowed)
+
+    @unittest.skipUnless(POSIX, "完整备份入口需要 root Linux 权限与 dir-fd；Windows 不代替权限验证")
+    def test_real_backup_validator_keeps_metadata_exact_members_and_links(self):
+        body = self.generated_python()
+        self.assertIn('bc_resource_python config_backup "$backup_path" "$backup_name"', self.workflow())
+        paths = ["opt/myagent/.env", "etc/systemd/system/myagent-world.service", "etc/systemd/system/myagent-gateway.service",
+                 "etc/nginx/sites-available", "etc/nginx/sites-enabled"]
+        base_items = [(path, "file", b"synthetic config") for path in paths[:3]] + [(path, "directory", None) for path in paths[3:]]
+        enabled = "etc/nginx/sites-enabled/site.conf"
+        available = "etc/nginx/sites-available/site.conf"
+        with tempfile.TemporaryDirectory(prefix="myweb-backup-gate-", dir="/root") as directory:
+            root = Path(directory)
+            root.chmod(0o700)
+            metadata = ("schema=myagent-production-config-backup-v1\ncreated_at_utc=2026-09-08T00:00:00Z\ngithub_run_id=1\n"
+                        "github_run_attempt=1\nportal_revision=" + PORTAL + "\napparmor_profile=absent\nops_env=absent\n"
+                        + "".join("path=" + path + "\n" for path in paths)).encode("utf-8")
+            for extra, allowed in (([(enabled, "symlink", "../sites-available/site.conf"), (available, "file", b"config")], True),
+                                   ([(enabled, "file", b"equivalent")], True),
+                                   ([(enabled, "symlink", "../../outside")], False),
+                                   ([("unexpected", "file", b"x")], False)):
+                raw = self.archive(base_items + extra)
+                (root / "config.tar.gz").write_bytes(raw)
+                (root / "metadata.txt").write_bytes(metadata)
+                (root / "SHA256SUMS").write_text(hashlib.sha256(raw).hexdigest() + "  config.tar.gz\n"
+                                                + hashlib.sha256(metadata).hexdigest() + "  metadata.txt\n", encoding="ascii")
+                for filename in ("config.tar.gz", "metadata.txt", "SHA256SUMS"):
+                    (root / filename).chmod(0o600)
+                result = subprocess.run([sys.executable, "-I", "-B", "-", "config_backup", str(root), "run-1-1-" + PORTAL],
+                                        input=body, text=True, encoding="utf-8", capture_output=True)
+                self.assertEqual(result.returncode, 0 if allowed else 1, result.stderr)
+
+    def test_transient_releases_only_dead_objects_and_retains_domains(self):
+        budget = transaction._BCBudget()
+        raw = self.archive([("held", "file", b"x")])
+        held = transaction._bc_validate_archive(io.BytesIO(raw), budget=budget)
+        initial = budget.live
+        initial_counts = dict(budget._counts)
+        live_values = []
+        for _ in range(31):
+            def validation():
+                result = transaction._bc_validate_archive(io.BytesIO(raw), budget=budget)
+                budget.reserve_scan(64 * 1024 * 1024)
+                self.assertEqual(result.entries[0].path, "held")
+            budget._transient(validation)
+            live_values.append(budget.live)
+        self.assertGreaterEqual(budget.live, initial)
+        self.assertLess(budget.live, initial + 1024 * 1024)
+        self.assertGreater(budget.peak, 64 * 1024 * 1024)
+        self.assertEqual(held.entries[0].path, "held")
+        self.assertTrue(all(budget._counts[key] == value for key, value in initial_counts.items()))
+        self.assertGreater(len(budget._counts), len(initial_counts))
+        self.assertFalse(budget._failed)
+        def invalid():
+            budget.reserve_scan(64 * 1024 * 1024)
+            raise transaction.TransactionError("E_ARCHIVE")
+        with self.assertRaises(transaction.TransactionError):
+            budget._transient(invalid)
+        self.assertLess(budget.live, initial + 1024 * 1024)
+        budget._transient(lambda: None)
+        def oversized():
+            budget.reserve_scan(transaction._BC_LIMITS["scan"])
+        with self.assertRaises(transaction._BCResourceError):
+            budget._transient(oversized)
+        self.assertTrue(budget._failed)
+        with self.assertRaises(transaction.TransactionError):
+            budget._transient(lambda: None)
+
+    def test_content_control_bounds_every_splitlines_separator_before_table(self):
+        paths = ["opt/myagent/.env", "etc/systemd/system/myagent-world.service", "etc/systemd/system/myagent-gateway.service",
+                 "etc/nginx/sites-available", "etc/nginx/sites-enabled"]
+        raw = self.archive([(path, "file", b"test") for path in paths[:3]] + [(path, "directory", None) for path in paths[3:]])
+        with tempfile.TemporaryDirectory(prefix="myweb-control-lines-") as directory:
+            root = Path(directory)
+            (root / "config.tar.gz").write_bytes(raw)
+            def validate(metadata):
+                (root / "metadata.txt").write_bytes(metadata)
+                (root / "SHA256SUMS").write_text(hashlib.sha256(raw).hexdigest() + "  config.tar.gz\n"
+                                                + hashlib.sha256(metadata).hexdigest() + "  metadata.txt\n", encoding="ascii")
+                transaction._bc_check_config_backup(str(root), "run-1-1-" + PORTAL, budget=transaction._BCBudget())
+            for separator in ("\r", "\v", "\f", "\x1c", "\x1d", "\x1e", "\x85", "\u2028", "\u2029", "\r\n"):
+                with self.subTest(separator=repr(separator)), self.assertRaises(transaction.TransactionError) as caught:
+                    validate(("unknown=x" + separator).encode("utf-8") * 65)
+                self.assertIn("配置控制文件", str(caught.exception.__cause__))
+            metadata = ("schema=myagent-production-config-backup-v1\ncreated_at_utc=2026-09-08T00:00:00Z\ngithub_run_id=1\n"
+                        "github_run_attempt=1\nportal_revision=" + PORTAL + "\napparmor_profile=absent\nops_env=absent\n"
+                        + "".join("path=" + path + "\n" for path in paths)).replace("\n", "\r\n").encode("utf-8")
+            validate(metadata)
+
+    def test_private_path_adapters_reject_before_large_slice_allocation(self):
+        import tracemalloc
+        oversized = "/" + "x" * (1024 * 1024)
+        for kind in ("identity", "retention", "snapshot", "inventory"):
+            budget = transaction._BCBudget()
+            # 输入在测量前构造；共享调用者已有一个有界工作区，本测试只计新增分配。
+            budget.reserve_scan(transaction._BC_TREE_WORK)
+            with patch.object(transaction, "_BCBudget", return_value=budget):
+                tracemalloc.start()
+                try:
+                    with self.assertRaises(transaction.TransactionError):
+                        if kind == "identity":
+                            transaction._bc_config_backup_identity(None, oversized, budget=budget)
+                        elif kind == "retention":
+                            transaction._bc_prune_config_backups(oversized, "run-1-1-" + PORTAL, budget=budget)
+                        else:
+                            transaction._bc_resource_action(("cleanup", "--snapshot", oversized) if kind == "snapshot" else ("inventory", oversized))
+                    _, peak = tracemalloc.get_traced_memory()
+                finally:
+                    tracemalloc.stop()
+            self.assertLessEqual(peak, budget.peak, (kind, peak, budget.peak))
+
+    def test_transient_keeps_live_traceback_on_unexpected_error_and_return(self):
+        for return_value in (False, True):
+            budget = transaction._BCBudget()
+            def unexpected():
+                budget.reserve_scan(123456)
+                if return_value:
+                    return object()
+                raise RuntimeError("synthetic unexpected")
+            with self.assertRaises(RuntimeError):
+                budget._transient(unexpected)
+            self.assertTrue(budget._failed)
+            self.assertGreaterEqual(budget.live, 123456)
+
+    def test_transient_keeps_preexisting_compressed_scope_at_limit(self):
+        budget = transaction._BCBudget()
+        scope = budget._scope()
+        budget.add("compressed", transaction._BC_LIMITS["compressed"], scope=scope)
+        budget._transient(lambda: None)
+        with self.assertRaises(transaction._BCResourceError):
+            budget.add("compressed", 1, scope=scope)
+        self.assertTrue(budget._failed)
+
+
+@unittest.skipUnless(POSIX, "需要 root Linux 实际 dir-fd 扫描；Windows 明确跳过")
+class ResourceTreeTests(unittest.TestCase):
+    def setUp(self):
+        self.temporary = tempfile.TemporaryDirectory(prefix="myweb-resource-tree-")
+        self.root = Path(self.temporary.name)
+        self.root.chmod(0o700)
+        self.addCleanup(self.temporary.cleanup)
+        self.root_patch = patch.object(transaction, "_open_root_fd", side_effect=lambda: os.open(
+            self.root, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC))
+        self.root_patch.start()
+        self.addCleanup(self.root_patch.stop)
+
+    def directory(self, name):
+        path = self.root / name
+        path.mkdir(mode=0o700, parents=True, exist_ok=True)
+        return path
+
+    def file(self, name, data):
+        path = self.root / name
+        self.directory(str(Path(name).parent))
+        path.write_bytes(data)
+        path.chmod(0o600)
+        return path
+
+    def backup(self, number):
+        name = "run-" + str(number) + "-1-" + PORTAL
+        paths = ["opt/myagent/.env", "etc/systemd/system/myagent-world.service", "etc/systemd/system/myagent-gateway.service",
+                 "etc/nginx/sites-available", "etc/nginx/sites-enabled"]
+        items = [(path, "file", b"synthetic") for path in paths[:3]] + [(path, "directory", None) for path in paths[3:]]
+        raw = ResourceTests().archive(items)
+        metadata = ("schema=myagent-production-config-backup-v1\ncreated_at_utc=2026-09-08T00:00:00Z\ngithub_run_id=" + str(number)
+                    + "\ngithub_run_attempt=1\nportal_revision=" + PORTAL + "\napparmor_profile=absent\nops_env=absent\n"
+                    + "".join("path=" + path + "\n" for path in paths)).encode("utf-8")
+        for filename, data in (("config.tar.gz", raw), ("metadata.txt", metadata),
+                               ("SHA256SUMS", (hashlib.sha256(raw).hexdigest() + "  config.tar.gz\n"
+                                              + hashlib.sha256(metadata).hexdigest() + "  metadata.txt\n").encode("ascii"))):
+            self.file("backups/" + name + "/" + filename, data)
+        os.utime(self.root / "backups" / name, (number, number))
+        return name
+
+    def content_mapping(self):
+        real = transaction._bc_check_config_backup
+        return patch.object(transaction, "_bc_check_config_backup", side_effect=lambda directory, name, *, budget:
+                            real(str(self.root / directory.lstrip("/")), name, budget=budget))
+
+    def test_complete_backup_permissions_members_and_shared_lifetime(self):
+        name = self.backup(1)
+        path = self.root / "backups" / name
+        budget = transaction._BCBudget()
+        with self.content_mapping():
+            for _ in range(31):
+                transaction._bc_validate_config_backup("/backups/" + name, name, budget=budget)
+            self.assertLess(budget.live, 4 * 1024 * 1024)
+            self.assertGreater(budget.peak, 64 * 1024 * 1024)
+            for mode in (0o755, 0o777):
+                path.chmod(mode)
+                with self.assertRaises(transaction.TransactionError):
+                    transaction._bc_validate_config_backup("/backups/" + name, name)
+            path.chmod(0o700)
+            for mutate, restore in (
+                    (lambda: (path / "metadata.txt").chmod(0o644), lambda: (path / "metadata.txt").chmod(0o600)),
+                    (lambda: os.chown(path / "metadata.txt", 65534, 65534), lambda: os.chown(path / "metadata.txt", 0, 0)),
+                    (lambda: self.file("backups/" + name + "/extra", b"x"), lambda: (path / "extra").unlink())):
+                mutate()
+                with self.assertRaises(transaction.TransactionError):
+                    transaction._bc_validate_config_backup("/backups/" + name, name)
+                restore()
+            (path / "metadata.txt").rename(self.root / "saved")
+            os.symlink(str(self.root / "saved"), path / "metadata.txt")
+            with self.assertRaises(transaction.TransactionError):
+                transaction._bc_validate_config_backup("/backups/" + name, name)
+
+    def test_retention_preserves_current_latest_valid_thirty_and_invalid(self):
+        names = [self.backup(n) for n in range(1, 34)]
+        invalid = self.backup(34)
+        (self.root / "backups" / invalid / "metadata.txt").chmod(0o644)
+        with self.content_mapping():
+            transaction._bc_prune_config_backups("/backups", names[0], budget=transaction._BCBudget())
+        self.assertTrue((self.root / "backups" / names[0]).exists())
+        self.assertTrue((self.root / "backups" / invalid).exists())
+        self.assertEqual({path.name for path in (self.root / "backups").iterdir()}, set(names) - {names[1], names[2]} | {invalid})
+
+    def test_retention_current_oldest_31_and_32_and_small_forty(self):
+        names = [self.backup(n) for n in range(1, 32)]
+        with self.content_mapping():
+            transaction._bc_prune_config_backups("/backups", names[0], budget=transaction._BCBudget())
+            self.assertEqual({path.name for path in (self.root / "backups").iterdir()}, set(names))
+            names.append(self.backup(32))
+            transaction._bc_prune_config_backups("/backups", names[0], budget=transaction._BCBudget())
+            self.assertEqual({path.name for path in (self.root / "backups").iterdir()}, set(names) - {names[1]})
+            self.backup(2)
+            names.extend(self.backup(n) for n in range(33, 41))
+            budget = transaction._BCBudget()
+            transaction._bc_prune_config_backups("/backups", names[-1], budget=budget)
+            self.assertEqual({path.name for path in (self.root / "backups").iterdir()}, set(names[10:]))
+            self.assertLess(budget.peak, 100 * 1024 * 1024)
+
+    def test_retention_mtime_ties_use_reverse_names_not_run_number(self):
+        recent = [self.backup(n) for n in range(101, 129)]
+        ties = {n: self.backup(n) for n in (9, 2, 11, 10)}
+        for name in ties.values():
+            os.utime(self.root / "backups" / name, (50, 50))
+        with self.content_mapping():
+            transaction._bc_prune_config_backups("/backups", recent[-1], budget=transaction._BCBudget())
+        self.assertEqual({path.name for path in (self.root / "backups").iterdir()}, set(recent) | {ties[9], ties[2]})
+
+    def test_retention_last_candidate_file_replacement_and_inventory_error_zero_deletes(self):
+        names = [self.backup(n) for n in range(1, 33)]
+        real_scan = transaction._bc_scan_trees
+        real_identity = transaction._bc_config_backup_identity
+        scanned = False
+        changed = False
+        def after_scan(*args, **kwargs):
+            nonlocal scanned
+            plan = real_scan(*args, **kwargs)
+            scanned = True
+            return plan
+        def replaced(fs, directory, *, budget):
+            nonlocal changed
+            if scanned and not changed and directory == "/backups/" + names[0]:
+                changed = True
+                target = self.root / "backups" / names[0] / "SHA256SUMS"
+                raw = target.read_bytes()
+                target.rename(self.root / "saved-sha")
+                target.write_bytes(raw)
+                target.chmod(0o600)
+            return real_identity(fs, directory, budget=budget)
+        with self.content_mapping(), patch.object(transaction, "_bc_scan_trees", side_effect=after_scan), \
+                patch.object(transaction, "_bc_config_backup_identity", side_effect=replaced), \
+                patch.object(os, "unlink") as unlink, patch.object(os, "rmdir") as rmdir:
+            with self.assertRaises(transaction.TransactionError):
+                transaction._bc_prune_config_backups("/backups", names[-1], budget=transaction._BCBudget())
+            self.assertTrue(changed)
+            unlink.assert_not_called()
+            rmdir.assert_not_called()
+        real_names = transaction._bc_directory_names
+        def interrupted(fd, *, budget):
+            yield next(real_names(fd, budget=budget))
+            raise OSError("synthetic interrupted collection")
+        with patch.object(transaction, "_bc_directory_names", side_effect=interrupted), \
+                patch.object(os, "unlink") as unlink, patch.object(os, "rmdir") as rmdir:
+            with self.assertRaises(OSError):
+                transaction._bc_prune_config_backups("/backups", names[-1], budget=transaction._BCBudget())
+            unlink.assert_not_called()
+            rmdir.assert_not_called()
+
+    def test_retention_all_candidates_resource_or_identity_failure_zero_deletes(self):
+        names = [self.backup(n) for n in range(1, 33)]
+        real_scan = transaction._bc_scan_trees
+        def mutate_before_scan(fs, roots, *, mode, budget):
+            self.file("backups/" + names[0] + "/unexpected", b"x")
+            return real_scan(fs, roots, mode=mode, budget=budget)
+        with self.content_mapping(), patch.object(transaction, "_bc_scan_trees", side_effect=mutate_before_scan), \
+                patch.object(os, "unlink") as unlink, patch.object(os, "rmdir") as rmdir:
+            with self.assertRaises(transaction.TransactionError):
+                transaction._bc_prune_config_backups("/backups", names[-1], budget=transaction._BCBudget())
+            unlink.assert_not_called()
+            rmdir.assert_not_called()
+        (self.root / "backups" / names[0] / "unexpected").unlink()
+        with self.content_mapping(), patch.object(os, "unlink") as unlink, patch.object(os, "rmdir") as rmdir:
+            with self.assertRaises(transaction._BCResourceError):
+                transaction._bc_prune_config_backups("/backups", names[-1], budget=transaction._BCBudget(limits={"compressed": 1}))
+            unlink.assert_not_called()
+            rmdir.assert_not_called()
+
+    def test_retention_original_inventory_root_replacement_stops_all_deletion(self):
+        names = [self.backup(n) for n in range(1, 33)]
+        real = transaction._bc_config_backup_identity
+        changed = False
+        def replaced(fs, directory, *, budget):
+            nonlocal changed
+            if not changed and directory == "/backups/" + names[0]:
+                changed = True
+                (self.root / "backups" / names[0]).rename(self.root / "saved-backup")
+                self.backup(1)
+            return real(fs, directory, budget=budget)
+        with self.content_mapping(), patch.object(transaction, "_bc_config_backup_identity", side_effect=replaced), \
+                patch.object(os, "unlink") as unlink, patch.object(os, "rmdir") as rmdir:
+            with self.assertRaises(transaction.TransactionError):
+                transaction._bc_prune_config_backups("/backups", names[-1], budget=transaction._BCBudget())
+            unlink.assert_not_called()
+            rmdir.assert_not_called()
+
+    def test_real_venv_link_does_not_follow_or_charge_external_target(self):
+        self.file("venv/bin/local", b"1234")
+        self.file("outside", b"x" * 100)
+        os.symlink("../../outside", self.root / "venv/bin/python")
+        with transaction._Fs() as fs:
+            plan = transaction._bc_scan_trees(fs, ("/venv",), mode="venv")
+        self.assertEqual(plan.members_by_root, (("/venv", 3),))
+        self.assertEqual(plan.regular_bytes_by_root, (("/venv", 4),))
+        link = next(entry for entry in plan.entries if entry.kind == "symlink")
+        self.assertEqual(link.link_text, b"../../outside")
+        self.assertEqual(link.logical_size, 0)
+        with self.assertRaises(TypeError):
+            link.identity[0] = 0
+
+    def test_snapshot_preserves_original_child_metadata_and_deletes_only_copied_tree(self):
+        nested = self.directory("snapshot/etc")
+        source = self.file("snapshot/etc/config", b"copied original")
+        outside = self.file("outside-original", b"kept")
+        os.chown(nested, 1000, 1000)
+        nested.chmod(0o777)
+        os.chown(source, 1000, 1000)
+        source.chmod(0o660)
+        self.file("snapshot/etc/second", b"second copied file")
+        os.symlink("../../outside-original", nested / "link")
+        before = (source.stat().st_uid, source.stat().st_gid, source.stat().st_mode, source.read_bytes())
+        for mode in ("delete", "venv"):
+            with transaction._Fs() as fs, self.assertRaises(transaction.TransactionError):
+                transaction._bc_scan_trees(fs, ("/snapshot",), mode=mode)
+        with transaction._Fs() as fs:
+            plan = transaction._bc_scan_trees(fs, ("/snapshot",), mode="snapshot")
+        self.assertEqual(plan.members_by_root, (("/snapshot", 4),))
+        self.assertEqual((source.stat().st_uid, source.stat().st_gid, source.stat().st_mode, source.read_bytes()), before)
+        transaction._bc_resource_action(("cleanup", "--snapshot", "/snapshot"))
+        self.assertFalse((self.root / "snapshot").exists())
+        self.assertEqual(outside.read_bytes(), b"kept")
+
+    def test_snapshot_original_private_root_required_before_any_delete(self):
+        self.file("snapshot/file", b"x")
+        root = self.root / "snapshot"
+        for mode in (0o755, 0o777):
+            root.chmod(mode)
+            with patch.object(os, "unlink") as unlink, patch.object(os, "rmdir") as rmdir:
+                with self.assertRaises(transaction.TransactionError):
+                    transaction._bc_resource_action(("cleanup", "--snapshot", "/snapshot"))
+                unlink.assert_not_called()
+                rmdir.assert_not_called()
+        root.chmod(0o700)
+        real_scan = transaction._bc_scan_trees
+        def replaced(fs, roots, *, mode, budget):
+            root.rename(self.root / "old-snapshot")
+            self.directory("snapshot")
+            return real_scan(fs, roots, mode=mode, budget=budget)
+        with patch.object(transaction, "_bc_scan_trees", side_effect=replaced), \
+                patch.object(os, "unlink") as unlink, patch.object(os, "rmdir") as rmdir:
+            with self.assertRaises(transaction.TransactionError):
+                transaction._bc_resource_action(("cleanup", "--snapshot", "/snapshot"))
+            unlink.assert_not_called()
+            rmdir.assert_not_called()
+
+    def test_snapshot_hardlink_and_special_member_fail_before_delete(self):
+        source = self.file("snapshot/file", b"x")
+        for kind in ("hardlink", "fifo"):
+            target = self.root / "snapshot" / "invalid"
+            if kind == "hardlink":
+                os.link(source, target)
+            else:
+                os.mkfifo(target, 0o600)
+            with patch.object(os, "unlink") as unlink, patch.object(os, "rmdir") as rmdir:
+                with self.assertRaises(transaction.TransactionError):
+                    transaction._bc_resource_action(("cleanup", "--snapshot", "/snapshot"))
+                unlink.assert_not_called()
+                rmdir.assert_not_called()
+            target.unlink()
+
+    def test_snapshot_root_link_count_change_before_scan_is_not_new_authority(self):
+        self.file("snapshot/file", b"x")
+        real_scan = transaction._bc_scan_trees
+        def inserted(fs, roots, *, mode, budget):
+            self.file("snapshot/unknown/file", b"must remain")
+            return real_scan(fs, roots, mode=mode, budget=budget)
+        with patch.object(transaction, "_bc_scan_trees", side_effect=inserted), \
+                patch.object(os, "unlink") as unlink, patch.object(os, "rmdir") as rmdir:
+            with self.assertRaises(transaction.TransactionError):
+                transaction._bc_resource_action(("cleanup", "--snapshot", "/snapshot"))
+            unlink.assert_not_called()
+            rmdir.assert_not_called()
+
+    def test_owned_archive_stream_closes_and_fifo_is_never_read(self):
+        target = self.file("archive", b"data")
+        with transaction._bc_open_archive(str(target)) as stream:
+            descriptor = stream.fileno()
+            self.assertEqual(stream.read(), b"data")
+        self.assertTrue(stream.closed)
+        with self.assertRaises(OSError):
+            os.fstat(descriptor)
+        os.mkfifo(self.root / "fifo", 0o600)
+        with patch.object(os, "open") as opened, self.assertRaises(transaction.TransactionError):
+            with transaction._bc_open_archive(str(self.root / "fifo")):
+                self.fail("FIFO 不应进入读取")
+        opened.assert_not_called()
+
+    def test_archive_type_replaced_by_fifo_uses_nonblocking_open(self):
+        target = self.file("archive", b"data")
+        real_open = os.open
+        def replaced(path, flags, *args, **kwargs):
+            self.assertTrue(flags & os.O_NONBLOCK)
+            target.rename(self.root / "old-archive")
+            os.mkfifo(target, 0o600)
+            return real_open(path, flags, *args, **kwargs)
+        with patch.object(os, "open", side_effect=replaced), self.assertRaises(transaction.TransactionError):
+            with transaction._bc_open_archive(str(target)):
+                self.fail("替换后的 FIFO 不应进入读取")
+
+    def test_real_tree_member_file_and_venv_scaled_boundaries(self):
+        self.file("venv/a", b"1234")
+        self.file("venv/b", b"5678")
+        for resource, value in (("members", 2), ("file", 4), ("venv", 8)):
+            for delta in (-1, 0, 1):
+                budget = transaction._BCBudget(limits={resource: value + delta})
+                with self.subTest(resource=resource, delta=delta), transaction._Fs() as fs:
+                    if delta < 0:
+                        with self.assertRaises(transaction._BCResourceError):
+                            transaction._bc_scan_trees(fs, ("/venv",), mode="venv", budget=budget)
+                    else:
+                        self.assertEqual(transaction._bc_scan_trees(fs, ("/venv",), mode="venv", budget=budget).regular_bytes_by_root,
+                                         (("/venv", 8),))
+
+    def test_roots_duplicate_nested_symlink_and_shared_budget(self):
+        self.file("a/nested/file", b"x")
+        self.file("b/file", b"x")
+        os.symlink("a", self.root / "alias")
+        for roots in (("/a", "/a"), ("/a", "/a/nested"), ("/alias",), ("/a",) * 4098):
+            with transaction._Fs() as fs, self.assertRaises((transaction.TransactionError, OSError)):
+                transaction._bc_scan_trees(fs, roots, mode="delete")
+        with transaction._Fs() as fs:
+            probe = transaction._BCBudget()
+            one = transaction._bc_scan_trees(fs, ("/a",), mode="delete", budget=probe)
+            budget = transaction._BCBudget(limits={"scan": probe.peak + 1})
+            with self.assertRaises(transaction._BCResourceError):
+                transaction._bc_scan_trees(fs, ("/a", "/b"), mode="delete", budget=budget)
+            self.assertEqual(len(one.roots), 1)
+
+    def test_all_tree_prescan_failure_means_zero_deletes(self):
+        self.file("a/good", b"x")
+        self.file("b/too-big", b"12345678")
+        with transaction._Fs() as fs, patch.object(os, "unlink") as unlink, patch.object(os, "rmdir") as rmdir:
+            with self.assertRaises(transaction._BCResourceError):
+                transaction._bc_scan_trees(fs, ("/a", "/b"), mode="delete", budget=transaction._BCBudget(limits={"file": 7}))
+            unlink.assert_not_called()
+            rmdir.assert_not_called()
+        self.assertTrue((self.root / "a/good").exists())
+
+    def test_plan_detects_new_member_before_first_delete(self):
+        self.file("a/good", b"x")
+        with transaction._Fs() as fs:
+            budget = transaction._BCBudget()
+            plan = transaction._bc_scan_trees(fs, ("/a",), mode="delete", budget=budget)
+            self.file("a/new", b"x")
+            with patch.object(os, "unlink") as unlink, patch.object(os, "rmdir") as rmdir:
+                with self.assertRaises(transaction.TransactionError):
+                    transaction._bc_execute_tree_plan(fs, plan, budget=budget, before_delete=lambda: None)
+                unlink.assert_not_called()
+                rmdir.assert_not_called()
+
+    def test_scan_cannot_replace_the_original_authorized_root_identity(self):
+        self.file("a/good", b"x")
+        with transaction._Fs() as fs:
+            original = fs.ref("/a")["identity"]
+            real_scan = transaction._bc_scan_trees
+            def changed_root(*args, **kwargs):
+                (self.root / "a").rename(self.root / "old-a")
+                self.directory("a")
+                return real_scan(*args, **kwargs)
+            with patch.object(transaction, "_bc_scan_trees", side_effect=changed_root), \
+                    patch.object(os, "unlink") as unlink, patch.object(os, "rmdir") as rmdir:
+                with self.assertRaises(transaction.TransactionError):
+                    transaction._remove_tree(fs, "/a", original)
+                unlink.assert_not_called()
+                rmdir.assert_not_called()
+        self.assertTrue((self.root / "a").is_dir())
+        self.assertTrue((self.root / "old-a/good").is_file())
+
+    def test_root_replacement_after_revalidation_does_not_authorize_delete(self):
+        self.file("a/good", b"x")
+        with transaction._Fs() as fs:
+            budget = transaction._BCBudget()
+            plan = transaction._bc_scan_trees(fs, ("/a",), mode="delete", budget=budget)
+            called = False
+            def replace():
+                nonlocal called
+                if not called:
+                    called = True
+                    (self.root / "a").rename(self.root / "old-a")
+                    self.directory("a")
+                    (self.root / "old-a/good").rename(self.root / "a/good")
+            with patch.object(os, "unlink") as unlink, patch.object(os, "rmdir") as rmdir:
+                with self.assertRaises(transaction.TransactionError):
+                    transaction._bc_execute_tree_plan(fs, plan, budget=budget, before_delete=replace)
+                unlink.assert_not_called()
+                rmdir.assert_not_called()
+        self.assertTrue((self.root / "a/good").is_file())
+
+    def test_real_plan_deletes_all_roots_and_never_follows_link(self):
+        self.file("a/nested/good", b"x")
+        self.file("b/good", b"x")
+        self.file("outside", b"keep")
+        os.symlink("../outside", self.root / "b/link")
+        with transaction._Fs() as fs:
+            budget = transaction._BCBudget()
+            plan = transaction._bc_scan_trees(fs, ("/a", "/b"), mode="delete", budget=budget)
+            transaction._bc_execute_tree_plan(fs, plan, budget=budget, before_delete=lambda: None)
+        self.assertFalse((self.root / "a").exists())
+        self.assertFalse((self.root / "b").exists())
+        self.assertEqual((self.root / "outside").read_bytes(), b"keep")
+
+    def test_real_depth_65_rejected_and_64_accepted(self):
+        root = self.directory("tree")
+        current = root
+        for _ in range(64):
+            current = current / "d"
+            current.mkdir(mode=0o700)
+        with transaction._Fs() as fs:
+            self.assertEqual(len(transaction._bc_scan_trees(fs, ("/tree",), mode="delete").entries), 64)
+            (current / "d").mkdir(mode=0o700)
+            with self.assertRaises(transaction._BCResourceError):
+                transaction._bc_scan_trees(fs, ("/tree",), mode="delete")
+
+    def test_venv_actual_eight_gib_logical_sparse_boundary(self):
+        # 真实 stat 逻辑字节；稀疏文件不占 8 GiB 磁盘，也不冒充正文读取或构建峰值。
+        root = self.directory("venv")
+        for index in range(8):
+            path = root / str(index)
+            with path.open("wb") as stream:
+                stream.truncate(1073741824)
+            path.chmod(0o600)
+        last = root / "7"
+        for delta in (-1, 0, 1):
+            with last.open("r+b") as stream:
+                stream.truncate(1073741824 - (1 if delta == -1 else 0))
+            extra = root / "extra"
+            if delta == 1:
+                self.file("venv/extra", b"x")
+            with transaction._Fs() as fs:
+                if delta == 1:
+                    with self.assertRaises(transaction._BCResourceError) as caught:
+                        transaction._bc_scan_trees(fs, ("/venv",), mode="venv")
+                    self.assertEqual(caught.exception.resource, "venv")
+                else:
+                    plan = transaction._bc_scan_trees(fs, ("/venv",), mode="venv")
+                    self.assertEqual(plan.regular_bytes_by_root, (("/venv", 8589934592 + delta),))
 
 
 @unittest.skipUnless(POSIX, "需要 root Linux 的真实 no-follow/dir-fd/flock/fsync；Windows 不冒充通过")
@@ -978,21 +1953,26 @@ class TransactionTests(unittest.TestCase):
     def test_workflow_canary_before_ssh_remote_shell_reparse(self):
         workflow = (Path(__file__).parents[1] / ".github/workflows/deploy.yml").read_text(encoding="utf-8")
         step = workflow.split("- name: 维护窗口内协调切换并验证", 1)[1].split("run: |\n", 1)[1]
-        prefix = textwrap.dedent(step.split("<<'REMOTE'", 1)[0]) + "<<'REMOTE'\n"
+        step = textwrap.dedent(step.split("      - name: 保留失败事务并提示共享恢复入口", 1)[0])
+        prefix, body = step.split("<<'REMOTE'\n", 1)
+        _, suffix = body.split("\nREMOTE\n", 1)
+        prefix += "<<'REMOTE'\n"
         # OpenSSH 将 host 后 argv 以空格拼为命令串，再交给远端登录 shell 解析。
         # 本替身没有网络；攻击样本只含固定 printf，远端正文仅输出参数。
         script = 'ssh() { shift; printf "TRANSPORT_REACHED\\n"; /bin/sh -c "$*"; }\n' + prefix
-        script += 'printf "REMOTE_ARG=%s\\n" "$@"\nREMOTE\n'
+        script += 'printf "REMOTE_ARG=%s\\n" "$@"\nREMOTE\n' + suffix
         environment = {"PATH": "/usr/bin:/bin", "GITHUB_RUN_ID": "31", "GITHUB_RUN_ATTEMPT": "2", "GITHUB_SHA": PORTAL,
                        "EXPECTED_ARCHIVE_SHA": "d" * 64, "EXPECTED_PERSONA_SCHEMA_PHASE": "active",
-                       "EXPECTED_PERSONA_GROWTH_PHASE": "canary", "EXPECTED_WORLD_LEDGER_SCHEMA_PHASE": "compat"}
+                       "EXPECTED_PERSONA_GROWTH_PHASE": "canary", "EXPECTED_WORLD_LEDGER_SCHEMA_PHASE": "compat",
+                       "RUNNER_TEMP": str(self.root), "PYTHONUTF8": "1"}
         valid = ("", "e" * 64, "e" * 64 + "," + "f" * 64)
         invalid = ("e" * 64 + "\n$(printf REMOTE_REPARSE)", "$(printf REMOTE_REPARSE)", "`printf REMOTE_REPARSE`",
                    "e" * 64 + "\n", "e" * 64 + "\r", "e" * 64 + "\t", "e" * 64 + "\v", "E" * 64, "-", ",", "e" * 63)
         for value in (*valid, *invalid):
             with self.subTest(value=repr(value)):
                 result = subprocess.run(["/bin/bash", "--noprofile", "--norc", "-e"], input=script, capture_output=True,
-                                        text=True, env={**environment, "PERSONA_GROWTH_CANARY_HASHES": value})
+                                        text=True, env={**environment, "PERSONA_GROWTH_CANARY_HASHES": value},
+                                        cwd=Path(__file__).resolve().parents[1])
                 if value in valid:
                     self.assertEqual(result.returncode, 0, result.stderr)
                     self.assertEqual(result.stdout.splitlines(), ["TRANSPORT_REACHED", *["REMOTE_ARG=" + argument for argument in

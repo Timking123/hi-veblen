@@ -188,6 +188,14 @@ jobs:
           ) > release-package/backend-files.sha256
           test -s release-package/backend-files.sha256
           tar -C release-package -czf portal-dist.tar.gz .
+          python3 -B - portal-dist.tar.gz <<'PY_BC_BUILD'
+          import os
+          import sys
+          sys.path.insert(0, "scripts")
+          import release_transaction as transaction
+          with open(sys.argv[1], "rb") as stream:
+              transaction._bc_validate_archive(stream, declared_size=os.fstat(stream.fileno()).st_size)
+          PY_BC_BUILD
           sha256sum portal-dist.tar.gz > portal-dist.tar.gz.sha256
 
       - name: 保存发布制品
@@ -211,16 +219,40 @@ jobs:
       contents: read
 
     steps:
+      - name: 检出本次资源校验维护源
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: 确认维护源提交
+        run: |
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          git diff --quiet
       - name: 下载发布制品
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
           name: production-release-${{ github.sha }}
+          path: ${{ runner.temp }}/myweb-artifacts-${{ github.sha }}
 
       - name: 校验发布制品
         id: release
         run: |
-          sha256sum --check portal-dist.tar.gz.sha256
-          package_sha256="$(cut -d ' ' -f 1 portal-dist.tar.gz.sha256)"
+          python3 -I -B - "$RUNNER_TEMP/myweb-artifacts-$GITHUB_SHA/portal-dist.tar.gz" "$RUNNER_TEMP/myweb-artifacts-$GITHUB_SHA/portal-dist.tar.gz.sha256" <<'PY_BC_ARCHIVE'
+          import sys
+          sys.path.insert(0, "scripts")
+          import release_transaction as transaction
+          try:
+              with open(sys.argv[2], "rb") as stream:
+                  raw = stream.read(4097)
+              transaction._require(len(raw) <= 4096, "E_ARCHIVE")
+              expected = raw.decode("ascii").strip().split("  ")
+              transaction._require(len(expected) == 2 and expected[1] == "portal-dist.tar.gz", "E_ARCHIVE")
+              transaction._bc_resource_action(("archive", sys.argv[1], expected[0]))
+          except (transaction.TransactionError, OSError, UnicodeError) as error:
+              print("发布制品资源或摘要校验失败", file=sys.stderr)
+              raise SystemExit(1) from error
+          PY_BC_ARCHIVE
+          package_sha256="$(cut -d ' ' -f 1 "$RUNNER_TEMP/myweb-artifacts-$GITHUB_SHA/portal-dist.tar.gz.sha256")"
           test "${#package_sha256}" -eq 64
           printf 'package_sha256=%s\n' "$package_sha256" >> "$GITHUB_OUTPUT"
 
@@ -261,13 +293,22 @@ jobs:
       - name: 从独立受信制品验证全部历史事务
         run: |
           set -euo pipefail
-          tar -xOf portal-dist.tar.gz ./release_transaction.py | \
+          tar -xOf "$RUNNER_TEMP/myweb-artifacts-$GITHUB_SHA/portal-dist.tar.gz" ./release_transaction.py | \
             ssh hi-veblen-production sudo /usr/bin/python3 -I -B - history
 
       - name: 拒绝未纳管的 systemd 覆盖
         run: |
-          ssh hi-veblen-production 'bash -se --' \
-            "$GITHUB_RUN_ID" "$GITHUB_RUN_ATTEMPT" "$GITHUB_SHA" <<'REMOTE'
+          set -euo pipefail
+          bc_remote_script="$(mktemp "$RUNNER_TEMP/myweb-bc-stdin.XXXXXX")"
+          trap 'rm -f -- "$bc_remote_script"' EXIT
+          python3 -I -B - "$bc_remote_script" <<'PY_BC_PRELUDE'
+          import sys
+          sys.path.insert(0, "scripts")
+          import release_transaction as transaction
+          with open(sys.argv[1], "w", encoding="utf-8", newline="\n") as output:
+              output.write(transaction._bc_workflow_prelude())
+          PY_BC_PRELUDE
+          cat >> "$bc_remote_script" <<'REMOTE'
           set -euo pipefail
           run_id="$1"
           run_attempt="$2"
@@ -372,12 +413,17 @@ jobs:
           fi
           config_backup_tmp=""
           cleanup_config_backup_tmp() {
+            local original_status=$?
+            if test "$original_status" -ne 0; then
+              echo "配置备份失败，保留临时材料和发布保护。" >&2
+              return "$original_status"
+            fi
             cleanup_status=$?
             if test -n "${config_backup_tmp:-}" && \
               { test -e "$config_backup_tmp" || test -L "$config_backup_tmp"; }; then
               case "$config_backup_tmp" in
                 "$config_backup_root"/.run-"$run_id"-"$run_attempt"-"$portal_revision".tmp.*)
-                  rm -rf --one-file-system -- "$config_backup_tmp" || cleanup_status=$?
+                  bc_cleanup_trees "$config_backup_tmp" || cleanup_status=$?
                   ;;
                 *)
                   echo "拒绝清理非预期生产配置临时路径：$config_backup_tmp" >&2
@@ -452,203 +498,18 @@ jobs:
               done < <(find "$path" -mindepth 1 -maxdepth 1 -print0)
             fi
           }
+          bc_cleanup_trees() {
+            bc_resource_python cleanup "$@"
+          }
+          bc_backup_order() {
+            bc_resource_python inventory "$1"
+          }
           validate_config_backup_payload() {
             local backup_path="$1"
             local backup_name="$2"
-            python3 -B - "$backup_path" "$backup_name" <<'PY'
-          import hashlib
-          import posixpath
-          import re
-          import sys
-          import tarfile
-          from pathlib import Path, PurePosixPath
-
-
-          def require(condition: bool, message: str) -> None:
-              if not condition:
-                  raise ValueError(message)
-
-
-          def file_sha256(path: Path) -> str:
-              digest = hashlib.sha256()
-              with path.open("rb") as handle:
-                  for chunk in iter(lambda: handle.read(1024 * 1024), b""):
-                      digest.update(chunk)
-              return digest.hexdigest()
-
-
-          try:
-              backup_path = Path(sys.argv[1])
-              backup_name = sys.argv[2]
-              name_match = re.fullmatch(
-                  r"run-([0-9]+)-([0-9]+)-([0-9a-f]{40})", backup_name
-              )
-              require(name_match is not None, "目录名格式无效")
-              run_id, run_attempt, revision = name_match.groups()
-
-              archive_path = backup_path / "config.tar.gz"
-              metadata_path = backup_path / "metadata.txt"
-              manifest_path = backup_path / "SHA256SUMS"
-              manifest_entries: dict[str, str] = {}
-              for line in manifest_path.read_text(encoding="ascii").splitlines():
-                  match = re.fullmatch(
-                      r"([0-9a-f]{64})  (config\.tar\.gz|metadata\.txt)", line
-                  )
-                  require(match is not None, "摘要清单格式无效")
-                  digest, filename = match.groups()
-                  require(filename not in manifest_entries, "摘要清单包含重复项")
-                  manifest_entries[filename] = digest
-              require(
-                  set(manifest_entries) == {"config.tar.gz", "metadata.txt"},
-                  "摘要清单成员不完整",
-              )
-              require(
-                  file_sha256(archive_path) == manifest_entries["config.tar.gz"]
-                  and file_sha256(metadata_path) == manifest_entries["metadata.txt"],
-                  "归档摘要不匹配",
-              )
-
-              metadata: dict[str, list[str]] = {}
-              for line in metadata_path.read_text(encoding="utf-8").splitlines():
-                  require("=" in line, "metadata 行格式无效")
-                  key, value = line.split("=", 1)
-                  metadata.setdefault(key, []).append(value)
-              allowed_keys = {
-                  "schema",
-                  "created_at_utc",
-                  "github_run_id",
-                  "github_run_attempt",
-                  "portal_revision",
-                  "apparmor_profile",
-                  "ops_env",
-                  "path",
-              }
-              require(set(metadata) == allowed_keys, "metadata 字段集合无效")
-
-              def single(key: str) -> str:
-                  values = metadata[key]
-                  require(len(values) == 1, f"metadata {key} 重复")
-                  return values[0]
-
-              require(
-                  single("schema") == "myagent-production-config-backup-v1",
-                  "schema 无效",
-              )
-              require(
-                  re.fullmatch(
-                      r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z",
-                      single("created_at_utc"),
-                  )
-                  is not None,
-                  "创建时间格式无效",
-              )
-              require(single("github_run_id") == run_id, "run id 与目录名不一致")
-              require(
-                  single("github_run_attempt") == run_attempt,
-                  "run attempt 与目录名不一致",
-              )
-              require(
-                  single("portal_revision") == revision,
-                  "revision 与目录名不一致",
-              )
-              apparmor_state = single("apparmor_profile")
-              ops_env_state = single("ops_env")
-              require(apparmor_state in {"present", "absent"}, "AppArmor 状态无效")
-              require(ops_env_state in {"present", "absent"}, "ops.env 状态无效")
-
-              required_files = {
-                  "opt/myagent/.env",
-                  "etc/systemd/system/myagent-world.service",
-                  "etc/systemd/system/myagent-gateway.service",
-              }
-              required_directories = {
-                  "etc/nginx/sites-available",
-                  "etc/nginx/sites-enabled",
-              }
-              optional_paths = {
-                  "etc/apparmor.d/myagent-persona-parser": apparmor_state,
-                  "etc/lingxi-ops/ops.env": ops_env_state,
-              }
-              expected_paths = required_files | required_directories | {
-                  path for path, state in optional_paths.items() if state == "present"
-              }
-              require(
-                  len(metadata["path"]) == len(set(metadata["path"]))
-                  and set(metadata["path"]) == expected_paths,
-                  "metadata 路径集合无效",
-              )
-
-              with tarfile.open(archive_path, mode="r:gz") as archive:
-                  members = archive.getmembers()
-              normalized_members: dict[str, tarfile.TarInfo] = {}
-              for member in members:
-                  pure_name = PurePosixPath(member.name)
-                  require(
-                      not pure_name.is_absolute() and ".." not in pure_name.parts,
-                      "归档包含越界路径",
-                  )
-                  normalized_name = member.name.rstrip("/")
-                  require(
-                      normalized_name and normalized_name not in normalized_members,
-                      "归档包含空路径或重复成员",
-                  )
-                  normalized_members[normalized_name] = member
-
-              for path in required_files:
-                  require(
-                      path in normalized_members and normalized_members[path].isreg(),
-                      "归档缺少必需普通文件",
-                  )
-              for path in required_directories:
-                  require(
-                      path in normalized_members and normalized_members[path].isdir(),
-                      "归档缺少必需目录",
-                  )
-              for path, state in optional_paths.items():
-                  present = path in normalized_members
-                  require(present == (state == "present"), "可选成员状态不一致")
-                  if present:
-                      require(normalized_members[path].isreg(), "可选成员不是普通文件")
-
-              fixed_members = required_files | required_directories | set(optional_paths)
-              available_prefix = "etc/nginx/sites-available/"
-              enabled_prefix = "etc/nginx/sites-enabled/"
-              for name, member in normalized_members.items():
-                  if name in fixed_members:
-                      continue
-                  if name.startswith(available_prefix):
-                      relative = name[len(available_prefix) :]
-                      require("/" not in relative and member.isreg(), "sites-available 成员无效")
-                      continue
-                  if name.startswith(enabled_prefix):
-                      relative = name[len(enabled_prefix) :]
-                      require(
-                          "/" not in relative and (member.isreg() or member.issym()),
-                          "sites-enabled 成员无效",
-                      )
-                      if member.issym():
-                          live_name = f"/etc/nginx/sites-enabled/{relative}"
-                          target = member.linkname
-                          if not target.startswith("/"):
-                              target = posixpath.join(posixpath.dirname(live_name), target)
-                          resolved = posixpath.normpath(target)
-                          require(
-                              posixpath.dirname(resolved) == "/etc/nginx/sites-available",
-                              "sites-enabled 链接越界",
-                          )
-                          available_name = resolved.removeprefix("/")
-                          require(
-                              available_name in normalized_members
-                              and normalized_members[available_name].isreg(),
-                              "sites-enabled 链接目标无效",
-                          )
-                      continue
-                  raise ValueError("归档包含未声明成员")
-          except (OSError, UnicodeError, ValueError, tarfile.TarError) as exc:
-              print(f"生产配置归档校验失败：{exc}", file=sys.stderr)
-              raise SystemExit(1)
-          PY
+            bc_resource_python config_backup "$backup_path" "$backup_name"
           }
+
           for path in "${required_config_paths[@]}"; do
             stage_regular_config "$path"
           done
@@ -688,7 +549,7 @@ jobs:
 
           tar --create --gzip --file "$config_backup_tmp/config.tar.gz" \
             --directory "$config_backup_snapshot" -- "${archive_paths[@]}"
-          rm -rf --one-file-system -- "$config_backup_snapshot"
+          bc_resource_python cleanup --snapshot "$config_backup_snapshot"
           {
             printf 'schema=myagent-production-config-backup-v1\n'
             printf 'created_at_utc=%s\n' "$(date -u +'%Y-%m-%dT%H:%M:%SZ')"
@@ -729,62 +590,12 @@ jobs:
           esac
           test "${#config_archive_sha}" -eq 64
 
-          config_backup_retention=30
-          find "$config_backup_root" -mindepth 1 -maxdepth 1 -type d \
-            -name 'run-*' -printf '%T@ %f\0' |
-            sort -z -nr |
-            (
-              valid_backup_rank=0
-              latest_backup_name=""
-              while IFS= read -r -d '' backup_entry; do
-                backup_name="${backup_entry#* }"
-                if [[ ! "$backup_name" =~ ^run-[0-9]+-[0-9]+-[0-9a-f]{40}$ ]]; then
-                  continue
-                fi
-                if test -z "$latest_backup_name"; then
-                  latest_backup_name="$backup_name"
-                fi
-                backup_path="$config_backup_root/$backup_name"
-                if test -L "$backup_path" || ! test -d "$backup_path" || \
-                  ! test "$(stat -c '%U:%G:%a' "$backup_path")" = "root:root:700"; then
-                  echo "跳过路径或权限异常的生产配置备份：$backup_path" >&2
-                  continue
-                fi
-                valid_backup=1
-                for backup_file in config.tar.gz metadata.txt SHA256SUMS; do
-                  if test -L "$backup_path/$backup_file" || \
-                    ! test -f "$backup_path/$backup_file" || \
-                    ! test "$(stat -c '%U:%G:%a' "$backup_path/$backup_file")" = \
-                      "root:root:600"; then
-                    valid_backup=0
-                    break
-                  fi
-                done
-                backup_member_count="$(find "$backup_path" -mindepth 1 -maxdepth 1 \
-                  -printf '.' | wc -c)"
-                if test "$backup_member_count" -ne 3; then
-                  valid_backup=0
-                fi
-                if test "$valid_backup" -ne 1 || \
-                  ! validate_config_backup_payload "$backup_path" "$backup_name"; then
-                  echo "跳过不完整或摘要异常的生产配置备份：$backup_path" >&2
-                  continue
-                fi
-                valid_backup_rank=$((valid_backup_rank + 1))
-                if test "$backup_name" = "$config_backup_name" || \
-                  test "$backup_name" = "$latest_backup_name" || \
-                  test "$valid_backup_rank" -le "$config_backup_retention"; then
-                  continue
-                fi
-                printf '删除超出保留上限的生产配置备份：%s\n' "$backup_path"
-                rm -f -- "$backup_path/config.tar.gz" \
-                  "$backup_path/metadata.txt" "$backup_path/SHA256SUMS"
-                rmdir -- "$backup_path"
-              done
-            )
+          bc_resource_python cleanup --retention "$config_backup_root" "$config_backup_name"
           printf '持久生产配置备份已创建：%s；sha256=%s\n' \
             "$config_backup_dir" "$config_archive_sha"
           REMOTE
+          ssh hi-veblen-production 'bash -se --' \
+            "$GITHUB_RUN_ID" "$GITHUB_RUN_ATTEMPT" "$GITHUB_SHA" < "$bc_remote_script"
 
       - name: 创建私有暂存目录
         run: |
@@ -839,7 +650,7 @@ jobs:
 
       - name: 上传发布包
         run: |
-          scp -q portal-dist.tar.gz \
+          scp -q "$RUNNER_TEMP/myweb-artifacts-$GITHUB_SHA/portal-dist.tar.gz" \
             hi-veblen-production:/opt/hi-veblen/staging/run-${{ github.run_id }}-${{ github.run_attempt }}/
 
       - name: 维护窗口内协调切换并验证
@@ -855,11 +666,17 @@ jobs:
             exit 1
           fi
           persona_growth_canary_arg="${persona_growth_canary_arg:--}"
-          ssh hi-veblen-production 'bash -se --' \
-            "$GITHUB_RUN_ID" "$GITHUB_RUN_ATTEMPT" "$GITHUB_SHA" \
-            "$EXPECTED_ARCHIVE_SHA" "$EXPECTED_PERSONA_SCHEMA_PHASE" \
-            "$EXPECTED_PERSONA_GROWTH_PHASE" \
-            "$persona_growth_canary_arg" "$EXPECTED_WORLD_LEDGER_SCHEMA_PHASE" <<'REMOTE'
+          set -euo pipefail
+          bc_remote_script="$(mktemp "$RUNNER_TEMP/myweb-bc-stdin.XXXXXX")"
+          trap 'rm -f -- "$bc_remote_script"' EXIT
+          python3 -I -B - "$bc_remote_script" <<'PY_BC_PRELUDE'
+          import sys
+          sys.path.insert(0, "scripts")
+          import release_transaction as transaction
+          with open(sys.argv[1], "w", encoding="utf-8", newline="\n") as output:
+              output.write(transaction._bc_workflow_prelude())
+          PY_BC_PRELUDE
+          cat >> "$bc_remote_script" <<'REMOTE'
           set -eu
 
           release_lock=/run/hi-veblen-release.lock
@@ -941,20 +758,7 @@ jobs:
             ''|*[!0-9a-f]*) echo "发布包摘要格式无效" >&2; exit 1 ;;
           esac
           test "${#expected_archive_sha}" -eq 64
-          test "$(sha256sum "$archive" | cut -d ' ' -f 1)" = "$expected_archive_sha"
-          python3 - "$archive" <<'PY'
-          import sys
-          import tarfile
-          from pathlib import PurePosixPath
-
-          with tarfile.open(sys.argv[1], "r:gz") as archive_file:
-              for member in archive_file.getmembers():
-                  path = PurePosixPath(member.name)
-                  if path.is_absolute() or ".." in path.parts:
-                      raise SystemExit(f"不安全的归档路径：{member.name}")
-                  if not (member.isfile() or member.isdir()):
-                      raise SystemExit(f"不允许的归档成员类型：{member.name}")
-          PY
+          bc_resource_python archive "$archive" "$expected_archive_sha"
 
           preserved_staging=""
           if test -d /opt/hi-veblen/staging; then
@@ -1101,6 +905,8 @@ jobs:
           test -z "$(find "$release_venv" ! -type l -perm /022 -print -quit)"
           umask 077
 
+          bc_resource_python venv "$release_venv"
+
           # 独立入口重新取得唯一 flock；lease 持续绑定本事务，间隙不能创建另一发布。
           flock -u 9
           exec 9>&-
@@ -1109,6 +915,11 @@ jobs:
             "$expected_persona_schema_phase" "$expected_persona_growth_phase" \
             "$expected_world_ledger_phase" "${persona_growth_canary_hashes:--}"
           REMOTE
+          ssh hi-veblen-production 'bash -se --' \
+            "$GITHUB_RUN_ID" "$GITHUB_RUN_ATTEMPT" "$GITHUB_SHA" \
+            "$EXPECTED_ARCHIVE_SHA" "$EXPECTED_PERSONA_SCHEMA_PHASE" \
+            "$EXPECTED_PERSONA_GROWTH_PHASE" \
+            "$persona_growth_canary_arg" "$EXPECTED_WORLD_LEDGER_SCHEMA_PHASE" < "$bc_remote_script"
 
       - name: 保留失败事务并提示共享恢复入口
         if: always()
