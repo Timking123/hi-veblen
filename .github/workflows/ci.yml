@@ -268,249 +268,28 @@ jobs:
           )
           assert workflow.index(health_validator_install) < workflow.index('tar -C release-package -czf portal-dist.tar.gz')
           assert 'test -x release-package/validate_release_health.py' in workflow
-          release_env_contract = (
-              "BRAIN_RELEASE_SHA=%s\\n"
-              "LINGXI_PERSONA_SCHEMA_CAPABILITY=dual-read-v1"
-          )
-          build_package = workflow[
-              workflow.index("      - name: 组合不可变发布包"):
-              workflow.index("      - name: 保存发布制品")
-          ]
-          build_release_env = (
-              f'          release_env="$(printf \'{release_env_contract}\' "$lingxi_sha")"'
-          )
-          assert build_release_env in build_package
-          assert 'printf \'%s\\n\' "$release_env" > release-package/backend/.release.env' in build_package
-          assert 'printf \'%s\\n\' "$release_env" | cmp -s - release-package/backend/.release.env' in build_package
-          installer_capability_guard = (
-              "          grep -Fq 'LINGXI_PERSONA_SCHEMA_CAPABILITY=dual-read-v1' \\\n"
-              "            release-package/backend/scripts/install_linux_services.sh"
-          )
-          assert installer_capability_guard in build_package
-          assert build_package.index(build_release_env) < build_package.index(
-              'tar -C release-package -czf portal-dist.tar.gz'
-          )
-          assert build_package.index(installer_capability_guard) < build_package.index(
-              'tar -C release-package -czf portal-dist.tar.gz'
-          )
-          assert "EXPECTED_PERSONA_SCHEMA_PHASE: active" in workflow
-          assert "EXPECTED_PERSONA_GROWTH_PHASE: active" in workflow
-          assert "vars.LINGXI_PERSONA_GROWTH_CANARY_HASHES" in workflow
-          assert "systemctl is-enabled --quiet myagent-world.service" in workflow
-          assert "systemctl is-enabled --quiet myagent-gateway.service" in workflow
-          assert 'Environment=LINGXI_PERSONA_GROWTH_PHASE=$expected_persona_growth_phase' in workflow
-          assert 'Environment=LINGXI_PERSONA_GROWTH_CANARY_HASHES=$persona_growth_canary_hashes' in workflow
-          assert 'assert hashes == {expected}' in workflow
-          assert 'assert not persona_growth_applies_for("p6_e2e_control")' in workflow
-          assert 'assert persona_growth_applies_for("p6_e2e_control")' in workflow
-          assert 'synthetic_db="$project_root/data/users/p6_e2e_cn/conversation.sqlite3"' in workflow
-          assert 'closing(sqlite3.connect(f"file:{path}?mode=ro", uri=True))' in workflow
-          assert '{"persona_evidence", "persona_growth_state"} <= tables' in workflow
-          auth_probe_token = workflow.index("Authorization: Bearer nginx-forwarding-probe")
-          auth_probe = workflow[workflow.rfind('          portal_auth_probe="', 0, auth_probe_token):workflow.index('          invalid_status="', auth_probe_token)]
-          assert "https://hi-veblen.com/api/auth/profile" in auth_probe
-          assert 'status == "401"' in auth_probe
-          assert 'data.get("code") == 401' in auth_probe
-          assert 'get("reason") == "token_malformed"' in auth_probe
-          assert workflow.count("release_lock=/run/hi-veblen-release.lock") >= 4
-          assert workflow.count('exec 9>"$release_lock"') >= 4
-          assert workflow.count("flock -n 9") >= 4
-          assert workflow.count("lease_dir=/run/hi-veblen-release-lease") >= 4
-          assert workflow.count('lease_owner="$run_id-$run_attempt"') >= 4
-          assert 'lease_tmp="$(mktemp -d ' in workflow
-          assert 'mv -T -- "$lease_tmp" "$lease_dir"' in workflow
-          assert 'rmdir "$lease_dir"' in workflow
-          rollback = workflow[workflow.index("          rollback() {"):workflow.index("          trap rollback EXIT")]
-          assert 'test "$nginx_mutated" -eq 1' in rollback
-          assert rollback.index("preserve_marker") < rollback.index('exit "$status"')
-          assert rollback.index("restore_nginx_backup") < rollback.index("activate_maintenance")
-          assert rollback.index("activate_maintenance") < rollback.index("restore_link")
-          rollback_remove = rollback.index('rm -f "$maintenance_marker"')
-          assert rollback.index("systemctl is-active --quiet myagent-world.service") < rollback_remove
-          assert rollback.index("previous_backend_healthy") < rollback_remove
-          assert rollback.index("nginx -t") < rollback_remove
-          assert rollback.index("nginx_has_maintenance_guards") < rollback_remove
-          assert rollback.index("systemctl reload nginx") < rollback_remove
-          assert rollback.rindex("stop_services_for_manual_recovery") > rollback_remove
-          assert "backup_nginx_has_maintenance_guards" in rollback
-          rollback_floor_guard = rollback.index(
-              'if test "$previous_backend_rollback_floor" -ne 1; then'
-          )
-          first_pointer_restore = rollback.index('restore_link "$previous_portal"')
-          first_service_restart = rollback.index(
-              "systemctl restart myagent-world.service myagent-gateway.service"
-          )
-          assert rollback_floor_guard < first_pointer_restore < first_service_restart
-          rollback_floor_failure = rollback[rollback_floor_guard:first_pointer_restore]
-          assert "dual-read-v1 回滚下限" in rollback_floor_failure
-          assert "stop_services_for_manual_recovery" in rollback_floor_failure
-          assert 'exit "$status"' in rollback_floor_failure
-          assert 'rm -f "$upload_dir/PRESERVE"' not in rollback_floor_failure
-          assert 'rm -f "$maintenance_marker"' not in rollback_floor_failure
-          previous_health = workflow[
-              workflow.index("          previous_backend_healthy() {"):
-              workflow.index("          nginx_has_maintenance_guards() {")
-          ]
-          assert 'rollback_deadline=$((SECONDS + 300))' in previous_health
-          assert '"$release/validate_release_health.py" rollback' in previous_health
-          assert '"$previous_backend_revision"' in previous_health
-          assert '"$release/validate_release_health.py" current' not in previous_health
-          previous_health_guard = workflow.index(
-              "          if ! previous_backend_healthy; then"
-          )
-          rollback_trap = workflow.index("          trap rollback EXIT")
-          first_nginx_mutation = workflow.index(
-              '          install -m 0644 "$release/backend/ops/nginx/hi-veblen.com.http.conf"'
-          )
-          assert (
-              workflow.index("          previous_backend_healthy() {")
-              < previous_health_guard
-              < rollback_trap
-              < first_nginx_mutation
-          )
-          assert "拒绝进入可变更阶段" in workflow[
-              previous_health_guard:rollback_trap
-          ]
-          assert 'previous_revision_reliable' not in workflow
-          assert '旧后端 release revision 不是完整提交 SHA' in workflow
-          assert "ops/apparmor/myagent-persona-parser" in workflow
-          assert 'apparmor_profile_mode=legacy' in workflow
-          assert 'apparmor_profile_mode=managed' in workflow
-          assert 'legacy_apparmor_sha=55255df61ae6aef89ce5d8e4d46ba637ca3cd632' in workflow
-          assert 'test "$expected_backend" != "$legacy_apparmor_sha"' in workflow
-          assert '候选后端缺少受管 AppArmor profile' in workflow
-          assert 'test "$(cat "$userns_restriction")" = "1"' in workflow
-          profile_preflight = workflow.index(
-              'apparmor_parser --skip-kernel-load --skip-cache --base /etc/apparmor.d'
-          )
-          rollback_snapshot = workflow.index('rollback_root="$upload_dir/rollback"')
-          assert profile_preflight < rollback_snapshot
-          assert 'previous_apparmor_present' in workflow[:rollback_snapshot]
-          assert 'previous_apparmor_loaded' in workflow[:rollback_snapshot]
-          assert 'AppArmor profile 文件与内核加载状态不一致' in workflow
-          assert 'AppArmor profile 未处于 enforce 模式' in workflow
-          assert 'mkdir "$rollback_root/apparmor"' in workflow
-          assert 'remove_apparmor_profile() {' in workflow
-          assert 'restore_apparmor_profile() {' in workflow
-          assert 'apparmor_parser --remove --base /etc/apparmor.d' in workflow
-          assert rollback.index("systemctl stop myagent-gateway.service") < rollback.index("restore_apparmor_profile")
-          assert 'if test "$services_stopped" -eq 0' not in rollback
-          assert rollback.index("systemctl stop myagent-gateway.service") < rollback.index("systemctl is-active --quiet myagent-gateway.service")
-          assert 'test "$apparmor_mutated" -eq 1' in rollback
-          assert rollback.index("restore_apparmor_profile") < rollback.index("systemctl restart myagent-world.service")
-          rollback_userns_check = rollback.index(
-              'test "$(cat "$userns_restriction")" != "1"'
-          )
-          assert rollback.index("restore_apparmor_profile") < rollback_userns_check
-          assert rollback_userns_check < rollback.index("systemctl restart myagent-world.service")
-          assert rollback.index("nginx_has_maintenance_guards") < rollback.index("systemctl restart myagent-world.service")
-          assert rollback.index("previous_backend_healthy") < rollback.rindex("systemctl reload nginx")
-          assert rollback.rindex("systemctl reload nginx") < rollback.index("maintenance_public_blocked")
-          assert rollback.rindex("maintenance_public_blocked") < rollback_remove
-          assert rollback.count("maintenance_public_blocked") >= 2
-          prelude_start = workflow.index("          primary_conf=/etc/nginx/sites-available/hi-veblen.com.conf", workflow.index("          trap rollback EXIT"))
-          services_stop = workflow.index("          services_stopped=1", prelude_start)
-          maintenance_prelude = workflow[prelude_start:services_stop]
-          assert maintenance_prelude.index('test -f "$upload_dir/PRESERVE"') < maintenance_prelude.index("nginx_mutated=1")
-          assert maintenance_prelude.index("nginx_mutated=1") < maintenance_prelude.index("install -m 0644")
-          assert maintenance_prelude.index("systemctl reload nginx") < maintenance_prelude.index("activate_maintenance")
-          assert maintenance_prelude.index("activate_maintenance") < maintenance_prelude.index("maintenance_public_blocked")
-          assert "nginx_has_maintenance_guards" in maintenance_prelude
-          main_stop = workflow.index('          systemctl stop myagent-gateway.service myagent-world.service', services_stop)
-          gateway_inactive = workflow.index('          ! systemctl is-active --quiet myagent-gateway.service', main_stop)
-          world_inactive = workflow.index('          ! systemctl is-active --quiet myagent-world.service', main_stop)
-          legacy_remove = workflow.index('            remove_apparmor_profile', services_stop)
-          switch_start = workflow.index("          switched=1", services_stop)
-          assert services_stop < main_stop < gateway_inactive < legacy_remove < switch_start
-          assert main_stop < world_inactive < legacy_remove
-          final_remove = workflow.rindex('          rm -f "$maintenance_marker"')
-          assert workflow.rindex("http://127.0.0.1:8000/api/session") < final_remove
-          assert workflow.rindex("http://127.0.0.1:8000/api/health") < final_remove
-          final_health = workflow[workflow.rindex('          api_health="'):final_remove]
-          assert '"$release/validate_release_health.py" current "$expected_lingxi"' in final_health
-          assert (
-              '"$expected_persona_schema_phase" "$expected_persona_growth_phase"'
-              in final_health
-          )
-          assert '"$release/validate_release_health.py" rollback' not in final_health
-          assert '"$expected_lingxi"' in final_health
-          profile_state = workflow[
-              workflow.index("          verify_apparmor_profile_state() {"):
-              workflow.index("          restore_nginx_backup() {")
-          ]
-          assert 'test "$apparmor_profile_mode" = "managed"' in profile_state
-          assert 'cmp -s "$apparmor_profile_source" "$apparmor_profile_path"' in profile_state
-          assert "stat -c '%U:%G:%a'" in profile_state
-          assert 'test -e "$apparmor_profile_path" || test -L "$apparmor_profile_path"' in profile_state
-          assert "apparmor_profile_is_present" in profile_state
-          assert profile_state.count("apparmor_profile_is_enforced") == 1
-          restore_profile = workflow[
-              workflow.index("          restore_apparmor_profile() {"):
-              workflow.index("          verify_apparmor_profile_state() {")
-          ]
-          assert "apparmor_profile_is_enforced" in restore_profile
-          final_profile_check = workflow.rindex('          verify_apparmor_profile_state')
-          assert final_profile_check < final_remove
-          deployed_marker = workflow.rindex(
-              '          install -m 0600 /dev/null "$upload_dir/DEPLOYED"'
-          )
-          assert final_profile_check < deployed_marker < final_remove
-          assert "curl " not in workflow[final_remove:workflow.index("          trap - EXIT", final_remove)]
-          assert "RELEASE_TRANSACTION=1" in workflow
-          assert "拒绝未纳管的 systemd 覆盖" in workflow
-          assert workflow.count("-p DropInPaths --value") >= 3
-          prune_call = workflow.index('          bash "$release/prune-production-releases.sh"')
-          assert workflow.index('          previous_backend="$(readlink -f "$backend_current")"') < prune_call
-          previous_floor = workflow.index('          previous_backend_rollback_floor=0')
-          previous_env = (
-              f'          previous_release_env="$(printf \'{release_env_contract}\' '
-              '"$previous_backend_revision")"'
-          )
-          assert previous_floor < workflow.index(previous_env) < prune_call
-          assert 'test -f "$previous_backend/.release.env"' in workflow[previous_floor:prune_call]
-          assert '! test -L "$previous_backend/.release.env"' in workflow[previous_floor:prune_call]
-          assert 'cmp -s - "$previous_backend/.release.env"' in workflow[previous_floor:prune_call]
-          assert prune_call < workflow.index('          release_venv="$release/backend/.venv"')
-          main_remote = workflow[workflow.index('          upload_dir="/opt/hi-veblen/staging/run-', workflow.index("      - name: 维护窗口内协调切换并验证")):prune_call]
-          expected_release_env = (
-              f'          expected_release_env="$(printf \'{release_env_contract}\' '
-              '"$expected_backend")"'
-          )
-          assert expected_release_env in main_remote
-          assert 'printf \'%s\\n\' "$expected_release_env" | cmp -s - "$release/backend/.release.env"' in main_remote
-          assert main_remote.index('test -e "$maintenance_marker"') < main_remote.index('mkdir -p "$release_root"')
-          deploy_step_start = workflow.index("      - name: 维护窗口内协调切换并验证")
-          deploy_step_end = workflow.index("      - name: 清理本次远端暂存与未引用发布")
-          deploy_run = workflow[workflow.index("        run: |", deploy_step_start):deploy_step_end]
-          assert "$" + "{{" not in deploy_run
-          assert (
-              '          persona_growth_canary_arg="${PERSONA_GROWTH_CANARY_HASHES:--}"'
-              in deploy_run
-          )
-          deploy_invocation = (
-              "          ssh hi-veblen-production 'bash -se --' \\\n"
-              '            "$GITHUB_RUN_ID" "$GITHUB_RUN_ATTEMPT" "$GITHUB_SHA" \\\n'
-              '            "$EXPECTED_ARCHIVE_SHA" "$EXPECTED_PERSONA_SCHEMA_PHASE" \\\n'
-              '            "$EXPECTED_PERSONA_GROWTH_PHASE" \\\n'
-              '            "$persona_growth_canary_arg" <<\'REMOTE\''
-          )
-          assert deploy_invocation in deploy_run
-          assert (
-              '          run_id="$1"\n'
-              '          run_attempt="$2"\n'
-              '          portal_revision="$3"\n'
-              '          expected_archive_sha="$4"\n'
-              '          expected_persona_schema_phase="$5"\n'
-              '          expected_persona_growth_phase="$6"\n'
-              '          persona_growth_canary_hashes="$7"\n'
-              '          if test "$persona_growth_canary_hashes" = "-"; then\n'
-              '            persona_growth_canary_hashes=""\n'
-              '          fi'
-          ) in deploy_run
-          assert 'LINGXI_PERSONA_SCHEMA_PHASE="$expected_persona_schema_phase"' in deploy_run
-          assert 'LINGXI_PERSONA_GROWTH_PHASE="$expected_persona_growth_phase"' in deploy_run
-          assert 'LINGXI_PERSONA_GROWTH_CANARY_HASHES="$persona_growth_canary_hashes"' in deploy_run
-          assert "bash -se -- deploy" not in deploy_run
+          core = Path("scripts/release_transaction.py").read_text(encoding="utf-8")
+          driver = Path("scripts/production-release-transaction.sh").read_text(encoding="utf-8")
+          assert "LINGXI_WORLD_LEDGER_SCHEMA_CAPABILITY=dual-read-v2-preserve" in workflow
+          assert "EXPECTED_WORLD_LEDGER_SCHEMA_PHASE: compat" in workflow
+          for name in ("release_transaction.py", "production-release-transaction.sh"):
+              assert "install -m 0755 scripts/" + name in workflow
+          assert "scripts/release_transaction.py policy" in workflow
+          assert "从独立受信制品验证全部历史事务" in workflow
+          assert "python3 -I -B - history" in workflow
+          assert 'exec bash "$release/production-release-transaction.sh" deploy' in workflow
+          assert "trap rollback EXIT" not in workflow
+          assert 'previous_portal="$(readlink -f' not in workflow
+          assert "prune-production-releases.sh\" \\" not in workflow
+          assert 'expected_world_ledger_phase="$8"' in workflow
+          assert '"$persona_growth_canary_arg" "$EXPECTED_WORLD_LEDGER_SCHEMA_PHASE"' in workflow
+          assert "RELEASE_TRANSACTION" in core and "LINGXI_WORLD_LEDGER_SCHEMA_PHASE" in core
+          assert "persona_growth_applies_for" in core and "PRAGMA table_info(conversation_events)" in core
+          assert "EnvironmentFiles" in core and "后加载环境文件定义了发布保留键" in core
+          assert 'exec /usr/bin/python3 -I -B "$control_dir/release_transaction.py"' in driver
+          for helper in ("capture_previous", "verify_previous", "restore_previous", "finalize_transaction"):
+              assert "def " + helper + "(*," in core
+          # 状态、fd、故障及清理资格由下一步真实 Linux 测试验证，避免绑定旧 shell 内存标志。
           preflight = workflow[workflow.index("      - name: 拒绝未纳管的 systemd 覆盖"):workflow.index("      - name: 创建私有暂存目录")]
           assert "myagent-world.service myagent-gateway.service" in preflight
           assert "test -n \"$dropins\"" in preflight
@@ -635,51 +414,14 @@ jobs:
           assert 'rmdir -- "$backup_path"' in backup
           lease_publish = preflight.index('mv -T -- "$lease_tmp" "$lease_dir"')
           assert lease_publish < backup_start
-          assert '/var/backups/myagent-production-config' not in workflow[
-              workflow.index("      - name: 清理本次远端暂存与未引用发布"):
-          ]
           staging = workflow[workflow.index("      - name: 创建私有暂存目录"):workflow.index("      - name: 上传发布包")]
-          assert 'test "$(cat "$lease_dir/owner" 2>/dev/null || true)" = "$lease_owner"' in staging
           assert 'install -m 0600 /dev/null "$upload_dir/PRESERVE"' in staging
-          assert "$" + "{{" not in staging
-          assert '! -path "$upload_dir/PRESERVE"' in main_remote
-          assert '发布生命周期租约不属于本次运行' in main_remote
-          preserve_remove = workflow.rfind(
-              '          rm -f "$upload_dir/PRESERVE"', 0, deploy_step_end
-          )
-          assert final_profile_check < preserve_remove < deployed_marker < final_remove
-          success_tail = workflow[final_remove:deploy_step_end]
-          assert "trap - EXIT" in success_tail
-          assert 'rm -f "$upload_dir/PRESERVE"' not in success_tail
-          assert "assert_no_global_protection" not in success_tail
-          assert 'rm -rf -- "$upload_dir"' not in success_tail
-          cleanup = workflow[workflow.index("      - name: 清理本次远端暂存与未引用发布"):]
-          assert "if:" in cleanup and "always()" in cleanup and "configure-ssh.outcome" in cleanup
-          cleanup_invocation = (
-              "          ssh hi-veblen-production 'bash -se --' \\\n"
-              '            "$GITHUB_RUN_ID" "$GITHUB_RUN_ATTEMPT" "$GITHUB_SHA" <<\'REMOTE\''
-          )
-          assert cleanup_invocation in cleanup
-          assert (
-              '          run_id="$1"\n'
-              '          run_attempt="$2"\n'
-              '          portal_revision="$3"'
-          ) in cleanup
-          assert "bash -se -- cleanup" not in cleanup
-          assert cleanup.index('test -e "$maintenance_marker"') < cleanup.index('rm -rf --one-file-system -- "$release"')
-          assert cleanup.index('test -e "$preserve_marker"') < cleanup.index('rm -rf --one-file-system -- "$release"')
-          assert cleanup.index("assert_no_global_protection") < cleanup.index('rm -rf --one-file-system -- "$release"')
-          upload_delete = cleanup.index('rm -rf -- "$upload_dir"')
-          assert cleanup.rfind("assert_no_global_protection", 0, upload_delete) >= 0
-          assert cleanup.index("assert_no_global_protection", upload_delete) < cleanup.index('rm -f "$lease_dir/owner"')
-          assert cleanup.index('rm -f "$upload_dir/PRESERVE"') < cleanup.index('rm -rf --one-file-system -- "$release"')
-          assert 'test "$deployed" -eq 0' in cleanup
-          assert cleanup.index('test "$deployed" -eq 0') < cleanup.index('rm -rf --one-file-system -- "$release"')
-          assert cleanup.index('rm -rf -- "$upload_dir"') < cleanup.index('rm -f "$lease_dir/owner"')
-          assert cleanup.index('rm -f "$lease_dir/owner"') < cleanup.index('rmdir "$lease_dir"')
-          assert 'test "$(dirname -- "$target")" = "$release"' in cleanup
-          staging_prune = main_remote.index('          bash "$release/prune-production-staging.sh"')
-          assert main_remote.index('test -e "$maintenance_marker"') < staging_prune
+          assert 'sync -f "$upload_dir/PRESERVE"' in staging
+          assert "sync -f /opt/hi-veblen/staging" in staging
+          cleanup = workflow[workflow.index("      - name: 保留失败事务并提示共享恢复入口"):]
+          assert "always()" in cleanup and " recover <txn_id>" in cleanup
+          assert "rm -rf" not in cleanup
+          assert "lease_dir/owner" not in cleanup
           print("production transaction ordering OK")
           PY
 
@@ -912,93 +654,12 @@ jobs:
       - name: Test release health contracts
         run: python3 -B scripts/validate_release_health.py --self-test
 
-      - name: Test remote argument mapping
-        shell: bash
+      - name: Test real Linux release transactions
         run: |
-          set -euo pipefail
-          mapped="$(printf '%s' 'printf "%s|%s|%s|%s|%s|%s|%s" "$1" "$2" "$3" "$4" "$5" "$6" "$7"' | \
-            "$BASH" -se -- 29160903633 1 \
-              aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa \
-              bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb \
-              active canary \
-              cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc)"
-          test "$mapped" = \
-            "29160903633|1|aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa|bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb|active|canary|cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
-          empty_mapped="$(printf '%s' 'value="$7"; test "$value" = "-" && value=""; printf "%s|%s" "$6" "$value"' | \
-            "$BASH" -se -- 29160903633 1 \
-              aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa \
-              bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb \
-              compat compat -)"
-          test "$empty_mapped" = "compat|"
-
-      - name: Test release retention guard
-        shell: bash
-        run: |
-          set -euo pipefail
+          bash -n scripts/production-release-transaction.sh
           bash -n scripts/prune-production-releases.sh
-          tmp="$(mktemp -d)"
-          trap 'rm -rf -- "$tmp"' EXIT
-          root="$tmp/releases"
-          mkdir -p "$root"
-          for n in 1 2 3 4 5 6 7; do
-            mkdir -p "$root/release-$n"
-            touch -d "@$n" "$root/release-$n"
-          done
-          mkdir -p "$root/release-unsafe name"
-          bash scripts/prune-production-releases.sh \
-            "$root" 3 "$root/release-7" "$root/release-2"
-          for n in 2 5 6 7; do test -d "$root/release-$n"; done
-          for n in 1 3 4; do test ! -e "$root/release-$n"; done
-          test -d "$root/release-unsafe name"
-          if bash scripts/prune-production-releases.sh "$tmp/not-releases" 3 "$root/release-7"; then
-            echo "异常 release 根目录未被拒绝" >&2
-            exit 1
-          fi
-          mkdir -p "$root/release-0"
-          global_marker="$tmp/release-preserve"
-          touch "$global_marker"
-          if MYAGENT_MAINTENANCE_MARKER="$global_marker" \
-            bash scripts/prune-production-releases.sh "$root" 3 "$root/release-7"; then
-            echo "全局保护标记未阻止 release 回收" >&2
-            exit 1
-          fi
-          test -d "$root/release-0"
-
-      - name: Test staging retention guard
-        shell: bash
-        run: |
-          set -euo pipefail
           bash -n scripts/prune-production-staging.sh
-          tmp="$(mktemp -d)"
-          trap 'rm -rf -- "$tmp"' EXIT
-          root="$tmp/staging"
-          outside="$tmp/outside"
-          mkdir -p "$root/run-9-1" "$root/run-8-1" "$root/run-invalid-1" "$outside"
-          touch "$root/run-9-1/PRESERVE"
-          ln -s "$outside" "$root/run-7-1"
-          bash scripts/prune-production-staging.sh "$root" "$root/run-9-1"
-          test -d "$root/run-9-1"
-          test ! -e "$root/run-8-1"
-          test -d "$root/run-invalid-1"
-          test -L "$root/run-7-1"
-          test -d "$outside"
-          mkdir -p "$root/run-6-1" "$root/run-5-1"
-          touch "$root/run-6-1/PRESERVE"
-          if bash scripts/prune-production-staging.sh "$root" "$root/run-9-1"; then
-            echo "staging 保护标记未阻止回收" >&2
-            exit 1
-          fi
-          test -d "$root/run-6-1"
-          test -d "$root/run-5-1"
-          rm -f "$root/run-6-1/PRESERVE"
-          global_marker="$tmp/staging-preserve"
-          touch "$global_marker"
-          if HI_VEBLEN_PRESERVE_MARKER="$global_marker" \
-            bash scripts/prune-production-staging.sh "$root" "$root/run-9-1"; then
-            echo "全局保护标记未阻止 staging 回收" >&2
-            exit 1
-          fi
-          test -d "$root/run-5-1"
+          sudo -n env PYTHONDONTWRITEBYTECODE=1 python3 -B scripts/test_release_transaction.py --require-posix
 
       - name: Setup Node.js
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
