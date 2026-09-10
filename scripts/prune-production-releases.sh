@@ -1,89 +1,9 @@
 #!/usr/bin/env bash
+# release 回收只允许续做可信终态的固定计划；不接受任意根目录或保护参数。
 set -euo pipefail
-
-if (( $# < 3 )); then
-  echo "用法: $0 <release_root> <保留数量> <受保护 release>..." >&2
+if (( $# != 1 )); then
+  echo '用法：$0 <txn_id>；从独立核验的原 MyWeb 制品续做终态清理' >&2
   exit 2
 fi
-
-release_root="$1"
-keep_count="$2"
-shift 2
-maintenance_marker="${MYAGENT_MAINTENANCE_MARKER:-/run/myagent-release-maintenance}"
-preserve_marker="${HI_VEBLEN_PRESERVE_MARKER:-/run/hi-veblen-release-preserve}"
-
-assert_no_global_protection() {
-  if test -e "$maintenance_marker" || test -L "$maintenance_marker" || \
-    test -e "$preserve_marker" || test -L "$preserve_marker"; then
-    echo "检测到全局发布保护标记，拒绝回收 release。" >&2
-    exit 1
-  fi
-}
-
-if [[ ! "$keep_count" =~ ^[1-9][0-9]*$ ]]; then
-  echo "保留数量必须是正整数: $keep_count" >&2
-  exit 2
-fi
-
-release_root="$(readlink -f -- "$release_root")"
-case "$release_root" in
-  /*/releases) ;;
-  *) echo "拒绝清理异常 release 根目录: $release_root" >&2; exit 1 ;;
-esac
-test -d "$release_root"
-
-protected=()
-for path in "$@"; do
-  resolved="$(readlink -f -- "$path" 2>/dev/null || true)"
-  if test -n "$resolved" && test "$(dirname -- "$resolved")" = "$release_root"; then
-    protected+=("$resolved")
-  fi
-done
-
-mapfile -d '' -t releases < <(
-  find "$release_root" -mindepth 1 -maxdepth 1 -type d \
-    -name 'release-*' -printf '%T@ %p\0' | sort -z -nr
-)
-
-position=0
-removed=0
-for entry in "${releases[@]}"; do
-  candidate="${entry#* }"
-  candidate="$(readlink -f -- "$candidate")"
-  base="$(basename -- "$candidate")"
-  case "$base" in
-    release-|release-*[!A-Za-z0-9._-]*)
-      echo "跳过异常 release 名称: $base" >&2
-      continue
-      ;;
-    release-*) ;;
-    *) continue ;;
-  esac
-  test "$(dirname -- "$candidate")" = "$release_root"
-
-  position=$((position + 1))
-  keep=0
-  if (( position <= keep_count )); then
-    keep=1
-  else
-    for path in "${protected[@]}"; do
-      if test "$candidate" = "$path"; then
-        keep=1
-        break
-      fi
-    done
-  fi
-
-  if (( keep == 0 )); then
-    if test -e "$candidate/PRESERVE" || test -L "$candidate/PRESERVE"; then
-      echo "检测到 release 发布保护现场，拒绝回收: $candidate/PRESERVE" >&2
-      exit 1
-    fi
-    assert_no_global_protection
-    rm -rf --one-file-system -- "$candidate"
-    removed=$((removed + 1))
-  fi
-done
-
-printf 'release retention: kept_newest=%s protected=%s removed=%s\n' \
-  "$keep_count" "${#protected[@]}" "$removed"
+script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
+exec bash "$script_dir/production-release-transaction.sh" cleanup "$1"
